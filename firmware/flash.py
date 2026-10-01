@@ -71,14 +71,29 @@ def try_enter_download(port):
             pass
 
 
-def main():
+def run_esptool(args):
+    """`python -m esptool ...`, or - inside a packaged (PyInstaller) app that has no Python - esptool in this process."""
+    if getattr(sys, "frozen", False):
+        import esptool
+        try:
+            esptool.main(args)
+            return 0
+        except SystemExit as e:
+            return int(e.code or 0) if isinstance(e.code, int) or e.code is None else 1
+        except Exception as e:                              # noqa: BLE001
+            print(f"esptool error: {e}")
+            return 1
+    return subprocess.call([sys.executable, "-m", "esptool"] + args)
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--image", default="", help="core | full | path to a merged .bin")
     ap.add_argument("--port", default="", help="serial port (default: auto-detect)")
     ap.add_argument("--baud", default="460800")
     ap.add_argument("--list", action="store_true", help="list serial ports and exit")
     ap.add_argument("--yes", action="store_true", help="do not ask for confirmation")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     if a.list:
         show_ports()
         return 0
@@ -120,11 +135,11 @@ def main():
     except (AttributeError, ValueError):
         major = 4
     d = (lambda t: t.replace("_", "-")) if major >= 5 else (lambda t: t)       # esptool 5 uses dashes, 4 uses underscores
-    cmd = [sys.executable, "-m", "esptool", "--chip", "esp32s3", "--port", port, "--baud", a.baud,
+    cmd = ["--chip", "esp32s3", "--port", port, "--baud", a.baud,
            "--before", d("default_reset"), "--after", d("hard_reset"), d("write_flash"), "-z",
            d("--flash_mode"), "dio", d("--flash_freq"), "80m", d("--flash_size"), "4MB", "0x0", image]
-    print("running:", " ".join(cmd), flush=True)
-    rc = subprocess.call(cmd)
+    print("running: esptool", " ".join(cmd), flush=True)
+    rc = run_esptool(cmd)
     if rc == 0:
         print("\nDone. Unplug and re-plug the board (or press RESET). The port number will probably be different now.")
     else:

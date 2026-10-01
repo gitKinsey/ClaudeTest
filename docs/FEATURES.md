@@ -58,6 +58,29 @@ pins goes through the same code paths the emulator exercises, but the panel and 
 | Mirror the PC's volume / playback on the pad | `HostMedia` + `_media_loop`; Linux `pactl`/`amixer`/`playerctl`, macOS `osascript`, Windows optional `pycaw`; sends `{"cmd":"media",...}` on change and every 10 s | `giflib_test.py` parses canned tool output and checks what is sent and that the virtual pad follows. **Windows (pycaw) and macOS are best-effort and untested here.** |
 | Flash without the Arduino IDE | `firmware/flash.py` + `firmware/*.bin` (also Dev tab -> *0. Flash firmware*) | images boot in QEMU, byte-identical to the core's own `merged.bin`; the esptool step itself is not run here (no board) |
 
+## Version 1.3 (app) / 1.2 (firmware): the "make it more robust and better" round
+
+| Feature | Where | Proof |
+|---|---|---|
+| **3 key layers**, selectable from the dial menu / a key / the app / a profile | firmware `curLayer`, `slotKey(layer, i)`, `DEFAULT_SLOT[3][7]`, menu entry LAYER; app `edit_layer`, `cfg["layers"]`, layer selector on the Pad page | Emulator `t_layers` (separate key tables, defaults, switching, layer events, menu entry, badge on screen, selective reset, persistence in `t_remap_persistence`); `tools/layers_test.py` (editor, per-layer upload, read-back, config migration from the one-layer format) |
+| **Per-program profiles** | `desk_lib/activewin.py`, `App._profile_loop`, Profiles page | `lib_test.py` (window detection with canned xdotool / xprop / osascript output, rule matching); `profiles_test.py` (rules, ordering, disabled rules, default layer, "this app focused" ignored, off switch). **Window detection on Windows / macOS is untested here.** |
+| **More actions**: mouse (click / double / scroll / move / buttons), open website / program / file, type clipboard, notification, run command | firmware `ST_MOUSE`, `ST_HOST`, `ST_LAYER`; `desk_lib/hostactions.py`; Macros page | Emulator `t_new_actions` (every spec accepted, every bad one refused, a real key press emits the host event); `lib_test.py` + `layers_test.py` (the whitelist: unlisted actions, `file:` / `javascript:` links and switched-off shell commands are refused); `features_test.py` (the action builder, bad input, sequences) |
+| **Info screen** (6th mode): now playing, weather, next calendar event, custom card, notification badges | firmware `sceneInfo`, `info_cards`; `desk_lib/feeds.py`; Info page | Emulator `t_info_screen` (no-data state, cards, rotation, limits); `lib_test.py` (Open-Meteo / geocoder against a mock server, ICS parsing incl. folded lines and all-day events, token-protected badge server); `info_test.py` (whole chain into the simulated pad, caching, loop, bad sources) |
+| **4 GIF slots + rotation** | firmware `gifPath`, `gif_list`, `gif_cfg`; GIFs page "On the pad" | Emulator `t_gif_slots` (upload, list, select, rotation, delete, demo regeneration); `giflib_test.py` |
+| **Key-press ring** on every screen | firmware `drawOverlays()`, twin `_draw_status()` | Emulator `t_layers` (badge) / screenshots; the ring itself is only checked by eye |
+| **Firmware update from the app** | `App.flash_firmware`, `firmware/flash.py`, version check `fw_status()`, banner on Home | `features_test.py` (old / newer / unknown / ok states, banner). The flashing run itself needs a board. |
+| **Wi-Fi OTA** (opt-in, experimental) | firmware `ArduinoOTA`, `desk_lib/espota.py` | Compiles on every core in the matrix; client tested against a **fake** device (with and without password, wrong password, no device). **Not run on hardware.** |
+| **Backup / restore** | `desk_lib/backup.py`, Device page | `lib_test.py` (round trip, path traversal / non-GIF / foreign zips refused); `features_test.py` (real export from the simulated pad incl. read-back of all layers, restore into a broken config, damaged file refused) |
+| **Macro sharing** (export / import one or all macros) | `macro_export` / `macro_import` | `features_test.py` (invalid macros skipped) |
+| **Safe-mode self-recovery** | firmware `safe_retry`, `boot_opt`, `factory`, `info.safe_why`; Device page, Home banner | Emulator `t_recovery`, `t_safe_mode`; `features_test.py` |
+| **Guided hardware test + printable report** | `desk_lib/wizards.py` `HardwareTest` | `features_test.py` runs every step against the simulator (LED, display, five keys, dial, keyboard, self-test, a failing step, the HTML report). Whether the LED / screen really look right is your answer in the dialog. |
+| **First-run setup wizard** | `SetupWizard`, offered once on the first real connection | `features_test.py` clicks through all pages |
+| **Keystroke recorder** | `desk_lib/recorder.py`, Macros page | `lib_test.py` (combos, text runs, delays, caps, unsupported keys), `features_test.py` (start / stop with a fake listener). Real key capture needs `pynput`. |
+| **Command palette** (Ctrl+K), **usage statistics**, **light / dark theme**, sidebar navigation | `CommandPalette`, `_count_use`, `desk_lib/ui.py` | `features_test.py` (palette), `layers_test.py` (usage events indirectly); looks checked on screenshots of every page in both themes |
+| **Installers** | `packaging/build.py`, `.github/workflows/release.yml` | Linux build produced and launched headless here (that run found and fixed a missing Pillow hidden import); Windows / macOS builds are made by the workflow and **have not been run**. |
+| **CI** | `.github/workflows/ci.yml` | Written from the commands that were run locally; **the workflow itself has not been executed** (no GitHub Actions access from here). |
+| A bug found on the way | Macro Creator's delay field shared a variable with the Virtual Pad's test delay -> every virtual key press waited 200 s | `macro_test.py` regression test (fails on the old code) |
+
 ## Known limits (honest list)
 
 * Text macros type **US-layout ASCII** unless you pick another layout in the Device tab (needs core >= 3.1).

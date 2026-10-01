@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  app:
+    name: App tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk python3-venv
+      - name: Python packages
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install customtkinter pyserial psutil pillow pyflakes esptool
+      - name: Lint
+        run: .venv/bin/python -m pyflakes companion_app.py desk_lib tools firmware/flash.py
+      - name: Unit tests (no GUI)
+        run: .venv/bin/python -W error tools/lib_test.py
+      - name: GUI tests (headless)
+        run: |
+          for t in app_selftest macro_test giflib_test layers_test profiles_test info_test features_test; do
+            echo "::group::$t"
+            xvfb-run -a .venv/bin/python tools/$t.py
+            echo "::endgroup::"
+          done
+
+  firmware-compile:
+    name: Firmware compiles (core ${{ matrix.core }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        core: ["2.0.17", "3.1.3", "3.2.1", "3.3.6"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR="$HOME/bin" sh
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Core and libraries
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@${{ matrix.core }}
+          arduino-cli lib install TFT_eSPI AnimatedGIF Bounce2 ArduinoJson
+          cp User_Setup.h "$HOME/Arduino/libraries/TFT_eSPI/User_Setup.h"
+      - name: DeskCompanion (USB-OTG / TinyUSB)
+        run: arduino-cli compile --fqbn "esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=cdc,PartitionScheme=default" DeskCompanion
+      - name: DeskCompanion (hardware CDC: no keyboard, everything else works)
+        run: arduino-cli compile --fqbn "esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,PartitionScheme=default" DeskCompanion
+      - name: CoreBringup
+        run: arduino-cli compile --fqbn "esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=cdc,PartitionScheme=default" CoreBringup
+
+  emulator:
+    name: Firmware in QEMU
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: arduino-cli, core 3.3.6, libraries
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR="$HOME/bin" sh
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/bin:$PATH"
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.6
+          arduino-cli lib install TFT_eSPI AnimatedGIF Bounce2 ArduinoJson
+          cp User_Setup.h "$HOME/Arduino/libraries/TFT_eSPI/User_Setup.h"
+      - name: Espressif QEMU
+        run: |
+          curl -fsSL -o qemu.tar.xz https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20250817/qemu-xtensa-softmmu-esp_develop_9.2.2_20250817-x86_64-linux-gnu.tar.xz
+          mkdir -p "$HOME/qemu" && tar -xf qemu.tar.xz -C "$HOME/qemu"
+          echo "QEMU=$(find "$HOME/qemu" -name qemu-system-xtensa -type f | head -1)" >> "$GITHUB_ENV"
+          sudo apt-get update && sudo apt-get install -y libglib2.0-0 libpixman-1-0 libslirp0 libsdl2-2.0-0
+      - run: pip install pillow psutil
+      - name: Emulator suite
+        run: tools/run_emulator_suite.sh emulator_out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-screenshots
+          path: emulator_out

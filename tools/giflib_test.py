@@ -142,6 +142,15 @@ time.sleep(1.0); pump(20)
 th = [t for t in app.on_sc.winfo_children() if t._image is not None]; assert len(th) == 5, ("thumbs after stale searches", len(th))
 # upload to the simulator, verify bytes
 app.upload_gif(); assert pump(200, lambda: app.dev.ser.sim.gif_present and app.dev.ser.sim.gif_bytes_used == len(app.gif_data)), "upload"
+# ---- the pad's GIF slots: upload to slot 3, list, rotate, show, delete
+app.gif_slot_var.set("Slot 3"); n0 = len(app.gif_data)
+app.upload_gif(); assert pump(200, lambda: 2 in app.dev.ser.sim.gifs and app.dev.ser.sim.gifs[2] == n0), app.dev.ser.sim.gifs
+assert pump(40, lambda: set(app.pad_gifs) == {0, 2}), app.pad_gifs
+assert pump(10) and len(app.pad_gif_box.winfo_children()) == 4, "four slot rows"
+app._gif_rot_changed("10 seconds"); assert pump(40, lambda: app.dev.ser.sim.gif_rot == 10) and app.gif_rot_var.get() == "10 seconds"
+app._pad_gif_show(0); assert pump(40, lambda: app.dev.ser.sim.gif_cur == 0)
+app.delete_gif(2); assert pump(40, lambda: 2 not in app.dev.ser.sim.gifs) and pump(40, lambda: set(app.pad_gifs) == {0})
+app.gif_slot_var.set("Slot 1")
 print("GUI library OK")
 if os.environ.get("SHOTS"):
     from PIL import ImageGrab

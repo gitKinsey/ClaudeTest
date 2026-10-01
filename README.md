@@ -1,14 +1,22 @@
 # Desk Companion - ESP32-S3 macro pad (Waveshare ESP32-S3-Zero)
 
-A round-screen macro pad: 5 keys + a rotary encoder, GC9A01 1.28" display, USB keyboard / media keys, and a desktop
+A round-screen macro pad: 5 keys + a rotary encoder, GC9A01 1.28" display, USB keyboard / mouse / media keys, and a desktop
 companion app. The firmware works standalone; the app is only needed to remap keys, build macros, pick / upload a GIF
 (built-in library, your own folder, or Tenor / GIPHY search), mirror your PC's volume on the pad, and for the **Dev tab**
 (bring-up and diagnostics).
 
+**Version 1.3 / firmware 1.2** adds: **3 key layers**, **per-program profiles** (the layer follows the program you use), a 6th screen
+(**Info**: now playing, weather, next calendar event, notification badges), **mouse and computer actions** (click, scroll, open a
+website / program, type the clipboard), **4 GIF slots with rotation**, a key-press ring effect, one-click **firmware update**,
+**backup / restore**, safe-mode **recovery** tools, a **guided hardware test** with a printable report, a **setup wizard**, a keystroke
+**recorder**, a **command palette** (Ctrl+K), usage statistics, and a new black-and-white interface with a light theme.
+
 ```
 CoreBringup/CoreBringup.ino    STEP 1  tiny sketch, no libraries: LED + USB serial link + wiring test
 DeskCompanion/DeskCompanion.ino STEP 2  the full firmware (display, keys, macros, GIFs, ...)
-companion_app.py                desktop app (Dev tab, virtual pad, macro creator, GIF library + upload, PC volume mirroring)
+companion_app.py                desktop app (pages: Home, Pad, Macros, Profiles, GIFs, Info, Device, Diagnostics)
+desk_lib/                       the app's logic split into testable modules (feeds, backup, OTA client, profiles, recorder, theme, wizards)
+packaging/build.py              builds a double-click app (PyInstaller);  .github/workflows: CI (tests, compile matrix, QEMU) + release
 firmware/                       prebuilt images (CoreBringup.bin, DeskCompanion.bin) + flash.py - no Arduino IDE needed
 User_Setup.h, platformio.ini    TFT_eSPI pin setup / PlatformIO alternative
 docs/FEATURES.md                every item of the original spec -> where it is implemented -> what proves it
@@ -148,6 +156,51 @@ Default key map (works with no app): K1 copy, K2 paste, K3 undo, K4 play/pause, 
 menu (brightness / volume / mode / exit), dial hold = next display mode. Modes: clock, focus timer (K1 start/pause, K2 reset,
 dial = minutes), media dashboard, system telemetry, GIF.
 
+## The app, page by page
+
+| Page | What it does |
+|---|---|
+| **Home** | Connection, pad health (firmware, layer, flash, last reset, display, keyboard, storage, temperature), live CPU / RAM telemetry, quick actions, a keyboard-friendly key table, usage statistics. A banner appears when the firmware is older than the app or the pad is in safe mode. |
+| **Pad** | The live twin of the device. Pick **Layer 1 / 2 / 3**, drag an action from the library onto a key or a dial arrow, double-click a key for a menu. *Show on pad* switches the physical pad to that layer. 70+ actions in 9 categories incl. *Layers & Pad*, *Mouse*, *Navigation*, *Computer*. |
+| **Macros** | Key combinations (4 modifiers + key), text snippets, **computer / mouse / layer actions**, sequences with delays, a **keystroke recorder**. Save to the library, assign to a key, or test on this PC. |
+| **Profiles** | Rules like "program contains `code` -> Layer 3". The app watches the focused program and switches the pad's layer. First matching rule wins, with a default for everything else. |
+| **GIFs** | Built-in (16), My GIFs (your folder), Online (Tenor / GIPHY, bring your own free key). Four slots on the pad, per-slot upload / delete, optional rotation. |
+| **Info** | Cards for the pad's 6th screen: now playing, weather (Open-Meteo, no key), next calendar event (.ics file or link), a custom text card, and notification badges that any script can set over `http://127.0.0.1`. |
+| **Device** | Brightness, mode, OS, keyboard layout, **firmware** (version check, one-click USB update, experimental Wi-Fi update), **backup / restore**, **recovery** (retry normal boot, boot without display, reset keys / settings / GIFs), Wi-Fi. |
+| **Diagnostics** | Bring-up tools: ports, LED, keys, display, keyboard test, GPIO, terminal, full self-test, report. |
+
+Everywhere: **Ctrl+K** opens the command palette (jump to a page, upload, switch layer / screen, run the wizards). The sidebar footer
+toggles the light theme. *Home -> Setup wizard* walks a new pad through connect / firmware / LED + display check / GIF choice, and
+*Home -> Guided hardware test* checks LED, display, the five keys, the dial, USB keyboard output and the self-test, then saves an HTML report
+you can print.
+
+### Layers, in short
+
+Every key (K1-K5, dial right, dial left) has three assignments - one per layer. The layer is chosen from the dial menu (the new **LAYER**
+entry), with a key bound to *Next / Previous / Layer N*, from the app, or automatically by a **profile**. The pad shows an `L2` / `L3`
+badge, flashes its LED (cyan / magenta / amber) and tells the app. Defaults: layer 1 = copy / paste / undo / play / mute, layer 2 = media
+(previous / play / next / stop / mute), layer 3 = browser (back / forward / reload / new tab / close tab, dial = page down / up).
+
+### Computer actions and safety
+
+The pad cannot launch programs itself, so *open website / start program / open file / type the clipboard / notify / run command* are sent to the
+app as events. **The app only runs an event whose exact action is part of YOUR key maps or saved macros** (so a fake USB device cannot make it do
+anything), only `http(s)` and `mailto` links open, and shell commands additionally need the switch *Device -> Allow the pad to run shell commands*
+(off by default). While the guided hardware test runs, such actions are ignored. These actions need the app to be running; plain key and
+mouse actions work without it.
+
+### Wi-Fi update (experimental)
+
+Device -> Firmware: save your Wi-Fi, set an OTA password, *Enable OTA*, wait ~30 s, *Update over Wi-Fi*. The firmware side is the standard
+`ArduinoOTA` and the app contains a small client for its protocol, **tested against a fake device only - not on real hardware**. Keep the USB
+way as the fallback. Build with `-DDC_HAS_OTA=0` to leave it out.
+
+### Installers
+
+`python packaging/build.py` makes a double-click app with PyInstaller (Windows `.exe`, macOS `.app`, Linux binary) including the firmware images
+and the flasher; pushing a `v*` tag runs `.github/workflows/release.yml`, which builds all three and attaches them to a GitHub release. The Linux
+build was built and started headless here; the Windows and macOS builds are produced by that workflow and have **not** been run by the author.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | What to do |
@@ -191,7 +244,14 @@ replies). Replies have `"ok": true|false` (`"err"` on failure). Messages **witho
 | `reboot` (`mode`: normal,download) | restart (download = ROM flasher, no BOOT button) |
 | `remap` / `reset_keys` / `getkeys` | key slots 1-5 = K1-K5, 6/7 = dial right/left; `getkeys` returns length + CRC for read-back |
 | `brightness`, `mode`, `os`, `layout`, `time`, `wifi`, `media`, `stats` | settings / telemetry |
-| `gif_begin` / `gif_chunk` / `gif_end` / `gif_abort` / `gif_delete` | chunked GIF upload with CRC32 |
+| `gif_begin` (`slot` 0-3) / `gif_chunk` / `gif_end` / `gif_abort` / `gif_delete` (`slot`) | chunked GIF upload with CRC32 into one of 4 slots |
+| `gif_list` / `gif_cfg` (`rot` seconds, `slot`) | what is stored, rotation interval, which slot plays |
+| `layer` (`val`: 0-2, `next`, `prev`) | switch the pad's key layer; the pad also emits `{"evt":"layer","n":1}` |
+| `remap` / `reset_keys` / `getkeys` accept `"layer": 0-2`; `getkeys` takes `"slot": 1-7` for one slot's full spec | per-layer key maps |
+| spec types `layer`, `mouse`, `host` | `{"type":"layer","val":"next"}`, `{"type":"mouse","val":{"btn":"left","act":"click"}}` / `{"wheel":3}` / `{"move":[dx,dy]}`, `{"type":"host","val":{"op":"url\|app\|shell\|file\|clipboard\|notify","arg":"..."}}`; `host` makes the pad send `{"evt":"host","op":...,"arg":...}` to the app |
+| `info_cards` (`cards`, `badges`, `rot`) | content of the Info screen (mode 6) |
+| `factory` (`what`: keys / settings / gifs, `confirm`: true), `boot_opt` (`nodisp`), `safe_retry` | recovery from safe mode / bad settings |
+| `ota` (`val`, `pass`) | opt-in Wi-Fi OTA |
 
 Error codes include `json`, `unknown_cmd`, `key`, `spec`, `too_long`, `nvs_full`, `pin`, `pin_protected`, `no_display`,
 `no_hid`, `no_space`, `crc`, `seq`, `b64`.
@@ -199,11 +259,14 @@ Error codes include `json`, `unknown_cmd`, `key`, `spec`, `too_long`, `nvs_full`
 ## Testing without hardware
 
 `tools/` contains an emulator test-suite: the real firmware (compiled with `-DDC_SIM`) runs inside Espressif's QEMU
-ESP32-S3 and ~15 test groups drive the protocol, the screens (with PNG screenshots), the filesystem / GIF path,
+ESP32-S3 and 21 test groups drive the protocol, the screens (with PNG screenshots), the filesystem / GIF path,
 persistence, a fuzz run and safe mode. See `tools/README.md`. The app's *Simulate pad* uses a Python model of the same protocol.
-App tests (run headless with `xvfb-run -a python3 tools/<name>.py`): `app_selftest.py` (connection, Dev tab, key upload +
-read-back), `macro_test.py` (macro creator + the 50-action library), `giflib_test.py` (GIF library against a mock Tenor /
-GIPHY server, plus PC-volume mirroring). `docs/FEATURES.md` maps every requirement to the code and the test that covers it,
+App tests (run headless with `xvfb-run -a python3 tools/<name>.py`): `lib_test.py` (the `desk_lib` modules: OTA client against a fake
+device, backups incl. hostile zips, feeds, active-window rules, host-action safety, recorder), `app_selftest.py` (connection, Dev tab, key
+upload + read-back), `macro_test.py` (macro creator + the 50-action library + the "virtual key waits 200 s" regression), `giflib_test.py` (GIF
+library, GIF slots, PC-volume mirroring), `layers_test.py`, `profiles_test.py`, `info_test.py`, `features_test.py` (computer / mouse actions,
+recorder, firmware status, recovery, backup / restore, hardware-test and setup wizards, command palette). The same suites run on every push in
+`.github/workflows/ci.yml`, together with a firmware compile matrix and the QEMU suite (`tools/run_emulator_suite.sh`). `docs/FEATURES.md` maps every requirement to the code and the test that covers it,
 and lists what only real hardware can prove.
 
 ## Wiring (from the project spec)

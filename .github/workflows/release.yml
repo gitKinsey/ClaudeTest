@@ -1,0 +1,55 @@
+name: Release
+
+# Tag a version (git tag v1.3.0 && git push --tags): builds a double-click app for Windows, macOS and Linux and attaches
+# it, the prebuilt firmware images and their checksums to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, name: windows}
+          - {os: macos-latest, name: macos}
+          - {os: ubuntu-22.04, name: linux}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Linux: Tk
+        if: matrix.name == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk xvfb
+      - run: pip install customtkinter pyserial psutil pillow pynput esptool pyinstaller
+      - name: Windows: volume mirroring
+        if: matrix.name == 'windows'
+        run: pip install pycaw
+      - run: python packaging/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskCompanion-${{ matrix.name }}
+          path: dist/DeskCompanion-*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.zip
+            firmware/CoreBringup.bin
+            firmware/DeskCompanion.bin
+            firmware/SHA256SUMS
+          generate_release_notes: true

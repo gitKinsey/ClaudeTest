@@ -40,10 +40,11 @@ import serial
 from serial.tools import list_ports
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageTk
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))     # desk_lib/ sits next to this file
+APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
+sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
 from desk_lib import activewin, backup, espota, feeds, hostactions, recorder, wizards     # noqa: E402
-from desk_lib.ui import (ACCENT, CARD, CARD2, CARD3, ERR, FAINT, LINE, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
+from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
 APP_VERSION = "1.3.0"
@@ -1456,10 +1457,10 @@ class Device:
             raise DeviceError(f"snapshot incomplete ({len(raw)} of {head.get('bytes')} bytes)")
         return rgb565be_image(raw, int(head.get("w", 240)), int(head.get("h", 240)))
 
-    def upload_gif(self, data, progress=None):
+    def upload_gif(self, data, progress=None, slot=0):
         self.busy = True
         try:
-            r = self.request({"cmd": "gif_begin", "size": len(data), "crc": zlib.crc32(data) & 0xFFFFFFFF}, timeout=20)
+            r = self.request({"cmd": "gif_begin", "size": len(data), "crc": zlib.crc32(data) & 0xFFFFFFFF, **({"slot": slot} if slot else {})}, timeout=20)
             chunk, sent, seq = int(r.get("chunk", 768)), 0, 0
             while sent < len(data):
                 part = data[sent:sent + chunk]
@@ -3724,6 +3725,9 @@ class App(ctk.CTk):
         bg, fg = ("#121215", "#f4f4f6") if d else ("#ffffff", "#0b0b0d")
         style.configure("Pad.Treeview", background=bg, fieldbackground=bg, foreground=fg)
         style.map("Pad.Treeview", background=[("selected", "#0e7490")], foreground=[("selected", "#ffffff")])
+        hbg, hfg = ("#1a1a1f", "#8e8e9b") if d else ("#f0f0f3", "#62626d")
+        style.configure("Pad.Treeview.Heading", background=hbg, foreground=hfg, relief="flat", borderwidth=0)
+        style.map("Pad.Treeview.Heading", background=[("active", hbg)])
         if hasattr(self, "seq_list"):
             self.seq_list.configure(bg="#1a1a1f" if d else "#f0f0f3", fg=fg, selectbackground="#0e7490")
 
@@ -3795,7 +3799,7 @@ class App(ctk.CTk):
         ctk.CTkSwitch(right, text="Upload every change immediately", variable=self.autoup_var).pack(anchor="w", padx=12, pady=2)
         ctk.CTkLabel(right, text="Orange dots on the pad mark changes the physical device does not have yet.",
                      text_color=MUTED, wraplength=280, justify="left").pack(anchor="w", padx=12)
-        ctk.CTkButton(right, text="Reset all keys to defaults", fg_color="#555", command=self.reset_defaults).pack(
+        ctk.CTkButton(right, text="Reset this layer to defaults", fg_color="#555", command=self.reset_defaults).pack(
             fill="x", padx=12, pady=(6, 2))
 
         ctk.CTkLabel(right, text="Test on this PC", font=bold).pack(anchor="w", padx=12, pady=(12, 2))
@@ -4595,6 +4599,7 @@ class App(ctk.CTk):
         self._profile_state.update(win=None, layer=None)
         self.refresh_fw_status()
         self.refresh_health()
+        self.refresh_pad_gifs()
         if not self.cfg.get("wizard_done") and not simulated and not getattr(self, "_wizard_offered", False):
             self._wizard_offered = True
             self.after(800, self.open_wizard)
@@ -4609,6 +4614,8 @@ class App(ctk.CTk):
         self.conn_lbl.configure(text="Not connected", text_color=WARN)
         self.conn_pill.set("Not connected", WARN)
         self.refresh_fw_status()
+        if hasattr(self, "pad_gif_box"):
+            self.refresh_pad_gifs()
         self.conn_btn.configure(text="Connect")
         self.sim_btn.configure(text="Simulate pad (no hardware)")
         self.set_status("Pad disconnected - waiting for it to reappear" if self.auto_flag else "Disconnected")
@@ -4955,7 +4962,7 @@ class App(ctk.CTk):
         self.gif_canvas.create_oval(0, 0, LCD - 1, LCD - 1, outline="#3b82f6", width=2)
         self._pv_item = self.gif_canvas.create_image(0, 0, anchor="nw")
         self.gif_canvas.tag_lower(self._pv_item)
-        ctk.CTkLabel(left, text="Round display preview", text_color=MUTED).pack(pady=(0, 10))
+        ctk.CTkLabel(left, text="Round display preview", text_color=MUTED).pack(pady=(0, 6))
 
         right = ctk.CTkFrame(tab, fg_color="transparent")
         right.pack(side="left", fill="both", expand=True, padx=6, pady=6)
@@ -4999,9 +5006,25 @@ class App(ctk.CTk):
         self.gif_bar.grid(row=3, column=0, columnspan=3, padx=10, pady=6, sticky="w")
         self.gif_bar.set(0)
         self.upload_btn = ctk.CTkButton(ctrl, text="Upload to pad", state="disabled", command=self.upload_gif)
-        self.upload_btn.grid(row=4, column=0, padx=10, pady=(4, 10), sticky="w")
-        ctk.CTkButton(ctrl, text="Delete GIF on pad", fg_color="#555", command=self.delete_gif).grid(
-            row=4, column=1, sticky="w", padx=8, pady=(4, 10))
+        self.upload_btn.grid(row=4, column=0, padx=10, pady=(4, 6), sticky="w")
+        self.gif_slot_var = tk.StringVar(value="Slot 1")
+        ctk.CTkOptionMenu(ctrl, values=["Slot 1", "Slot 2", "Slot 3", "Slot 4"], variable=self.gif_slot_var, width=100,
+                          command=lambda _v: None).grid(row=4, column=1, sticky="w", padx=8, pady=(4, 6))
+        ctk.CTkButton(ctrl, text="Clear this slot on the pad", fg_color="#555", command=self.delete_gif).grid(row=4, column=2, sticky="w", padx=8, pady=(4, 6))
+        sl = ctk.CTkFrame(left, fg_color="transparent", border_width=0)
+        sl.pack(fill="x", padx=12, pady=(4, 12))
+        top = ctk.CTkFrame(sl, fg_color="transparent", border_width=0)
+        top.pack(fill="x")
+        ui.heading(top, "On the pad", 14).pack(side="left")
+        ui.secondary_button(top, "Refresh", self.refresh_pad_gifs, width=70).pack(side="right")
+        rot = ctk.CTkFrame(sl, fg_color="transparent", border_width=0)
+        rot.pack(fill="x", pady=(6, 2))
+        ctk.CTkLabel(rot, text="Rotate every").pack(side="left", padx=(0, 6))
+        self.gif_rot_var = tk.StringVar(value="off")
+        ctk.CTkOptionMenu(rot, values=[c[0] for c in self.ROT_CHOICES], variable=self.gif_rot_var, width=120, command=self._gif_rot_changed).pack(side="left")
+        self.pad_gif_box = ctk.CTkFrame(sl, fg_color="transparent", border_width=0)
+        self.pad_gif_box.pack(fill="x", pady=(6, 0))
+        self.pad_gifs, self.pad_gif_free = {}, None
 
     # -- tiles
     def _gif_tile(self, parent, idx, label, pil, command, popup=None):
@@ -5227,6 +5250,8 @@ class App(ctk.CTk):
         self.upload_btn.configure(state="disabled")
         self.gif_bar.set(0)
         free = self.dev.info.get("fs_free") if self.dev.connected else None
+        if self.dev.connected and self.pad_gif_free is not None:
+            free = self.pad_gif_free + self.pad_gifs.get(self._gif_slot(), 0)      # the upload replaces whatever is in its own slot
         return min(max((free or 1_000_000) - 16384, 50_000), 1_400_000), self.dither_var.get()
 
     def choose_gif(self):
@@ -5287,13 +5312,18 @@ class App(ctk.CTk):
         self._pv_idx += 1
         self._pv_job = self.after(self.gif_durs[i], self._preview_tick)
 
+    def _gif_slot(self):
+        return int(self.gif_slot_var.get().split()[1]) - 1
+
     def upload_gif(self):
         if not self.dev.connected:
             return self.set_status("Connect the pad first", error=True)
-        data = self.gif_data
+        data, slot = self.gif_data, self._gif_slot()
+        if slot and int(self.dev.info.get("gifs", -1)) < 0:
+            return self.set_status("This pad's firmware has a single GIF slot - update it (Device -> Firmware) to use more", error=True)
         self.upload_btn.configure(state="disabled")
         self.gif_bar.set(0)
-        self.set_status("Uploading GIF...")
+        self.set_status(f"Uploading GIF to slot {slot + 1}...")
 
         def progress(f):
             self.post(lambda: (self.gif_bar.set(f), setattr(self.pad, "upload_frac", f)))
@@ -5306,12 +5336,58 @@ class App(ctk.CTk):
             finished()
             self.gif_bar.set(1)
             self.pad.set_mode(M_GIF)
-            self.set_status("GIF uploaded - the pad switched to GIF mode")
-        self.bg(lambda: self.dev.upload_gif(data, progress), done, "Upload failed", fail=finished)
+            self.set_status(f"GIF uploaded to slot {slot + 1} - the pad switched to GIF mode")
+            self.refresh_pad_gifs()
+        self.bg(lambda: self.dev.upload_gif(data, progress, slot), done, "Upload failed", fail=finished)
 
-    def delete_gif(self):
-        self.bg(lambda: self.dev.request({"cmd": "gif_delete"}),
-                lambda _: self.set_status("GIF removed - the built-in demo animation will be regenerated"), "Delete failed")
+    def delete_gif(self, slot=None):
+        slot = self._gif_slot() if slot is None else slot
+        self.bg(lambda: self.dev.request({"cmd": "gif_delete", **({"slot": slot} if slot else {})}),
+                lambda _: (self.set_status(f"GIF slot {slot + 1} cleared" + (" - the built-in demo animation will be regenerated" if slot == 0 else "")),
+                           self.refresh_pad_gifs()), "Delete failed")
+
+    # ---- the pad's own GIF slots
+    def refresh_pad_gifs(self):
+        if not self.dev.connected:
+            self.pad_gifs = {}
+            return self._draw_pad_gifs({"slots": [], "cur": 0, "rot": 0, "max": 1})
+        self.bg(lambda: self.dev.request({"cmd": "gif_list"}), self._draw_pad_gifs, "Could not list the pad's GIFs")
+
+    def _draw_pad_gifs(self, r):
+        if "slots" not in r:
+            r = {"slots": [], "cur": 0, "rot": 0, "max": 1}
+        self.pad_gifs = {x["s"]: x["size"] for x in r["slots"]}
+        self.pad_gif_free = r.get("fs_free")
+        for w in self.pad_gif_box.winfo_children():
+            w.destroy()
+        if not self.dev.connected:
+            ui.muted(self.pad_gif_box, "Connect the pad to see what is stored on it.").pack(anchor="w")
+            return
+        for sl in range(int(r.get("max", 4))):
+            row = ctk.CTkFrame(self.pad_gif_box, fg_color=CARD2, corner_radius=8, border_width=0)
+            row.pack(fill="x", pady=2)
+            have = sl in self.pad_gifs
+            cur = have and sl == r.get("cur")
+            ctk.CTkLabel(row, text=f"{sl + 1}", width=22, anchor="w", font=ui.font(13, "bold")).pack(side="left", padx=(12, 2), pady=6)
+            ctk.CTkLabel(row, text=(f"{self.pad_gifs[sl] / 1024:.0f} KB" if have else "empty") + (" - playing" if cur else ""), width=104, anchor="w",
+                         text_color=ACCENT if cur else (TEXT if have else FAINT)).pack(side="left")
+            if have:
+                ui.secondary_button(row, "Show", lambda sl=sl: self._pad_gif_show(sl), width=50).pack(side="right", padx=(2, 6))
+                ui.secondary_button(row, "Del", lambda sl=sl: self.delete_gif(sl), width=40).pack(side="right", padx=2)
+        self.gif_rot_var.set(self._rot_label(int(r.get("rot", 0))))
+
+    ROT_CHOICES = [("off", 0), ("5 seconds", 5), ("10 seconds", 10), ("30 seconds", 30), ("1 minute", 60), ("5 minutes", 300)]
+
+    def _rot_label(self, secs):
+        return min(self.ROT_CHOICES, key=lambda c: abs(c[1] - secs))[0]
+
+    def _pad_gif_show(self, slot):
+        self.bg(lambda: self.dev.request({"cmd": "gif_cfg", "slot": slot}), lambda r: (self.pad.set_mode(M_GIF), self._draw_pad_gifs(r)), "Could not switch GIF")
+
+    def _gif_rot_changed(self, label):
+        secs = dict(self.ROT_CHOICES)[label]
+        if self.dev.connected:
+            self.bg(lambda: self.dev.request({"cmd": "gif_cfg", "rot": secs}), self._draw_pad_gifs, "Could not set rotation")
 
     # ---- profiles: the pad's layer follows the focused program
     def _build_profiles(self, tab):
@@ -5784,7 +5860,7 @@ class App(ctk.CTk):
                 self.fw_banner.pack_forget()
 
     def flash_firmware(self, which, button=None):
-        script = Path(__file__).resolve().parent / "firmware" / "flash.py"
+        script = APP_DIR / "firmware" / "flash.py"
         if not script.is_file():
             return self.set_status("firmware/flash.py not found next to the app", error=True)
         label = which if which in ("core", "full") else os.path.basename(which)
@@ -5804,7 +5880,9 @@ class App(ctk.CTk):
         self.devtab.sys(f"===== flashing '{label}' =====")
 
         def work():
-            cmd = [sys.executable, "-u", str(script), "--image", which, "--yes"] + (["--port", port] if port else [])
+            args = ["--image", which, "--yes"] + (["--port", port] if port else [])
+            # a packaged app has no Python to run flash.py with: the same executable runs it in "flasher mode" instead
+            cmd = [sys.executable, "--flash-helper"] + args if getattr(sys, "frozen", False) else [sys.executable, "-u", str(script)] + args
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             for line in p.stdout:
                 line = line.rstrip()
@@ -5842,7 +5920,7 @@ class App(ctk.CTk):
     def ota_update(self):
         if not self.dev.connected:
             return self.set_status("Connect the pad first", error=True)
-        image = Path(__file__).resolve().parent / "firmware" / "DeskCompanion.bin"
+        image = APP_DIR / "firmware" / "DeskCompanion.bin"
         if not image.is_file():
             return self.set_status("firmware/DeskCompanion.bin not found", error=True)
         pw = self.ota_pw.get()
@@ -6174,5 +6252,15 @@ class App(ctk.CTk):
             self.upload_all()
 
 
+def _flash_helper(argv):
+    """`DeskCompanion --flash-helper --image full ...`: run firmware/flash.py inside this (possibly frozen) interpreter."""
+    base = APP_DIR / "firmware"
+    sys.path.insert(0, str(base))
+    import flash                                          # firmware/flash.py
+    return flash.main(argv)
+
+
 if __name__ == "__main__":
+    if "--flash-helper" in sys.argv:
+        sys.exit(_flash_helper([a for a in sys.argv[1:] if a != "--flash-helper"]))
     App().mainloop()

@@ -36,6 +36,11 @@ Run these under `xvfb-run -a` on a headless machine; all talk to the built-in si
 * `python3 tools/app_selftest.py` - connection, the whole Dev tab, key upload and read-back verification, diagnostic report.
 * `python3 tools/macro_test.py` - the 50-action library, Macro Creator (4 modifiers + key, text, delays, sequences,
   validation), upload and read-back.
+* `python3 tools/lib_test.py` (no display needed) - the `desk_lib` modules in isolation: OTA client against a fake device, backup zips (incl.
+  hostile ones), feeds (Open-Meteo / ICS / badge server against a local mock), active-window rules, the host-action whitelist, the recorder.
+* `python3 tools/layers_test.py`, `profiles_test.py`, `info_test.py`, `features_test.py` - layers, per-program profiles, info-screen feeds,
+  and the rest of the app features (computer / mouse actions, firmware status, recovery, backup / restore, wizards, command palette).
+* `tools/run_emulator_suite.sh` - builds both emulator images with arduino-cli and runs the whole QEMU suite (what CI does).
 * `python3 tools/giflib_test.py` - the GIF tab: 16 built-in animations, My GIFs folder (add / duplicate names / delete),
   Online search against a local mock Tenor + GIPHY server (trending, search, wrong key, no network, non-GIF download,
   stale searches), upload with byte comparison, and the PC-volume mirroring loop (parsing of `pactl` / `amixer` /
