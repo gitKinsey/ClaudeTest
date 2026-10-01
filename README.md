@@ -152,9 +152,19 @@ command gets `{"ok":true/false,...}` except `stats`.
   `KeyboardLayout_xx_xx` tables it needs don't exist on 2.0.x. The sketch detects the core version
   at compile time (`ESP_ARDUINO_VERSION_MAJOR`) and compiles that feature out on older cores instead
   of failing to build; the pad still works standalone with plain US-ASCII key codes either way, and
-  the app's `layout` request gets a clean `nack` instead of silently doing nothing.
-- Verified by compiling the `.ino` with arduino-cli, end to end, against **both** ESP32 core 2.0.9
-  and 3.3.12 (TFT_eSPI 2.5.44, AnimatedGIF 2.2.3, Bounce2 2.72, ArduinoJson 7.4.2): 3.3.12 builds to
+  the app's `layout` request gets a clean `nack` instead of silently doing nothing. Supported
+  layouts are `en_US de_DE fr_FR es_ES it_IT pt_PT pt_BR sv_SE da_DK hu_HU` - Swiss-French and
+  Japanese are deliberately not offered: `KeyboardLayout_fr_CH`/`KeyboardLayout_ja_JP` were only
+  added to arduino-esp32 in 3.3.8/3.3.9, so every other 3.x release (which is most installs) does
+  not declare them at all - a hard compile error, not a runtime fallback - so including them would
+  have broken the build for most core 3.x users exactly like the 2.0.x case above.
+- A failed `prefs.putString()` in the `remap` handler (NVS, the ~20 KB settings partition, can fill
+  up if several key slots hold large custom macros) used to still `ack` as if the save had worked;
+  it now checks the return value and `nack`s with `nvs_full` so a remap that didn't actually persist
+  is visible instead of silently reverting after the next reboot.
+- Verified by compiling the `.ino` with arduino-cli, end to end, against ESP32 cores 2.0.9, 3.2.1
+  (representative of the pre-3.3.8 releases most 3.x users have) and 3.3.12 (TFT_eSPI 2.5.44,
+  AnimatedGIF 2.2.3, Bounce2 2.72, ArduinoJson 7.4.2): 3.3.12 builds to
   83 % of the app partition / 107 KB RAM; 2.0.9 to 64 % / 84 KB RAM (smaller, since the keyboard-layout
   tables are compiled out). All function prototypes are now written explicitly rather than left to the
   Arduino IDE's automatic (ctags-based) generator, and the two backlight functions no longer have

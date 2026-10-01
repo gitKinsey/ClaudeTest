@@ -984,11 +984,13 @@ class WinFocus:
         return self.api.title(h) if ok else None
 
 
+# fr_CH and ja_JP are deliberately absent: they only exist in arduino-esp32 3.3.8+/3.3.9+, which most
+# installed 3.x cores predate, so the firmware does not compile them in (see DeskCompanion.ino).
 LANGID_LAYOUT = {0x0407: "de_DE", 0x0807: "de_DE", 0x0C07: "de_DE", 0x1007: "de_DE", 0x1407: "de_DE",
-                 0x040C: "fr_FR", 0x080C: "fr_FR", 0x0C0C: "fr_FR", 0x100C: "fr_CH", 0x0410: "it_IT",
+                 0x040C: "fr_FR", 0x080C: "fr_FR", 0x0C0C: "fr_FR", 0x0410: "it_IT",
                  0x0810: "it_IT", 0x040A: "es_ES", 0x0C0A: "es_ES", 0x0816: "pt_PT", 0x0416: "pt_BR",
-                 0x041D: "sv_SE", 0x0406: "da_DK", 0x040E: "hu_HU", 0x0411: "ja_JP"}
-LAYOUTS = ["en_US", "de_DE", "fr_FR", "fr_CH", "es_ES", "it_IT", "pt_PT", "pt_BR", "sv_SE", "da_DK", "hu_HU", "ja_JP"]
+                 0x041D: "sv_SE", 0x0406: "da_DK", 0x040E: "hu_HU"}
+LAYOUTS = ["en_US", "de_DE", "fr_FR", "es_ES", "it_IT", "pt_PT", "pt_BR", "sv_SE", "da_DK", "hu_HU"]
 
 
 def detect_layout():

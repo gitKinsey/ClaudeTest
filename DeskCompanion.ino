@@ -874,12 +874,17 @@ static void uploadAbort() {
 // at all, so this whole feature is compiled out there and the pad simply stays on US ASCII mapping.
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 #define DC_HAS_KB_LAYOUT 1
+// KeyboardLayout_fr_CH and KeyboardLayout_ja_JP were only added to arduino-esp32 in 3.3.8 and 3.3.9
+// respectively - every other 3.x release (3.0.0 through 3.3.7/3.3.8, i.e. most real-world installs)
+// does not declare them at all, which is a hard compile error, not a runtime fallback. Left out here
+// on purpose; everything else in this table has been available since 3.1.0 (the first 3.x release
+// with any keyboard-layout support at all).
 struct LayoutDef { const char* name; const uint8_t* map; };
 static const LayoutDef LAYOUTS[] = {
   {"en_US", KeyboardLayout_en_US}, {"de_DE", KeyboardLayout_de_DE}, {"fr_FR", KeyboardLayout_fr_FR},
-  {"fr_CH", KeyboardLayout_fr_CH}, {"es_ES", KeyboardLayout_es_ES}, {"it_IT", KeyboardLayout_it_IT},
+  {"es_ES", KeyboardLayout_es_ES}, {"it_IT", KeyboardLayout_it_IT},
   {"pt_PT", KeyboardLayout_pt_PT}, {"pt_BR", KeyboardLayout_pt_BR}, {"sv_SE", KeyboardLayout_sv_SE},
-  {"da_DK", KeyboardLayout_da_DK}, {"hu_HU", KeyboardLayout_hu_HU}, {"ja_JP", KeyboardLayout_ja_JP}};
+  {"da_DK", KeyboardLayout_da_DK}, {"hu_HU", KeyboardLayout_hu_HU}};
 static const uint8_t* layoutByName(const char* n) {
   for (const LayoutDef& l : LAYOUTS) if (!strcmp(l.name, n)) return l.map;
   return nullptr;
@@ -920,7 +925,7 @@ static void handleLine(const String& line) {
     String s; serializeJson(spec, s);
     if (s.length() > 3800) { nack("too_long"); return; }
     char k[4]; slotKey(key - 1, k);
-    prefs.putString(k, s);
+    if (prefs.putString(k, s) == 0) { nack("nvs_full"); return; }   // NVS (~20KB) can fill up with several large macros
     ack("remap");
   }
   else if (!strcmp(cmd, "reset_keys")) { for (uint8_t i = 0; i < 7; i++) { char k[4]; slotKey(i, k); prefs.remove(k); } ack("reset_keys"); }
