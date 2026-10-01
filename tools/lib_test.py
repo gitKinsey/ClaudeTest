@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from desk_lib import activewin, backup, espota, feeds, hostactions   # noqa: E402
+from desk_lib import activewin, backup, espota, feeds, hostactions, recorder   # noqa: E402
 
 tmp = Path(tempfile.mkdtemp(prefix="dclib_"))
 
@@ -229,4 +229,29 @@ with zipfile.ZipFile(b, "w") as z: z.writestr("other.txt", "x")
 try: backup.read_backup(b.getvalue()); raise SystemExit("foreign zip accepted")
 except ValueError as e: assert "not a Desk Companion backup" in str(e)
 print("backup OK")
+# ------------------------------------------------------------------ macro recorder
+def rec(events, **kw):
+    r = recorder.MacroRecorder(**kw)
+    for kind, name, t in events:
+        (r.key_down if kind == "d" else r.key_up)(name, t)
+    return r, r.finish()
+_, st = rec([("d", "h", 0.0), ("u", "h", 0.05), ("d", "i", 0.1), ("u", "i", 0.15), ("d", "space", 0.2), ("d", "a", 0.3)])
+assert st == [{"text": "hi a"}], st
+_, st = rec([("d", "ctrl_l", 0), ("d", "c", 0.05), ("u", "c", 0.1), ("u", "ctrl_l", 0.12), ("d", "ctrl_l", 0.5), ("d", "shift", 0.52), ("d", "T", 0.55)])
+assert st == [{"combo": ["CTRL", "c"]}, {"delay": 500}, {"combo": ["CTRL", "SHIFT", "t"]}], st
+_, st = rec([("d", "shift", 0), ("d", "H", 0.05), ("u", "H", 0.1), ("u", "shift", 0.12), ("d", "i", 0.2), ("d", "enter", 0.3), ("d", "f5", 0.4), ("d", "gui", 0.45), ("d", "r", 0.5)])
+assert st == [{"text": "Hi"}, {"combo": ["ENTER"]}, {"combo": ["F5"]}, {"combo": ["GUI", "r"]}], st
+_, st = rec([("d", "a", 0), ("d", "b", 3.0), ("d", "c", 20.0)])                                  # long pauses are capped
+assert st == [{"text": "a"}, {"delay": 3000}, {"text": "b"}, {"delay": 5000}, {"text": "c"}], st
+_, st = rec([("d", "x", 0), ("d", "volume_up", 0.1), ("d", "\u00e9", 0.2), ("d", "y", 0.3)])        # unsupported keys are skipped
+assert st == [{"text": "xy"}], st
+r, st = rec([("d", "a", 0)] + [e for i in range(100) for e in (("d", "ctrl", 1 + i), ("d", "z", 1.1 + i), ("u", "z", 1.2 + i), ("u", "ctrl", 1.3 + i))])
+assert 60 <= len(st) <= 64 and r.truncated, (len(st), r.truncated)
+_, st = rec([("d", "a", 0), ("d", "tab", 9.0)], gap_ms=350)
+assert st[-1] == {"combo": ["TAB"]}
+r = recorder.MacroRecorder(); r.key_down("a", 0); r.key_down("b", 5)
+assert r.finish() == [{"text": "a"}, {"delay": 5000}, {"text": "b"}]
+r = recorder.MacroRecorder(); r.key_down("a", 0); r.key_down("enter", 9)
+r.steps.append({"delay": 100}); assert r.finish()[-1] == {"combo": ["ENTER"]}, "a trailing pause is dropped"
+print("recorder OK")
 print("ALL LIB TESTS PASSED")
