@@ -3967,8 +3967,8 @@ class App(ctk.CTk):
             ctk.CTkButton(sq, text=t, width=100, fg_color="#555", command=f).grid(row=r, column=1, padx=4, pady=2, sticky="w")
         adv = ctk.CTkFrame(sq, fg_color="transparent")
         adv.grid(row=5, column=0, columnspan=3, sticky="w", padx=8, pady=4)
-        self.delay_var = tk.StringVar(value="200")
-        ctk.CTkEntry(adv, textvariable=self.delay_var, width=70).pack(side="left", padx=4)
+        self.seq_delay_var = tk.StringVar(value="200")
+        ctk.CTkEntry(adv, textvariable=self.seq_delay_var, width=70).pack(side="left", padx=4)
         ctk.CTkButton(adv, text="Add delay (ms)", width=120, command=self.seq_add_delay).pack(side="left", padx=(0, 16))
         self.media_var = tk.StringVar(value="PLAY_PAUSE")
         ctk.CTkOptionMenu(adv, values=MEDIA_CHOICES, variable=self.media_var, width=140).pack(side="left", padx=4)
@@ -4052,7 +4052,7 @@ class App(ctk.CTk):
     def seq_add_delay(self):
         def go():
             try:
-                ms = int(self.delay_var.get())
+                ms = int(self.seq_delay_var.get())
             except ValueError:
                 raise ValueError("Delay must be a whole number of milliseconds")
             if not 0 <= ms <= 60000:

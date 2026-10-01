@@ -35,6 +35,27 @@ def pump(n=20, cond=None):
 app.toggle_simulate()
 assert pump(80, lambda: app.dev.connected), "no connection to the simulated pad"
 sim = app.dev.ser.sim
+# --- regression: a virtual key press acts at once. (The Macro Creator's "delay" field once shared a variable with the
+#     Virtual Pad's test-delay menu, so every press waited 200 *seconds*.)
+class Rec:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, spec, stop=None):
+        self.calls.append(spec)
+
+
+rec = Rec()
+app.host = m.HostInput(backend=rec)
+app.live_var.set(True)
+assert app.delay_var.get() == "0 s", app.delay_var.get()
+for slot, want in ((5, ("media", "MUTE")), (4, ("media", "PLAY_PAUSE"))):
+    t0, n = time.time(), len(rec.calls)
+    app.exec_slot(slot)
+    assert pump(40, lambda: len(rec.calls) > n), f"slot {slot} did not fire"
+    assert time.time() - t0 < 2.0 and tuple(rec.calls[-1]) == want, (slot, rec.calls[-1], time.time() - t0)
+app.live_var.set(False)
+
 app.tabs.set("Macro Creator")
 pump(5)
 
@@ -83,17 +104,17 @@ for v, val in zip(app.mod_vars, ("CTRL", "-", "-", "-")):
     v.set(val)
 app.key_var.set("l")
 app.seq_add_combo()
-app.delay_var.set("350")
+app.seq_delay_var.set("350")
 app.seq_add_delay()
 app.text_box.insert("1.0", "hello")
 app.enter_var.set(False)
 app.seq_add_text()
 app.media_var.set("PLAY_PAUSE")
 app.seq_add_media()
-app.delay_var.set("999999")
+app.seq_delay_var.set("999999")
 app.seq_add_delay()
 assert "between 0 and 60000" in app.status.cget("text")
-app.delay_var.set("abc")
+app.seq_delay_var.set("abc")
 app.seq_add_delay()
 assert "whole number" in app.status.cget("text")
 assert len(app.macro_steps) == 4, app.macro_steps
