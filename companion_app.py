@@ -24,6 +24,8 @@ import platform
 import subprocess
 import sys
 import queue
+import re
+import shutil
 import threading
 import time
 import traceback
@@ -153,6 +155,8 @@ def load_config():
     cfg.setdefault("notify", True)
     cfg.setdefault("live_test", True)
     cfg.setdefault("layout", "auto")
+    cfg.setdefault("online_keys", {})
+    cfg.setdefault("host_media_sync", True)
     return cfg
 
 
@@ -343,6 +347,94 @@ def _draw_check(d, i, n):
     d.ellipse((cx - 92, cy - 92, cx + 92, cy + 92), outline=(70, 220, 110), width=4)
 
 
+def _draw_bounce(d, i, n):
+    t = i / n
+    for k, col in enumerate(((255, 70, 170), (0, 210, 255), (255, 176, 0))):
+        ph = (t + k / 3.0) % 1.0
+        x = 60 + 60 * k
+        y = 190 - abs(math.sin(ph * math.pi)) * 120
+        sq = 1 - 0.25 * (1 - abs(math.sin(ph * math.pi))) ** 6
+        d.ellipse((x - 20, y - 20 * sq, x + 20, y + 20 * sq), fill=col)
+    d.line((30, 212, 210, 212), fill=(70, 76, 92), width=3)
+
+
+def _draw_equalizer(d, i, n):
+    t = i / n
+    for b in range(11):
+        h = 20 + 80 * (0.5 + 0.5 * math.sin(2 * math.pi * (t * (1 + b % 3) + b * 0.13)))
+        hue = b / 11.0
+        r, g, bl = (int(c * 255) for c in colorsys.hsv_to_rgb(hue * 0.7, 0.9, 1))
+        d.rectangle((38 + b * 15, 190 - h, 38 + b * 15 + 10, 190), fill=(r, g, bl))
+
+
+def _draw_wave(d, i, n):
+    t = i / n
+    for layer, col in enumerate(((0, 120, 255), (0, 210, 255), (120, 255, 240))):
+        pts = [(x, 120 + (18 + layer * 6) * math.sin(2 * math.pi * (x / 90.0 + t * (1 + layer)) + layer))
+               for x in range(0, 241, 6)]
+        d.line(pts, fill=col, width=5)
+
+
+def _draw_fireworks(d, i, n):
+    t = i / n
+    for k, (cx, cy, hue) in enumerate(((80, 90, 0.0), (160, 110, 0.55), (120, 150, 0.3))):
+        ph = (t * 1.5 + k * 0.33) % 1.0
+        for s in range(14):
+            a = 2 * math.pi * s / 14
+            r = 8 + 55 * ph
+            x, y = cx + r * math.cos(a), cy + r * math.sin(a) + 18 * ph * ph
+            fade = 1 - ph
+            rgb = tuple(int(c * 255 * fade) for c in colorsys.hsv_to_rgb(hue, 0.8, 1))
+            d.ellipse((x - 3, y - 3, x + 3, y + 3), fill=rgb)
+
+
+def _draw_starfield(d, i, n):
+    t = i / n
+    for k in range(60):
+        ang = (k * 137.5) % 360
+        base = ((k * 17) % 100) / 100.0
+        r = ((base + t) % 1.0) ** 2 * 125
+        x, y = 120 + r * math.cos(math.radians(ang)), 120 + r * math.sin(math.radians(ang))
+        v = int(80 + 175 * (r / 125))
+        sz = 1 + 2 * (r / 125)
+        d.ellipse((x - sz, y - sz, x + sz, y + sz), fill=(v, v, 255))
+
+
+def _draw_plasma(d, i, n):
+    t = 2 * math.pi * i / n
+    for y in range(0, 240, 8):
+        for x in range(0, 240, 8):
+            v = math.sin(x / 31.0 + t) + math.sin(y / 23.0 - t) + math.sin((x + y) / 41.0 + t)
+            h = (v + 3) / 6.0
+            r, g, b = (int(c * 255) for c in colorsys.hsv_to_rgb(h, 0.9, 0.95))
+            d.rectangle((x, y, x + 7, y + 7), fill=(r, g, b))
+
+
+def _draw_radar(d, i, n):
+    for r in (30, 60, 90, 118):
+        d.ellipse((120 - r, 120 - r, 120 + r, 120 + r), outline=(0, 90, 60), width=2)
+    d.line((2, 120, 238, 120), fill=(0, 70, 50), width=1)
+    d.line((120, 2, 120, 238), fill=(0, 70, 50), width=1)
+    a0 = 360.0 * i / n
+    for j in range(24):
+        a = math.radians(a0 - j * 3 - 90)
+        g = int(255 * (1 - j / 24.0))
+        d.line((120, 120, 120 + 116 * math.cos(a), 120 + 116 * math.sin(a)), fill=(0, g, int(g * 0.4)), width=3)
+    b = math.radians(a0 * 2 - 90)
+    d.ellipse((120 + 70 * math.cos(b) - 5, 120 + 70 * math.sin(b) - 5, 120 + 70 * math.cos(b) + 5, 120 + 70 * math.sin(b) + 5), fill=(255, 70, 170))
+
+
+def _draw_spiral(d, i, n):
+    t = 2 * math.pi * i / n
+    for k in range(150):
+        a = k * 0.28 + t
+        r = 3 + k * 0.78
+        x, y = 120 + r * math.cos(a), 120 + r * math.sin(a)
+        rr = 2 + k / 40.0
+        rgb = tuple(int(c * 255) for c in colorsys.hsv_to_rgb((k / 150.0 + i / n) % 1.0, 0.85, 1))
+        d.ellipse((x - rr, y - rr, x + rr, y + rr), fill=rgb)
+
+
 GIF_PRESETS = {
     "Heartbeat": (24, 70, _draw_heartbeat),
     "Spinner": (24, 55, _draw_spinner),
@@ -352,12 +444,165 @@ GIF_PRESETS = {
     "Rainbow Sweep": (36, 45, _draw_rainbow),
     "Loading Dots": (24, 55, _draw_dots),
     "Checkmark Pop": (18, 70, _draw_check),
+    "Bouncing Balls": (24, 55, _draw_bounce),
+    "Equalizer": (24, 60, _draw_equalizer),
+    "Ocean Wave": (24, 60, _draw_wave),
+    "Fireworks": (24, 70, _draw_fireworks),
+    "Starfield": (24, 55, _draw_starfield),
+    "Plasma": (20, 80, _draw_plasma),
+    "Radar": (30, 60, _draw_radar),
+    "Hypno Spiral": (24, 60, _draw_spiral),
 }
 
 
 def build_preset(name):
     n_frames, duration_ms, draw_fn = GIF_PRESETS[name]
     return _preset_frames(n_frames, duration_ms, draw_fn)
+
+
+def preset_thumb(name, size=56):
+    """One representative frame only - the library grid must not render every frame of every preset at startup."""
+    n_frames, _d, draw_fn = GIF_PRESETS[name]
+    im = Image.new("RGB", (LCD, LCD), (10, 10, 14))
+    draw_fn(ImageDraw.Draw(im), n_frames // 3, n_frames)
+    return round_thumb(im, size)
+
+
+def round_thumb(im, size=56):
+    """Centre-crop to a square, shrink, and mask to a circle - how the picture will look on the round screen."""
+    w, h = im.size
+    s = min(w, h)
+    sq = im.convert("RGB").crop(((w - s) // 2, (h - s) // 2, (w - s) // 2 + s, (h - s) // 2 + s)).resize((size, size), RESAMPLE)
+    m = Image.new("L", (size * 4, size * 4), 0)
+    ImageDraw.Draw(m).ellipse((0, 0, size * 4 - 1, size * 4 - 1), fill=255)
+    m = m.resize((size, size), RESAMPLE)
+    return Image.composite(sq, Image.new("RGB", (size, size), (30, 33, 40)), m)
+
+
+# ============================================================================ "My GIFs" library (local folder)
+def gif_lib_dir():
+    d = Path(os.environ.get("DESK_COMPANION_GIFS") or Path.home() / ".desk_companion_gifs")
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def _safe_name(name):
+    keep = "".join(c if (c.isalnum() or c in " -_.") else "_" for c in name).strip(" ._") or "gif"
+    return keep[:60]
+
+
+def lib_list():
+    d = gif_lib_dir()
+    try:
+        files = [p for p in d.iterdir() if p.is_file() and p.suffix.lower() == ".gif"]
+    except OSError:
+        return []
+    return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def lib_add(src, name=None):
+    """Copy a .gif file (path) or raw bytes into the library; returns the stored path (never overwrites)."""
+    d = gif_lib_dir()
+    base = _safe_name(name or (Path(src).stem if not isinstance(src, (bytes, bytearray)) else "gif"))
+    dst, k = d / f"{base}.gif", 2
+    while dst.exists():
+        dst = d / f"{base}-{k}.gif"
+        k += 1
+    if isinstance(src, (bytes, bytearray)):
+        dst.write_bytes(bytes(src))
+    else:
+        dst.write_bytes(Path(src).read_bytes())
+    return dst
+
+
+def lib_delete(path):
+    try:
+        Path(path).unlink()
+        return True
+    except OSError:
+        return False
+
+
+def gif_file_thumb(path, size=56):
+    with Image.open(path) as im:
+        im.seek(0)
+        return round_thumb(im.copy(), size)
+
+
+# ============================================================================ online GIF search (Tenor / GIPHY, bring your own key)
+TENOR_BASE = os.environ.get("DESK_COMPANION_TENOR_BASE", "https://tenor.googleapis.com/v2")
+GIPHY_BASE = os.environ.get("DESK_COMPANION_GIPHY_BASE", "https://api.giphy.com/v1")
+ONLINE_PROVIDERS = {
+    "Tenor": "https://developers.google.com/tenor/guides/quickstart",
+    "GIPHY": "https://developers.giphy.com/",
+}
+MAX_ONLINE_BYTES = 6_000_000
+
+
+def _http_get(url, timeout=12, limit=MAX_ONLINE_BYTES):
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "DeskCompanion/1.2"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = r.read(limit + 1)
+    except urllib.error.HTTPError as e:
+        hint = " - is the API key right?" if e.code in (400, 401, 403) else " - rate limit reached, try again later" if e.code == 429 else ""
+        raise ValueError(f"the server answered HTTP {e.code}{hint}") from None
+    except urllib.error.URLError as e:
+        raise ValueError(f"no connection ({e.reason})") from None
+    except OSError as e:                                           # timeouts, resets
+        raise ValueError(f"no connection ({e})") from None
+    if len(data) > limit:
+        raise ValueError("file is too large")
+    return data
+
+
+def online_search(provider, key, query="", limit=24):
+    """Returns [{"title", "thumb", "url"}]. Empty query = trending / featured."""
+    import urllib.parse
+    q = (query or "").strip()
+    if not key:
+        raise ValueError(f"enter your {provider} API key first (free, see the link below)")
+    if provider == "Tenor":
+        ep = "search" if q else "featured"
+        qs = {"key": key, "client_key": "desk_companion", "limit": limit, "media_filter": "tinygif,gif,mediumgif", "contentfilter": "medium"}
+        if q:
+            qs["q"] = q
+        data = json.loads(_http_get(f"{TENOR_BASE}/{ep}?{urllib.parse.urlencode(qs)}").decode("utf-8", "replace"))
+        out = []
+        for r in data.get("results", []):
+            mf = r.get("media_formats", {})
+            full = mf.get("mediumgif") or mf.get("gif") or mf.get("tinygif")
+            th = mf.get("tinygif") or mf.get("gif") or full
+            if full and th:
+                out.append({"title": r.get("content_description") or r.get("title") or "", "thumb": th["url"], "url": full["url"]})
+        return out
+    if provider == "GIPHY":
+        ep = "search" if q else "trending"
+        qs = {"api_key": key, "limit": limit, "rating": "g"}
+        if q:
+            qs["q"] = q
+        data = json.loads(_http_get(f"{GIPHY_BASE}/gifs/{ep}?{urllib.parse.urlencode(qs)}").decode("utf-8", "replace"))
+        out = []
+        for r in data.get("data", []):
+            im = r.get("images", {})
+            full = im.get("fixed_height") or im.get("downsized") or im.get("original")
+            th = im.get("fixed_height_small") or im.get("fixed_width_small") or full
+            if full and th:
+                out.append({"title": r.get("title", ""), "thumb": th["url"], "url": full["url"]})
+        return out
+    raise ValueError(f"unknown provider {provider}")
+
+
+def online_download(url):
+    data = _http_get(url, timeout=25)
+    if data[:3] != b"GIF":
+        raise ValueError("the download is not a GIF file")
+    return data
 
 
 # ============================================================================ serial device
@@ -1202,6 +1447,112 @@ def spec_needs_focus(spec):
         return False
     t, v = spec
     return t in ("combo", "text") or (t == "macro" and any(("combo" in s or "text" in s) for s in v))
+
+
+class HostMedia:
+    """Reads this computer's real master volume / mute / playback state so the pad's media screen mirrors it.
+    Linux: pactl (PulseAudio / PipeWire) or amixer, plus playerctl; macOS: osascript; Windows: optional `pip install pycaw`
+    (best effort). Anything unavailable is reported as None, which the pad ignores - it then keeps its own estimate."""
+
+    def __init__(self, runner=None, system=None):
+        self._run = runner or self._shell
+        self.system = system or platform.system()
+        self.kind = self._detect()
+
+    @staticmethod
+    def _shell(args):
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout if r.returncode == 0 else None
+
+    def _have(self, tool):
+        return shutil.which(tool) is not None
+
+    def _detect(self):
+        if self.system == "Linux":
+            return "pactl" if self._have("pactl") else "amixer" if self._have("amixer") else ""
+        if self.system == "Darwin":
+            return "osascript" if self._have("osascript") else ""
+        if self.system == "Windows":
+            try:
+                import importlib.util
+                return "pycaw" if importlib.util.find_spec("pycaw") else ""
+            except Exception:                                         # noqa: BLE001
+                return ""
+        return ""
+
+    @property
+    def available(self):
+        return bool(self.kind)
+
+    def state(self):
+        """-> {"vol": 0..100|None, "muted": bool|None, "playing": bool|None}"""
+        out = {"vol": None, "muted": None, "playing": None}
+        try:
+            if self.kind == "pactl":
+                self._pactl(out)
+            elif self.kind == "amixer":
+                self._amixer(out)
+            elif self.kind == "osascript":
+                self._osascript(out)
+            elif self.kind == "pycaw":
+                self._pycaw(out)
+            if self.system == "Linux" and out["playing"] is None and self._have("playerctl"):
+                st = self._run(["playerctl", "status"])
+                if st is not None:
+                    out["playing"] = st.strip().lower() == "playing"
+        except Exception:                                             # noqa: BLE001 - a flaky mixer must never kill the sync loop
+            pass
+        return out
+
+    def _pactl(self, out):
+        v = self._run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"])
+        m = re.search(r"(\d+)%", v or "")
+        if m:
+            out["vol"] = max(0, min(100, int(m.group(1))))
+        mu = self._run(["pactl", "get-sink-mute", "@DEFAULT_SINK@"])
+        if mu:
+            out["muted"] = "yes" in mu.lower()
+        sinks = self._run(["pactl", "list", "short", "sinks"])
+        if sinks:                                                     # a RUNNING sink means something is making sound right now
+            out["playing"] = any(ln.split("\t")[-1].strip() == "RUNNING" for ln in sinks.splitlines() if ln.strip())
+
+    def _amixer(self, out):
+        t = self._run(["amixer", "get", "Master"]) or ""
+        m = re.search(r"\[(\d+)%\]", t)
+        if m:
+            out["vol"] = max(0, min(100, int(m.group(1))))
+        m = re.search(r"\[(on|off)\]", t)
+        if m:
+            out["muted"] = m.group(1) == "off"
+
+    def _osascript(self, out):
+        v = self._run(["osascript", "-e", "output volume of (get volume settings)"])
+        if v and v.strip().isdigit():
+            out["vol"] = max(0, min(100, int(v.strip())))
+        mu = self._run(["osascript", "-e", "output muted of (get volume settings)"])
+        if mu:
+            out["muted"] = mu.strip().lower() == "true"
+
+    def _pycaw(self, out):
+        from pycaw.pycaw import AudioUtilities
+        ep = None
+        try:
+            ep = AudioUtilities.GetSpeakers().EndpointVolume          # pycaw >= 2023.x
+        except AttributeError:
+            from comtypes import CLSCTX_ALL
+            from pycaw.pycaw import IAudioEndpointVolume
+            from ctypes import POINTER, cast
+            iface = AudioUtilities.GetSpeakers().Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            ep = cast(iface, POINTER(IAudioEndpointVolume))
+        out["vol"] = max(0, min(100, int(round(ep.GetMasterVolumeLevelScalar() * 100))))
+        out["muted"] = bool(ep.GetMute())
+        try:
+            out["playing"] = any(getattr(ss, "State", 0) == 1 for ss in AudioUtilities.GetAllSessions())
+        except Exception:                                             # noqa: BLE001
+            pass
 
 
 # --- Windows focus handling: a click on this app steals the keyboard focus, so hand it back before typing
@@ -2707,6 +3058,7 @@ class App(ctk.CTk):
         self.pending_slots, self._warned, self._was_connected = set(), set(), False
         self._fails = {}
         self.host, self.host_q, self.host_stop = HostInput(), queue.Queue(), threading.Event()
+        self.hostmedia = HostMedia()
         self.focus = None                                       # Windows: remembers the program you were working in
         if platform.system() == "Windows":
             try:
@@ -2727,6 +3079,7 @@ class App(ctk.CTk):
         threading.Thread(target=self._host_worker, daemon=True).start()
         threading.Thread(target=self._telemetry_loop, daemon=True).start()
         threading.Thread(target=self._monitor_loop, daemon=True).start()
+        threading.Thread(target=self._media_loop, daemon=True).start()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---------------------------------------------------------------- thread plumbing
@@ -2794,6 +3147,35 @@ class App(ctk.CTk):
                         last_sync = time.time()
                 except DeviceError:
                     pass
+
+    def _media_loop(self):
+        """Mirror this PC's volume / mute / playing onto the pad's media screen: on change, and every 10 s as a keep-alive."""
+        last, sent_at = None, 0.0
+        while not self.closing:
+            time.sleep(1.5)
+            if not (self.dev.connected and not self.dev.busy and self.cfg.get("host_media_sync", True) and self.hostmedia.available):
+                last = None                                         # re-send everything after a reconnect
+                continue
+            st = {k: v for k, v in self.hostmedia.state().items() if v is not None}
+            if not st:
+                continue
+            if st != last or time.time() - sent_at > 10:
+                try:
+                    self.dev.send(dict(st, cmd="media"))
+                    last, sent_at = st, time.time()
+                except DeviceError:
+                    last = None
+                self.post(lambda st=st: self._media_mirror(st))
+
+    def _media_mirror(self, st):
+        """The virtual pad follows the real values as well, so the twin never disagrees with the physical pad."""
+        if "vol" in st:
+            self.pad.vol = st["vol"]
+        if "muted" in st:
+            self.pad.muted = st["muted"]
+        if "playing" in st:
+            self.pad.playing = st["playing"]
+        self.pad.dirty = True
 
     def notify(self, title, text, kind="ok"):
         if not self.cfg.get("notify", True) or self.closing:
@@ -3716,7 +4098,9 @@ class App(ctk.CTk):
             self.set_status(f"Saved '{name}' - drag it from the 'Custom' category onto a key")
         self._guard(go)
 
-    # ---- GIF upload
+    # ---- GIF library (built-in / my GIFs / online) + upload
+    GIF_COLS, GIF_TILE = 6, 56
+
     def _build_gif(self, tab):
         left = ctk.CTkFrame(tab)
         left.pack(side="left", fill="y", padx=6, pady=6)
@@ -3726,42 +4110,271 @@ class App(ctk.CTk):
         self._pv_item = self.gif_canvas.create_image(0, 0, anchor="nw")
         self.gif_canvas.tag_lower(self._pv_item)
         ctk.CTkLabel(left, text="Round display preview", text_color="#9aa0a6").pack(pady=(0, 10))
-        right = ctk.CTkScrollableFrame(tab)
+
+        right = ctk.CTkFrame(tab, fg_color="transparent")
         right.pack(side="left", fill="both", expand=True, padx=6, pady=6)
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(2, weight=1)
+        ctk.CTkLabel(right, text="GIF library", font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=12, pady=(8, 2))
+        self.gif_view = tk.StringVar(value="Built-in")
+        ctk.CTkSegmentedButton(right, values=["Built-in", "My GIFs", "Online"], variable=self.gif_view,
+                               command=self._gif_show_view).grid(row=1, column=0, sticky="w", padx=12, pady=(2, 6))
+        body = ctk.CTkFrame(right)
+        body.grid(row=2, column=0, sticky="nsew", padx=6)
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        self._gif_views = {}
+        self._gif_thumbs = []                                    # keeps CTkImage objects alive
+        for name, builder in (("Built-in", self._build_gif_builtin), ("My GIFs", self._build_gif_mine),
+                              ("Online", self._build_gif_online)):
+            f = ctk.CTkFrame(body, fg_color="transparent")
+            f.grid(row=0, column=0, sticky="nsew")
+            f.grid_columnconfigure(0, weight=1)
+            builder(f)
+            self._gif_views[name] = f
+        self._gif_show_view("Built-in")
 
-        self._title(right, "Quick-start animations")
-        ctk.CTkLabel(right, text="Procedurally generated placeholders - pick one to preview and upload, "
-                     "no file needed.", text_color="#9aa0a6", wraplength=520, justify="left").grid(
-            row=1, column=0, columnspan=5, sticky="w", padx=12, pady=(0, 6))
-        grid = ctk.CTkFrame(right, fg_color="transparent")
-        grid.grid(row=2, column=0, columnspan=5, sticky="w", padx=6, pady=(0, 10))
-        self._preset_thumbs = {}
-        for idx, name in enumerate(GIF_PRESETS):
-            frames, _ = build_preset(name)
-            thumb = frames[0].resize((56, 56), RESAMPLE)
-            cimg = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=(56, 56))
-            self._preset_thumbs[name] = cimg
-            ctk.CTkButton(grid, text=name, image=cimg, compound="top", width=96, height=96, fg_color="#2b2f36",
-                          hover_color="#3a3f48", command=lambda n=name: self.use_preset(n)).grid(
-                row=idx // 4, column=idx % 4, padx=4, pady=4)
-
-        self._title(right, "Or upload your own GIF", row=3)
-        ctk.CTkButton(right, text="Select GIF...", command=self.choose_gif).grid(row=4, column=0, padx=12, pady=6, sticky="w")
-        self.gif_name = ctk.CTkLabel(right, text="no file selected", anchor="w")
-        self.gif_name.grid(row=4, column=1, columnspan=4, sticky="w", padx=8)
+        ctrl = ctk.CTkFrame(right)
+        ctrl.grid(row=3, column=0, sticky="ew", padx=6, pady=(8, 0))
+        ctk.CTkButton(ctrl, text="Select GIF file...", command=self.choose_gif).grid(row=0, column=0, padx=10, pady=(10, 4), sticky="w")
+        self.gif_name = ctk.CTkLabel(ctrl, text="nothing selected yet - pick a tile above or your own file", anchor="w")
+        self.gif_name.grid(row=0, column=1, columnspan=3, sticky="w", padx=8, pady=(10, 4))
+        self.keep_var = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(ctrl, text="Keep a copy of files / downloads in My GIFs", variable=self.keep_var).grid(
+            row=1, column=0, columnspan=2, padx=10, pady=4, sticky="w")
         self.dither_var = tk.BooleanVar(value=False)
-        ctk.CTkCheckBox(right, text="Dithering (smoother gradients, larger file)", variable=self.dither_var).grid(
-            row=5, column=0, columnspan=4, padx=12, pady=4, sticky="w")
-        self.gif_info = ctk.CTkLabel(right, text="Frames are centre-cropped, resized to 240x240 and masked to a circle.",
-                                     justify="left", wraplength=470, anchor="w")
-        self.gif_info.grid(row=6, column=0, columnspan=4, padx=12, pady=6, sticky="w")
-        self.gif_bar = ctk.CTkProgressBar(right, width=440)
-        self.gif_bar.grid(row=7, column=0, columnspan=4, padx=12, pady=8, sticky="w")
+        ctk.CTkCheckBox(ctrl, text="Dithering (smoother gradients, larger file)", variable=self.dither_var).grid(
+            row=1, column=2, columnspan=2, padx=10, pady=4, sticky="w")
+        self.gif_info = ctk.CTkLabel(ctrl, text="Frames are centre-cropped, resized to 240x240 and masked to a circle.",
+                                     justify="left", wraplength=620, anchor="w")
+        self.gif_info.grid(row=2, column=0, columnspan=4, padx=10, pady=4, sticky="w")
+        self.gif_bar = ctk.CTkProgressBar(ctrl, width=440)
+        self.gif_bar.grid(row=3, column=0, columnspan=3, padx=10, pady=6, sticky="w")
         self.gif_bar.set(0)
-        self.upload_btn = ctk.CTkButton(right, text="Upload to pad", state="disabled", command=self.upload_gif)
-        self.upload_btn.grid(row=8, column=0, padx=12, pady=6, sticky="w")
-        ctk.CTkButton(right, text="Delete GIF on pad", fg_color="#555", command=self.delete_gif).grid(row=8, column=1, sticky="w", padx=8)
+        self.upload_btn = ctk.CTkButton(ctrl, text="Upload to pad", state="disabled", command=self.upload_gif)
+        self.upload_btn.grid(row=4, column=0, padx=10, pady=(4, 10), sticky="w")
+        ctk.CTkButton(ctrl, text="Delete GIF on pad", fg_color="#555", command=self.delete_gif).grid(
+            row=4, column=1, sticky="w", padx=8, pady=(4, 10))
 
+    # -- tiles
+    def _gif_tile(self, parent, idx, label, pil, command, popup=None):
+        cimg = None
+        if pil is not None:
+            cimg = ctk.CTkImage(light_image=pil, dark_image=pil, size=(self.GIF_TILE, self.GIF_TILE))
+            self._gif_thumbs.append(cimg)
+        b = ctk.CTkButton(parent, text=(label or "")[:14], image=cimg, compound="top", width=100, height=92,
+                          fg_color="#2b2f36", hover_color="#3a3f48", command=command)
+        b.grid(row=idx // self.GIF_COLS, column=idx % self.GIF_COLS, padx=4, pady=4)
+        if popup:
+            for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
+                b.bind(seq, popup, add="+")
+        return b
+
+    def _gif_show_view(self, name):
+        for n, f in self._gif_views.items():
+            if n == name:
+                f.grid()
+            else:
+                f.grid_remove()
+        if name == "My GIFs":
+            self.refresh_my_gifs()
+        elif name == "Online" and not self._on_loaded and self.on_key.get().strip():
+            self.online_run("")
+
+    # -- Built-in
+    def _build_gif_builtin(self, f):
+        ctk.CTkLabel(f, text="Generated animations - nothing to download. Click one to preview it; then 'Upload to pad'.",
+                     text_color="#9aa0a6", anchor="w").grid(row=0, column=0, sticky="w", padx=8, pady=(6, 0))
+        sc = ctk.CTkScrollableFrame(f)
+        sc.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        f.grid_rowconfigure(1, weight=1)
+        for idx, name in enumerate(GIF_PRESETS):
+            self._gif_tile(sc, idx, name, preset_thumb(name, self.GIF_TILE), lambda n=name: self.use_preset(n))
+
+    # -- My GIFs
+    def _build_gif_mine(self, f):
+        bar = ctk.CTkFrame(f, fg_color="transparent")
+        bar.grid(row=0, column=0, sticky="ew", padx=4, pady=(6, 0))
+        ctk.CTkButton(bar, text="Add GIF...", width=100, command=self.add_my_gif).pack(side="left", padx=4)
+        ctk.CTkButton(bar, text="Open folder", width=100, fg_color="#555", command=self.open_gif_folder).pack(side="left", padx=4)
+        self.mine_info = ctk.CTkLabel(bar, text="", text_color="#9aa0a6", anchor="w")
+        self.mine_info.pack(side="left", padx=10)
+        self.mine_sc = ctk.CTkScrollableFrame(f)
+        self.mine_sc.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        f.grid_rowconfigure(1, weight=1)
+        self._mine_gen = 0
+        self._mine_menu = tk.Menu(self, tearoff=0)
+
+    def refresh_my_gifs(self):
+        self._mine_gen += 1
+        gen = self._mine_gen
+        paths = lib_list()
+        for w in self.mine_sc.winfo_children():
+            w.destroy()
+        self.mine_info.configure(text=f"{len(paths)} GIF(s) in {gif_lib_dir()}  -  right-click a tile to delete it")
+        if not paths:
+            ctk.CTkLabel(self.mine_sc, text="Empty. Use 'Add GIF...', 'Select GIF file...' or save something from Online.",
+                         text_color="#9aa0a6").grid(row=0, column=0, padx=10, pady=20)
+            return
+
+        def work():
+            out = []
+            for p in paths:
+                try:
+                    out.append((p, gif_file_thumb(p, self.GIF_TILE)))
+                except Exception:                                  # unreadable file: still listed, no picture
+                    out.append((p, None))
+            return out
+
+        def show(items):
+            if gen != self._mine_gen:
+                return
+            for w in self.mine_sc.winfo_children():
+                w.destroy()
+            for idx, (p, th) in enumerate(items):
+                self._gif_tile(self.mine_sc, idx, p.stem, th, lambda p=p: self.use_gif_file(str(p), p.name, save=False),
+                               popup=lambda e, p=p: self._mine_popup(e, p))
+        self.bg(work, show, "Could not read the GIF folder")
+
+    def _mine_popup(self, event, path):
+        m = self._mine_menu
+        m.delete(0, "end")
+        m.add_command(label=f"Use '{path.stem[:30]}'", command=lambda: self.use_gif_file(str(path), path.name, save=False))
+        m.add_command(label="Delete from library", command=lambda: self.delete_my_gif(path))
+        try:
+            m.tk_popup(event.x_root, event.y_root)
+        finally:
+            m.grab_release()
+
+    def delete_my_gif(self, path):
+        if messagebox.askyesno("Delete GIF", f"Remove '{path.name}' from your library?\n(The copy on the pad is not touched.)"):
+            lib_delete(path)
+            self.refresh_my_gifs()
+
+    def add_my_gif(self):
+        paths = filedialog.askopenfilenames(filetypes=[("GIF images", "*.gif"), ("All files", "*.*")])
+        n = 0
+        for p in paths:
+            try:
+                with open(p, "rb") as fh:
+                    if fh.read(3) != b"GIF":
+                        raise ValueError("not a GIF file")
+                lib_add(p)
+                n += 1
+            except (OSError, ValueError) as e:
+                self.set_status(f"Could not add {os.path.basename(p)}: {e}", error=True)
+        if n:
+            self.set_status(f"Added {n} GIF(s) to My GIFs")
+        self.refresh_my_gifs()
+
+    def open_gif_folder(self):
+        d = gif_lib_dir()
+        try:
+            if platform.system() == "Windows":
+                os.startfile(str(d))                                # noqa: S606 - local folder only
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", str(d)])
+            else:
+                subprocess.Popen(["xdg-open", str(d)])
+        except Exception as e:                                     # noqa: BLE001
+            self.set_status(f"Could not open the folder ({e}): {d}", error=True)
+
+    # -- Online
+    def _build_gif_online(self, f):
+        self._on_gen, self._on_loaded = 0, False
+        keys = self.cfg.setdefault("online_keys", {})
+        top = ctk.CTkFrame(f, fg_color="transparent")
+        top.grid(row=0, column=0, sticky="ew", padx=4, pady=(6, 0))
+        self.on_provider = tk.StringVar(value=self.cfg.get("online_provider") if self.cfg.get("online_provider") in ONLINE_PROVIDERS else "Tenor")
+        ctk.CTkOptionMenu(top, values=list(ONLINE_PROVIDERS), variable=self.on_provider, width=90,
+                          command=self._online_provider_changed).pack(side="left", padx=4)
+        self.on_key = ctk.CTkEntry(top, width=230, show="*", placeholder_text="API key (free)")
+        self.on_key.pack(side="left", padx=4)
+        self.on_key.insert(0, keys.get(self.on_provider.get(), ""))
+        ctk.CTkButton(top, text="Get a free key", width=110, fg_color="#555", command=self.online_key_help).pack(side="left", padx=4)
+        row2 = ctk.CTkFrame(f, fg_color="transparent")
+        row2.grid(row=1, column=0, sticky="ew", padx=4, pady=2)
+        self.on_query = ctk.CTkEntry(row2, width=300, placeholder_text="search GIFs (empty = trending)")
+        self.on_query.pack(side="left", padx=4)
+        self.on_query.bind("<Return>", lambda _e: self.online_run(self.on_query.get()))
+        ctk.CTkButton(row2, text="Search", width=80, command=lambda: self.online_run(self.on_query.get())).pack(side="left", padx=4)
+        ctk.CTkButton(row2, text="Trending", width=80, fg_color="#555", command=lambda: self.online_run("")).pack(side="left", padx=4)
+        self.on_status = ctk.CTkLabel(row2, text="", text_color="#9aa0a6", anchor="w")
+        self.on_status.pack(side="left", padx=10)
+        self.on_sc = ctk.CTkScrollableFrame(f)
+        self.on_sc.grid(row=2, column=0, sticky="nsew", padx=4, pady=4)
+        f.grid_rowconfigure(2, weight=1)
+        ctk.CTkLabel(self.on_sc, text="Paste a free Tenor or GIPHY API key above (needed once - it is stored in your config file),\n"
+                     "then search. This is how you get the WhatsApp / GIPHY style GIFs without any file hunting.",
+                     text_color="#9aa0a6", justify="left").grid(row=0, column=0, padx=10, pady=20)
+
+    def _online_provider_changed(self, prov):
+        self.on_key.delete(0, "end")
+        self.on_key.insert(0, self.cfg.setdefault("online_keys", {}).get(prov, ""))
+        self._on_loaded = False
+
+    def online_key_help(self):
+        import webbrowser
+        webbrowser.open(ONLINE_PROVIDERS[self.on_provider.get()])
+
+    def online_run(self, query):
+        prov, key = self.on_provider.get(), self.on_key.get().strip()
+        self.cfg.setdefault("online_keys", {})[prov] = key
+        self.cfg["online_provider"] = prov
+        save_config(self.cfg)
+        self._on_gen += 1
+        gen = self._on_gen
+        self.on_status.configure(text="searching...", text_color="#9aa0a6")
+
+        def fail():
+            if gen == self._on_gen:
+                self.on_status.configure(text="search failed - see the log below", text_color="#ff6b6b")
+        self.bg(lambda: online_search(prov, key, query), lambda res: self._online_show(res, gen, query),
+                "Online search failed", fail=fail)
+
+    def _online_show(self, results, gen, query):
+        if gen != self._on_gen:
+            return
+        self._on_loaded = True
+        for w in self.on_sc.winfo_children():
+            w.destroy()
+        self.on_status.configure(text=f"{len(results)} result(s)" if results else "nothing found", text_color="#9aa0a6")
+        tiles = []
+        for idx, r in enumerate(results):
+            tiles.append(self._gif_tile(self.on_sc, idx, r["title"] or "GIF", None, lambda r=r: self.use_online(r)))
+
+        def fetch():
+            from concurrent.futures import ThreadPoolExecutor
+
+            def one(i):
+                if gen != self._on_gen or self.closing:
+                    return
+                try:
+                    im = Image.open(io.BytesIO(_http_get(results[i]["thumb"], timeout=10, limit=2_000_000)))
+                    im.seek(0)
+                    th = round_thumb(im.copy(), self.GIF_TILE)
+                except Exception:                                  # noqa: BLE001 - one bad thumbnail must not stop the rest
+                    return
+                self.post(lambda: self._online_thumb(tiles[i], th, gen))
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                list(ex.map(one, range(len(results))))
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _online_thumb(self, tile, pil, gen):
+        if gen != self._on_gen:
+            return
+        cimg = ctk.CTkImage(light_image=pil, dark_image=pil, size=(self.GIF_TILE, self.GIF_TILE))
+        self._gif_thumbs.append(cimg)
+        try:
+            tile.configure(image=cimg)
+        except tk.TclError:
+            pass
+
+    def use_online(self, item):
+        self.use_gif_file(lambda: online_download(item["url"]), item["title"] or "online GIF", save=self.keep_var.get())
+
+    # -- selecting a source
     def _gif_source_ready(self, label):
         self.gif_name.configure(text=label)
         self.gif_info.configure(text="Processing...")
@@ -3772,18 +4385,34 @@ class App(ctk.CTk):
 
     def choose_gif(self):
         path = filedialog.askopenfilename(filetypes=[("GIF images", "*.gif"), ("All files", "*.*")])
-        if not path:
-            return
-        limit, dither = self._gif_source_ready(os.path.basename(path))
+        if path:
+            self.use_gif_file(path, os.path.basename(path), save=self.keep_var.get())
+
+    def use_gif_file(self, src, label, save=False):
+        """src: path | bytes | callable returning either (run on the worker thread, e.g. a download)."""
+        limit, dither = self._gif_source_ready(label)
 
         def work():
-            frames, durs = load_gif_frames(path)
+            s = src() if callable(src) else src
+            frames, durs = load_gif_frames(io.BytesIO(bytes(s)) if isinstance(s, (bytes, bytearray)) else s)
             data, colors, n = fit_gif(frames, durs, limit, dither)
-            return frames, durs, data, colors, n, limit
-        self.bg(work, self._gif_ready, "GIF processing failed")
+            saved = None
+            if save:
+                inside = not isinstance(s, (bytes, bytearray)) and Path(s).resolve().parent == gif_lib_dir().resolve()
+                if not inside:
+                    saved = lib_add(s, label if isinstance(s, (bytes, bytearray)) else None)
+            return (frames, durs, data, colors, n, limit), saved
+
+        def ok(res):
+            self._gif_ready(res[0])
+            if res[1]:
+                self.set_status(f"Saved a copy as {res[1].name} in My GIFs")
+                if self.gif_view.get() == "My GIFs":
+                    self.refresh_my_gifs()
+        self.bg(work, ok, "GIF processing failed")
 
     def use_preset(self, name):
-        limit, dither = self._gif_source_ready(f"preset: {name}")
+        limit, dither = self._gif_source_ready(f"built-in: {name}")
 
         def work():
             frames, durs = build_preset(name)
@@ -3859,6 +4488,12 @@ class App(ctk.CTk):
         ctk.CTkSwitch(box, text="Popup + sound when the pad connects", variable=self.notify_var,
                       command=lambda: (self.cfg.__setitem__("notify", self.notify_var.get()), save_config(self.cfg))).grid(
             row=5, column=1, padx=6, pady=(0, 8), sticky="w")
+        self.hm_var = tk.BooleanVar(value=bool(self.cfg.get("host_media_sync", True)) and self.hostmedia.available)
+        hm = ctk.CTkSwitch(box, text="Mirror this PC's volume / playback on the pad", variable=self.hm_var,
+                           command=lambda: (self.cfg.__setitem__("host_media_sync", self.hm_var.get()), save_config(self.cfg)))
+        hm.grid(row=5, column=2, columnspan=2, padx=6, pady=(0, 8), sticky="w")
+        if not self.hostmedia.available:
+            hm.configure(state="disabled", text="Mirror PC volume: not available here (Linux: pactl/amixer, macOS: built in, Windows: pip install pycaw)")
         ctk.CTkLabel(box, text="Keyboard layout").grid(row=6, column=0, padx=12, pady=6, sticky="w")
         self.layout_var = tk.StringVar(value=self.cfg.get("layout", "auto"))
         ctk.CTkOptionMenu(box, values=["auto"] + LAYOUTS, variable=self.layout_var, width=180,
