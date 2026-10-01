@@ -21,6 +21,8 @@ import json
 import math
 import os
 import platform
+import subprocess
+import sys
 import queue
 import threading
 import time
@@ -363,23 +365,73 @@ class DeviceError(Exception):
     pass
 
 
-def candidate_ports():
+ESP_PID_HINTS = {
+    0x1001: "ESP32-S3 built-in USB (ROM bootloader / 'Hardware CDC and JTAG'). The board is in download mode (BOOT held / "
+            "blank chip) or the sketch was built with USB Mode = Hardware CDC and JTAG.",
+    0x4001: "ESP32-S3 running an Arduino sketch in USB-OTG (TinyUSB) mode - this is what DeskCompanion should look like.",
+    0x822B: "Waveshare ESP32-S3-Zero running an Arduino sketch in USB-OTG (TinyUSB) mode - this is what DeskCompanion should look like.",
+    0x0002: "ESP32-S3 running an Arduino sketch in USB-OTG (TinyUSB) mode - this is what DeskCompanion should look like.",
+}
+
+
+def is_espressif(p):
+    text = f"{p.description} {p.manufacturer} {p.product}".lower()
+    return p.vid == ESPRESSIF_VID or any(w in text for w in ("desk companion", "deskcompanion", "espressif", "esp32", "usb jtag"))
+
+
+def list_serial_ports():
+    """Every serial port with VID:PID and a hint - used by the Dev tab and the connection diagnostics."""
     out = []
     for p in list_ports.comports():
-        text = f"{p.description} {p.manufacturer} {p.product}".lower()
-        if p.vid == ESPRESSIF_VID or "desk companion" in text:
-            out.append(p.device)
+        vid, pid = p.vid, p.pid
+        out.append({"device": p.device, "vid": vid, "pid": pid, "desc": p.description or "", "mfr": p.manufacturer or "",
+                    "product": p.product or "", "serial": p.serial_number or "", "esp": is_espressif(p),
+                    "hint": ESP_PID_HINTS.get(pid, "Espressif USB device") if vid == ESPRESSIF_VID else ""})
     return out
 
+
+def candidate_ports():
+    return [p["device"] for p in list_serial_ports() if p["esp"]]
+
+
+def fmt_vidpid(p):
+    return "----:----" if p["vid"] is None else f"{p['vid']:04X}:{p['pid'] or 0:04X}"
+
+
+ERR_TEXT = {
+    "fs_busy": "the pad is still preparing its storage (first boot after flashing can take up to ~30 s) - try again in a moment",
+    "nvs_full": "the pad's settings memory is full - remove some large macros / text snippets",
+    "no_space": "not enough free flash on the pad for this GIF",
+    "crc": "the data arrived damaged (CRC mismatch) - try again",
+    "no_display": "the pad's display is not available (safe mode or init failed)",
+    "no_hid": "this firmware build has no USB keyboard (USB Mode must be 'USB-OTG (TinyUSB)')",
+    "pin": "that GPIO number is not available", "pin_protected": "that GPIO is protected (USB / flash / boot / LED pin)",
+    "unknown_cmd": "the firmware does not know this command (older firmware?)", "json": "the pad could not parse the message",
+    "layout_unsupported_core": "keyboard layouts need arduino-esp32 core 3.0+ when the firmware is built",
+}
 
 SIM_PORT = "SIMULATED (no hardware)"
 SIM_FS_TOTAL = 1_500_000
 SIM_FS_RESERVED = 400_000           # firmware + always-on demo gif, matching the real pad's flash budget roughly
+QUIET_CMDS = {"stats"}              # sent once a second - not worth a line in the Dev terminal
+
+
+def compact_json(obj):
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
+
+def rgb565be_image(raw, w=240, h=240):
+    """Raw big-endian RGB565 frame buffer (as sent by the firmware's snapshot command) -> PIL image."""
+    import struct
+    px = struct.unpack(f">{w * h}H", raw)
+    img = Image.new("RGB", (w, h))
+    img.putdata([(((p >> 11) & 31) * 255 // 31, ((p >> 5) & 63) * 255 // 63, (p & 31) * 255 // 31) for p in px])
+    return img
 
 
 class SimFirmware:
     """Implements the DeskCompanion wire protocol in pure Python, standing in for real hardware so the
-    app's connect / remap / brightness / GIF-upload code paths can be exercised with nothing plugged in."""
+    app's connect / remap / brightness / GIF-upload / Dev-tab code paths can be exercised with nothing plugged in."""
 
     def __init__(self, emit):
         self.emit = emit                      # callable(bytes) -> pushes firmware->app bytes
@@ -389,6 +441,11 @@ class SimFirmware:
         self.gif_present = True               # the built-in demo animation, like the real pad on first boot
         self.gif_bytes_used = 60_000
         self._up = None
+        self.led = {"mode": 0, "r": 0, "g": 0, "b": 0}
+        self.events = False
+        self.pins = {}
+        self.t0 = time.monotonic()
+        self.display = None                   # (r, g, b) of an active "fill" test pattern, or a pattern name
 
     def feed(self, data):
         self._buf += data
@@ -397,104 +454,255 @@ class SimFirmware:
             self._handle(line)
 
     def _send(self, obj):
-        self.emit((json.dumps(obj, separators=(",", ":")) + "\n").encode())
+        self.emit((compact_json(obj) + "\n").encode())
 
     def _fs_free(self):
         used = SIM_FS_RESERVED + (self.gif_bytes_used if self.gif_present else 0)
         return max(0, SIM_FS_TOTAL - used)
 
+    def _up_ms(self):
+        return int((time.monotonic() - self.t0) * 1000)
+
+    @staticmethod
+    def _readable(p):
+        return isinstance(p, int) and (0 <= p <= 18 or p == 21 or 33 <= p <= 48)
+
+    @staticmethod
+    def _drivable(p):
+        return isinstance(p, int) and (1 <= p <= 18 or 33 <= p <= 42)
+
+    PIN_USE = {7: "TFT BLK", 8: "TFT CS", 9: "TFT DC", 10: "TFT RES", 11: "TFT SDA", 12: "TFT SCL", 13: "ENC A", 14: "ENC B",
+               15: "ENC SW", 1: "K1", 2: "K2", 4: "K3", 5: "K4", 6: "K5", 21: "RGB LED", 0: "BOOT button"}
+
     def _handle(self, line):
         try:
             msg = json.loads(line.decode("utf-8", "replace"))
         except ValueError:
+            self._send({"ok": False, "err": "json"})
+            return
+        if not isinstance(msg, dict):
+            self._send({"ok": False, "err": "json"})
             return
         cmd = msg.get("cmd")
+        rid = msg.get("id")
+
+        def reply(obj):
+            if isinstance(rid, int):
+                obj["id"] = rid
+            self._send(obj)
+
         if cmd == "stats":
             return                             # 1 Hz telemetry, no reply - matches the real firmware
         if cmd == "hello":
-            self._send({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": "SIM",
-                        "mode": self.mode, "bright": self.bright, "os": self.osv, "gif": self.gif_present,
-                        "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "synced": False, "layout": self.layout})
+            reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": "SIM",
+                   "mode": self.mode, "bright": self.bright, "os": self.osv, "gif": self.gif_present,
+                   "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "synced": False, "layout": self.layout,
+                   "hid": True, "disp": True, "fs": True, "fs_state": "ready", "safe": False, "led_pin": 21})
+        elif cmd == "ping":
+            r = {"ok": True, "evt": "pong", "up": self._up_ms()}
+            if "t" in msg:
+                r["t"] = msg["t"]
+            reply(r)
+        elif cmd == "echo":
+            reply({"ok": True, "evt": "echo", "data": msg.get("data")})
+        elif cmd == "info":
+            reply({"ok": True, "evt": "info", "fw": "SIM", "build": "simulated", "chip": "ESP32-S3 (simulated)", "rev": 0,
+                   "cores": 2, "cpu_mhz": 240, "flash": 4194304,
+                   "heap": 210_000, "heap_min": 190_000, "heap_blk": 110_000, "psram": 0, "temp": 31.5, "up_ms": self._up_ms(),
+                   "reset": "power-on", "crashes": 0, "safe": False, "core": "sim", "usb_mode": 0, "cdc_boot": 1, "hid": True,
+                   "tft": True, "sim": True, "ok_prefs": True, "ok_fs": True, "fs_state": "ready", "ok_sprite": True, "ok_disp": True,
+                   "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "rx_ms_ago": 0, "events": self.events,
+                   "gpio_touched": False, "led_pin": 21, "led_mode": self.led["mode"], "mode": self.mode, "bright": self.bright,
+                   "boot": "0:power-on=ok;1:prefs=ok;2:usb=ok;3:fs=ok;4:display=ok;5:ready=ok;"})
+        elif cmd == "led":
+            m = msg.get("mode", "")
+            modes = {"auto": 0, "off": 1, "solid": 2, "blink": 3, "rainbow": 4}
+            if "hex" in msg:
+                try:
+                    v = int(str(msg["hex"]).lstrip("#"), 16)
+                    self.led.update(r=(v >> 16) & 255, g=(v >> 8) & 255, b=v & 255, mode=2)
+                except ValueError:
+                    pass
+            if any(k in msg for k in ("r", "g", "b")):
+                for k in "rgb":
+                    self.led[k] = max(0, min(255, int(msg.get(k, 0) or 0)))
+                self.led["mode"] = 2
+            if m:
+                if m not in modes:
+                    reply({"ok": False, "err": "led_mode"})
+                    return
+                self.led["mode"] = modes[m]
+            reply({"ok": True, "evt": "led", "pin": 21, **self.led})
+        elif cmd == "gpio":
+            op = msg.get("op", "read")
+            if op == "scan":
+                reply({"ok": True, "evt": "gpio_scan", "pins": [[p, self.pins.get(p, 1)] for p in range(49) if self._readable(p)]})
+                return
+            p = msg.get("pin", -1)
+            if not self._readable(p):
+                reply({"ok": False, "err": "pin"})
+                return
+            if op != "read":
+                if not self._drivable(p):
+                    reply({"ok": False, "err": "pin_protected"})
+                    return
+                if op in ("high", "low", "pullup", "input"):
+                    self.pins[p] = 0 if op == "low" else 1
+                else:
+                    reply({"ok": False, "err": "op"})
+                    return
+            reply({"ok": True, "evt": "gpio", "pin": p, "val": self.pins.get(p, 1), "use": self.PIN_USE.get(p, "")})
+        elif cmd == "inputs":
+            reply({"ok": True, "evt": "inputs", "keys": [0, 0, 0, 0, 0], "enc_sw": 0, "enc_a": 1, "enc_b": 1, "enc_pos": 0})
+        elif cmd == "events":
+            self.events = bool(msg.get("val", True))
+            reply({"ok": True, "evt": "events"})
+        elif cmd == "display":
+            t = msg.get("test", "fill")
+            if t == "off":
+                self.display = None
+            elif t == "fill":
+                self.display = (int(msg.get("r", 0)), int(msg.get("g", 0)), int(msg.get("b", 0)))
+            elif t in ("bars", "grid", "text"):
+                self.display = t
+            else:
+                reply({"ok": False, "err": "pattern"})
+                return
+            reply({"ok": True, "evt": "display"})
+        elif cmd == "snapshot":
+            self._snapshot(rid)
+        elif cmd == "run":
+            reply({"ok": True, "evt": "run", "steps": 1})
+        elif cmd == "input":
+            if "k" in msg:
+                k = msg["k"]
+                if not isinstance(k, int) or not 1 <= k <= 5:
+                    reply({"ok": False, "err": "key"})
+                    return
+                if self.events:
+                    self._send({"evt": "key", "k": k, "v": 1})
+                    self._send({"evt": "key", "k": k, "v": 0})
+            elif "turn" in msg:
+                t = msg["turn"]
+                if not isinstance(t, int) or t == 0 or abs(t) > 20:
+                    reply({"ok": False, "err": "turn"})
+                    return
+                if self.events:
+                    self._send({"evt": "enc", "d": 1 if t > 0 else -1, "pos": t})
+            elif not (msg.get("click") or msg.get("hold")):
+                reply({"ok": False, "err": "input"})
+                return
+            reply({"ok": True, "evt": "input"})
+        elif cmd == "getkeys":
+            slots = []
+            for i in range(1, 8):
+                s = self.slots.get(i)
+                j = compact_json({"type": s["type"], "val": s["val"]}) if s else ""
+                slots.append({"s": i, "def": not s, "len": len(j.encode()), "crc": zlib.crc32(j.encode()) & 0xFFFFFFFF if s else 0})
+            reply({"ok": True, "evt": "keys", "slots": slots})
+        elif cmd == "selftest":
+            reply({"ok": True, "evt": "selftest", "nvs": True, "fs": True, "heap_ok": True, "heap": 210_000, "led": "cycled",
+                   "display": "drawn", "hid": True, "keys": [0, 0, 0, 0, 0]})
+        elif cmd == "reboot":
+            reply({"ok": True, "evt": "reboot"})
         elif cmd == "remap":
             key = msg.get("key")
             if not isinstance(key, int) or not 1 <= key <= 7:
-                self._send({"ok": False, "err": "key"})
+                reply({"ok": False, "err": "key"})
             else:
                 self.slots[key] = {"type": msg.get("type"), "val": msg.get("val")}
-                self._send({"ok": True, "evt": "remap"})
+                reply({"ok": True, "evt": "remap"})
         elif cmd == "reset_keys":
             self.slots.clear()
-            self._send({"ok": True, "evt": "reset_keys"})
+            reply({"ok": True, "evt": "reset_keys"})
         elif cmd == "brightness":
             self.bright = max(5, min(255, int(msg.get("val", 200))))
-            self._send({"ok": True, "evt": "brightness"})
+            reply({"ok": True, "evt": "brightness"})
         elif cmd == "mode":
             v = int(msg.get("val", 1))
             if 1 <= v <= 5:
                 self.mode = v
-                self._send({"ok": True, "evt": "mode"})
-            else:
-                self._send({"ok": False, "err": "mode"})
+            reply({"ok": True, "evt": "mode"})
         elif cmd == "os":
             self.osv = msg.get("val", "win")
-            self._send({"ok": True, "evt": "os"})
+            reply({"ok": True, "evt": "os"})
         elif cmd == "layout":
             self.layout = msg.get("val", "en_US")
-            self._send({"ok": True, "evt": "layout"})
-        elif cmd == "time":
-            self._send({"ok": True, "evt": "time"})
-        elif cmd == "wifi":
-            self._send({"ok": True, "evt": "wifi"})
-        elif cmd == "media":
-            self._send({"ok": True, "evt": "media"})
+            reply({"ok": True, "evt": "layout"})
+        elif cmd in ("time", "wifi", "media"):
+            reply({"ok": True, "evt": cmd})
         elif cmd == "gif_begin":
             size = int(msg.get("size", 0))
             if size <= 0 or size + 8192 > SIM_FS_TOTAL - SIM_FS_RESERVED:
-                self._send({"ok": False, "err": "no_space"})
+                reply({"ok": False, "err": "no_space"})
                 return
             self._up = {"size": size, "crc": msg.get("crc", 0), "rx": 0, "seq": 0, "buf": bytearray()}
-            self._send({"ok": True, "evt": "gif_ready", "chunk": 768})
+            reply({"ok": True, "evt": "gif_ready", "chunk": 768})
         elif cmd == "gif_chunk":
             up = self._up
             if not up:
-                self._send({"ok": False, "err": "no_upload"})
+                reply({"ok": False, "err": "no_upload"})
                 return
             if msg.get("seq") != up["seq"]:
-                self._send({"ok": False, "err": "seq"})
+                reply({"ok": False, "err": "seq"})
                 return
             try:
                 part = base64.b64decode(msg.get("data", ""))
             except Exception:
                 self._up = None
-                self._send({"ok": False, "err": "b64"})
+                reply({"ok": False, "err": "b64"})
                 return
             if up["rx"] + len(part) > up["size"]:
                 self._up = None
-                self._send({"ok": False, "err": "overflow"})
+                reply({"ok": False, "err": "overflow"})
                 return
             up["buf"] += part
             up["rx"] += len(part)
             up["seq"] += 1
-            self._send({"ok": True, "evt": "gif_ack", "seq": msg.get("seq"), "rx": up["rx"]})
+            reply({"ok": True, "evt": "gif_ack", "seq": msg.get("seq"), "rx": up["rx"]})
         elif cmd == "gif_end":
             up = self._up
             self._up = None
             if not up:
-                self._send({"ok": False, "err": "no_upload"})
+                reply({"ok": False, "err": "no_upload"})
                 return
             if up["rx"] != up["size"] or (zlib.crc32(bytes(up["buf"])) & 0xFFFFFFFF) != up["crc"]:
-                self._send({"ok": False, "err": "crc"})
+                reply({"ok": False, "err": "crc"})
                 return
             self.gif_present, self.gif_bytes_used, self.mode = True, up["rx"], M_GIF
-            self._send({"ok": True, "evt": "gif_done"})
+            reply({"ok": True, "evt": "gif_done"})
         elif cmd == "gif_abort":
             self._up = None
-            self._send({"ok": True, "evt": "gif_abort"})
+            reply({"ok": True, "evt": "gif_abort"})
         elif cmd == "gif_delete":
             self.gif_present, self.gif_bytes_used, self._up = False, 0, None
-            self._send({"ok": True, "evt": "gif_delete"})
+            reply({"ok": True, "evt": "gif_delete"})
         else:
-            self._send({"ok": False, "err": "unknown_cmd"})
+            reply({"ok": False, "err": "unknown_cmd"})
+
+    def _snapshot(self, rid):
+        img = Image.new("RGB", (240, 240), (0, 0, 0))
+        d = ImageDraw.Draw(img)
+        disp = self.display
+        if isinstance(disp, tuple):
+            d.rectangle((0, 0, 240, 240), fill=disp)
+        elif disp == "bars":
+            for i, c in enumerate([(255, 255, 255), (255, 255, 0), (0, 255, 255), (0, 255, 0), (255, 0, 255), (255, 0, 0), (0, 0, 255), (0, 0, 0)]):
+                d.rectangle((i * 30, 0, i * 30 + 29, 240), fill=c)
+        else:
+            d.ellipse((1, 1, 238, 238), outline=(70, 76, 92), width=2)
+            d.text((120, 100), "SIMULATED PAD", fill=(255, 255, 255), anchor="mm")
+            d.text((120, 125), f"mode {self.mode}  bright {self.bright}", fill=(0, 210, 255), anchor="mm")
+            led = self.led
+            d.ellipse((105, 150, 135, 180), fill=(led["r"], led["g"], led["b"]), outline=(140, 146, 160))
+        raw = b"".join(((r & 0xF8) << 8 | (g & 0xFC) << 3 | b >> 3).to_bytes(2, "big") for r, g, b in img.getdata())
+        first = {"ok": True, "evt": "snap_begin", "w": 240, "h": 240, "fmt": "rgb565be", "bytes": len(raw), "chunk": 360}
+        if isinstance(rid, int):
+            first["id"] = rid
+        self._send(first)
+        for off in range(0, len(raw), 360):
+            self._send({"evt": "snap", "o": off, "d": base64.b64encode(raw[off:off + 360]).decode()})
+        self._send({"evt": "snap_end"})
 
 
 class SimPort:
@@ -544,27 +752,46 @@ class Device:
     def __init__(self, on_drop):
         self.ser, self.port, self.info, self.busy, self._ready = None, "", {}, False, False
         self._wlock, self._rlock, self._resp, self._on_drop = threading.Lock(), threading.Lock(), queue.Queue(), on_drop
+        self.on_event = None                  # callable(dict): messages without "ok" (key events, ...)
+        self.on_line = None                   # callable(direction, text): every line moving over the wire (Dev terminal)
+        self._taps = []                       # extra event listeners (snapshot download)
+        self.rx_bytes = self.tx_bytes = 0
+        self.last_rx = 0.0
 
     @property
     def connected(self):
         return self.ser is not None and self._ready        # only after the hello handshake succeeded
 
-    def connect(self, port):
+    @staticmethod
+    def _open(port):
+        ser = serial.Serial()
+        ser.port, ser.baudrate, ser.timeout, ser.write_timeout = port, BAUD, 0.1, 3
+        ser.dtr = True                                      # TinyUSB CDC only talks to a host that raised DTR (and RTS)
+        ser.rts = True
+        ser.open()
+        return ser
+
+    def connect(self, port, hello_wait=8.0):
         self.disconnect()
-        ser = SimPort() if port == SIM_PORT else serial.Serial(port, BAUD, timeout=0.1, write_timeout=3)
+        ser = SimPort() if port == SIM_PORT else self._open(port)
         self.ser = ser
+        self.rx_bytes = self.tx_bytes = 0
         threading.Thread(target=self._reader, args=(ser,), daemon=True).start()
-        last = None
-        for _ in range(3):
+        end, last = time.monotonic() + hello_wait, None
+        while time.monotonic() < end:                       # the pad may still be booting for a moment after the port opens
             try:
                 self.info = self.request({"cmd": "hello"}, timeout=1.5)
                 break
             except DeviceError as e:
                 last = e
-                time.sleep(0.3)
+                if self.ser is not ser:
+                    break
+                time.sleep(0.25)
         else:
             self.disconnect()
-            raise last
+            raise last or DeviceError("device did not answer")
+        if self.ser is not ser:
+            raise last or DeviceError("port closed while connecting")
         self.port, self._ready = port, True
         return self.info
 
@@ -581,6 +808,14 @@ class Device:
             self.disconnect()
             self._on_drop()
 
+    def _log(self, direction, text):
+        cb = self.on_line
+        if cb:
+            try:
+                cb(direction, text)
+            except Exception:
+                pass
+
     def _reader(self, ser):
         buf = b""
         while self.ser is ser:
@@ -590,46 +825,116 @@ class Device:
                 break
             if not data:
                 continue
+            self.rx_bytes += len(data)
+            self.last_rx = time.monotonic()
             buf += data
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
-                try:
-                    msg = json.loads(line.decode("utf-8", "replace"))
-                except ValueError:
+                text = line.decode("utf-8", "replace").strip()
+                if not text:
                     continue
-                if isinstance(msg, dict) and "ok" in msg:
+                try:
+                    msg = json.loads(text)
+                except ValueError:
+                    self._log("raw", text)                  # boot log / panic text / anything that is not protocol JSON
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if "ok" in msg:
+                    self._log("rx", text)
                     self._resp.put(msg)
+                else:
+                    if msg.get("evt") not in ("snap",):     # snapshot chunks are far too chatty for the terminal
+                        self._log("rx", text)
+                    for cb in [self.on_event] + list(self._taps):
+                        if cb:
+                            try:
+                                cb(msg)
+                            except Exception:
+                                pass
         self._drop(ser)
 
     def send(self, msg):
         ser = self.ser
         if not ser:
             raise DeviceError("not connected")
-        data = (json.dumps(msg, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+        text = compact_json(msg)
+        data = (text + "\n").encode("utf-8")
         try:
             with self._wlock:
                 ser.write(data)
         except (serial.SerialException, OSError) as e:
             self._drop(ser)
             raise DeviceError(str(e))
+        self.tx_bytes += len(data)
+        if not (isinstance(msg, dict) and msg.get("cmd") in QUIET_CMDS):
+            self._log("tx", text)
+
+    def send_raw(self, text):
+        """Dev terminal: send a line exactly as typed (no JSON validation)."""
+        ser = self.ser
+        if not ser:
+            raise DeviceError("not connected")
+        data = (text.rstrip("\r\n") + "\n").encode("utf-8")
+        try:
+            with self._wlock:
+                ser.write(data)
+        except (serial.SerialException, OSError) as e:
+            self._drop(ser)
+            raise DeviceError(str(e))
+        self.tx_bytes += len(data)
+        self._log("tx", text.rstrip("\r\n"))
 
     def request(self, msg, timeout=2.0):
+        """Send one command and return its reply. Every request carries an id the firmware echoes back, so a late
+        reply to an earlier (timed-out) request can never be mistaken for the answer to this one."""
         with self._rlock:
             while not self._resp.empty():
                 self._resp.get_nowait()
-            self.send(msg)
-            try:
-                r = self._resp.get(timeout=timeout)
-            except queue.Empty:
-                raise DeviceError("device did not answer (timeout)")
+            self._rid = (getattr(self, "_rid", 0) % 1_000_000) + 1
+            rid = self._rid
+            self.send(dict(msg, id=rid))
+            end = time.monotonic() + timeout
+            while True:
+                try:
+                    r = self._resp.get(timeout=max(0.0, end - time.monotonic()))
+                except queue.Empty:
+                    raise DeviceError("device did not answer (timeout)")
+                if r.get("id", rid) == rid:                 # replies from older firmware carry no id: accept those
+                    break
         if not r.get("ok"):
-            raise DeviceError(r.get("err", "error"))
+            err = r.get("err", "error")
+            raise DeviceError(ERR_TEXT.get(err, err))
         return r
+
+    def snapshot(self, timeout=25.0):
+        """Download what the pad's frame buffer currently shows -> PIL image (everything except GIF mode)."""
+        chunks, done = {}, threading.Event()
+
+        def tap(m):
+            if m.get("evt") == "snap":
+                chunks[m["o"]] = base64.b64decode(m["d"])
+            elif m.get("evt") == "snap_end":
+                done.set()
+        self._taps.append(tap)
+        self.busy = True
+        try:
+            head = self.request({"cmd": "snapshot"}, timeout=6)
+            if not done.wait(timeout):
+                raise DeviceError("snapshot timed out")
+        finally:
+            self.busy = False
+            if tap in self._taps:
+                self._taps.remove(tap)
+        raw = b"".join(chunks[k] for k in sorted(chunks))
+        if len(raw) != int(head.get("bytes", 0)):
+            raise DeviceError(f"snapshot incomplete ({len(raw)} of {head.get('bytes')} bytes)")
+        return rgb565be_image(raw, int(head.get("w", 240)), int(head.get("h", 240)))
 
     def upload_gif(self, data, progress=None):
         self.busy = True
         try:
-            r = self.request({"cmd": "gif_begin", "size": len(data), "crc": zlib.crc32(data) & 0xFFFFFFFF}, timeout=6)
+            r = self.request({"cmd": "gif_begin", "size": len(data), "crc": zlib.crc32(data) & 0xFFFFFFFF}, timeout=20)
             chunk, sent, seq = int(r.get("chunk", 768)), 0, 0
             while sent < len(data):
                 part = data[sent:sent + chunk]
@@ -1766,6 +2071,625 @@ class Toast:
 
 
 # ============================================================================ GUI
+# ============================================================================ Dev tab: bring-up / diagnostics tools
+def info_lines(info):
+    """Human readable lines for the firmware's `info` reply."""
+    order = ["fw", "build", "chip", "rev", "cores", "cpu_mhz", "flash", "core", "usb_mode", "cdc_boot", "hid", "tft", "sim",
+             "reset", "crashes", "safe", "up_ms", "heap", "heap_min", "heap_blk", "psram", "temp", "ok_prefs", "ok_fs",
+             "ok_sprite", "ok_disp", "fs_free", "fs_total", "led_pin", "led_mode", "mode", "bright", "events", "gpio_touched", "boot"]
+    names = {"usb_mode": "usb_mode (0 = TinyUSB, 1 = hardware CDC)", "crashes": "crash-loop counter", "heap_blk": "largest free block",
+             "ok_fs": "filesystem ok", "ok_disp": "display ok", "ok_prefs": "settings (NVS) ok", "ok_sprite": "frame buffer ok"}
+    lines = []
+    for k in order:
+        if k in info:
+            lines.append(f"{names.get(k, k):42s} {info[k]}")
+    for k in info:
+        if k not in order and k not in ("ok", "evt", "id"):
+            lines.append(f"{k:42s} {info[k]}")
+    return lines
+
+
+class DevTab:
+    HELP = ("Bring-up & diagnostics. 1) Flash CoreBringup/CoreBringup.ino (no libraries) and check LED + ping here, "
+            "2) then flash DeskCompanion/DeskCompanion.ino. Everything below talks to the real pad - or to the simulator.")
+
+    def __init__(self, app, tab):
+        self.app = app
+        self.lines = []                                   # terminal history (also used for the diagnostic report)
+        self._led_job = None
+        self._snap_img = None
+        self.key_labels, self.last_info = [], {}
+        tab.grid_columnconfigure(0, weight=3)
+        tab.grid_columnconfigure(1, weight=2)
+        tab.grid_rowconfigure(1, weight=1)
+        bold = ctk.CTkFont(size=14, weight="bold")
+        self.bold = bold
+
+        top = ctk.CTkFrame(tab)
+        top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 4))
+        self.state_lbl = ctk.CTkLabel(top, text="Not connected", text_color="#ffb454", anchor="w")
+        self.state_lbl.pack(side="left", padx=12, pady=8)
+        for text, cmd in (("Ping x5", self.ping), ("Device info", self.show_info), ("Full self-test", self.full_selftest),
+                          ("Copy diagnostic report", self.report)):
+            ctk.CTkButton(top, text=text, width=130, command=cmd).pack(side="right", padx=4, pady=8)
+
+        left = ctk.CTkScrollableFrame(tab)
+        left.grid(row=1, column=0, sticky="nsew", padx=(6, 3), pady=4)
+        right = ctk.CTkFrame(tab)
+        right.grid(row=1, column=1, sticky="nsew", padx=(3, 6), pady=4)
+
+        ctk.CTkLabel(left, text=self.HELP, text_color="#9aa0a6", wraplength=560, justify="left").pack(anchor="w", padx=10, pady=(4, 6))
+        self._build_flash(left)
+        self._build_ports(left)
+        self._build_led(left)
+        self._build_inputs(left)
+        self._build_display(left)
+        self._build_hid(left)
+        self._build_gpio(left)
+        self._build_system(left)
+        self._build_terminal(right)
+
+    # ---------------------------------------------------------------- helpers
+    def card(self, parent, title):
+        f = ctk.CTkFrame(parent)
+        f.pack(fill="x", padx=6, pady=5)
+        ctk.CTkLabel(f, text=title, font=self.bold).pack(anchor="w", padx=10, pady=(8, 2))
+        return f
+
+    def row(self, parent):
+        r = ctk.CTkFrame(parent, fg_color="transparent")
+        r.pack(fill="x", padx=8, pady=3)
+        return r
+
+    def req(self, msg, ok=None, label="Command failed", timeout=4.0):
+        if not self.app.dev.connected:
+            self.app.set_status("Not connected - plug the pad in or use 'Simulate pad' on the Dashboard tab", error=True)
+            return
+        self.app.bg(lambda: self.app.dev.request(msg, timeout=timeout), ok, label)
+
+    def refresh_state(self):
+        d = self.app.dev
+        if d.connected:
+            sim = d.port == SIM_PORT
+            fw = d.info.get("fw", "?")
+            bits = [f"{'SIMULATED pad' if sim else d.port}", f"fw {fw}"]
+            for k, nm in (("hid", "HID"), ("disp", "display")):
+                if k in d.info:
+                    bits.append(f"{nm} {'ok' if d.info[k] else 'OFF'}")
+            if "fs" in d.info:
+                st = d.info.get("fs_state", "ready" if d.info["fs"] else "failed")
+                bits.append("files ok" if d.info["fs"] else f"files {st}...")
+            if d.info.get("safe"):
+                bits.append("SAFE MODE (crash loop!)")
+            self.state_lbl.configure(text="Connected: " + "  |  ".join(bits), text_color="#4cd97b" if not d.info.get("safe") else "#ff6b6b")
+        else:
+            self.state_lbl.configure(text="Not connected", text_color="#ffb454")
+
+    # ---------------------------------------------------------------- terminal
+    def _build_terminal(self, parent):
+        ctk.CTkLabel(parent, text="Terminal (everything on the wire)", font=self.bold).pack(anchor="w", padx=10, pady=(8, 2))
+        self.term = ctk.CTkTextbox(parent, font=ctk.CTkFont(family="Courier", size=11), wrap="none")
+        self.term.pack(fill="both", expand=True, padx=8, pady=4)
+        tb = self.term._textbox
+        tb.tag_config("tx", foreground="#6ea8fe")
+        tb.tag_config("rx", foreground="#7ee787")
+        tb.tag_config("raw", foreground="#ffb454")
+        tb.tag_config("sys", foreground="#9aa0a6")
+        tb.tag_config("err", foreground="#ff6b6b")
+        self.term.configure(state="disabled")
+        r = self.row(parent)
+        self.raw_var = tk.StringVar()
+        e = ctk.CTkEntry(r, textvariable=self.raw_var, placeholder_text='raw JSON line, e.g. {"cmd":"ping"}')
+        e.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        e.bind("<Return>", lambda _e: self.send_raw())
+        ctk.CTkButton(r, text="Send", width=60, command=self.send_raw).pack(side="left")
+        r2 = self.row(parent)
+        ctk.CTkButton(r2, text="Clear", width=70, fg_color="#555", command=self.clear).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(r2, text="Copy", width=70, fg_color="#555", command=self.copy_log).pack(side="left", padx=(0, 4))
+        self.rxinfo = ctk.CTkLabel(r2, text="rx 0 B / tx 0 B", text_color="#9aa0a6")
+        self.rxinfo.pack(side="right", padx=6)
+
+    def log(self, direction, text):
+        """Thread-safe: called from the serial reader / writer threads."""
+        self.app.post(lambda: self._log_ui(direction, text))
+
+    def _log_ui(self, direction, text):
+        stamp = time.strftime("%H:%M:%S")
+        prefix = {"tx": "->", "rx": "<-", "raw": "!!", "sys": "..", "err": "XX"}.get(direction, "  ")
+        line = f"{stamp} {prefix} {text}"
+        self.lines.append(line)
+        del self.lines[:-600]
+        self.term.configure(state="normal")
+        self.term._textbox.insert("end", line[:600] + "\n", direction)
+        if int(self.term._textbox.index("end-1c").split(".")[0]) > 600:
+            self.term._textbox.delete("1.0", "100.0")
+        self.term._textbox.see("end")
+        self.term.configure(state="disabled")
+        d = self.app.dev
+        self.rxinfo.configure(text=f"rx {d.rx_bytes} B / tx {d.tx_bytes} B")
+
+    def sys(self, text, err=False):
+        self._log_ui("err" if err else "sys", text)
+
+    def clear(self):
+        self.lines.clear()
+        self.term.configure(state="normal")
+        self.term.delete("1.0", "end")
+        self.term.configure(state="disabled")
+
+    def copy_log(self):
+        self.app.clipboard_clear()
+        self.app.clipboard_append("\n".join(self.lines))
+        self.app.set_status("Terminal copied to the clipboard")
+
+    def send_raw(self):
+        t = self.raw_var.get().strip()
+        if not t:
+            return
+        try:
+            self.app.dev.send_raw(t)
+            self.raw_var.set("")
+        except DeviceError as e:
+            self.sys(f"send failed: {e}", err=True)
+
+    # ---------------------------------------------------------------- flashing (prebuilt images via esptool)
+    def _build_flash(self, parent):
+        c = self.card(parent, "0. Flash firmware (no Arduino IDE needed)")
+        r = self.row(c)
+        self.flash_img = tk.StringVar(value="core")
+        ctk.CTkOptionMenu(r, values=["core", "full"], variable=self.flash_img, width=90).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(r, text="core = CoreBringup (step 1)   full = DeskCompanion (step 2)", text_color="#9aa0a6").pack(side="left")
+        r = self.row(c)
+        self.flash_btn = ctk.CTkButton(r, text="Flash to the board", width=150, fg_color="#7a4a1f", command=self.flash)
+        self.flash_btn.pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(c, text="Hold BOOT while plugging in the USB cable (download mode), then press the button. If the pad already runs "
+                     "DeskCompanion it is put into download mode automatically. Needs:  pip install esptool", text_color="#9aa0a6",
+                     wraplength=540, justify="left").pack(anchor="w", padx=10, pady=(0, 6))
+
+    def flash(self):
+        script = Path(__file__).resolve().parent / "firmware" / "flash.py"
+        if not script.is_file():
+            return self.app.set_status("firmware/flash.py not found next to the app", error=True)
+        which = self.flash_img.get()
+        if not messagebox.askyesno("Flash firmware", f"Write the '{which}' image to the ESP32-S3 now?\n\n"
+                                   "The board should be in download mode (BOOT held while plugging in) - or already running DeskCompanion."):
+            return
+        port = self.app.dev.port if (self.app.dev.connected and self.app.dev.port != SIM_PORT) else ""
+        was_auto = self.app.auto_flag
+        self.app.auto_flag = False                          # keep the auto-connect loop away from the port while flashing
+        if self.app.dev.connected:
+            self.app.dev.disconnect()
+            self.app._on_disconnected()
+        self.flash_btn.configure(state="disabled")
+        self.sys(f"===== flashing '{which}' =====")
+
+        def work():
+            cmd = [sys.executable, "-u", str(script), "--image", which, "--yes"] + (["--port", port] if port else [])
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            for line in p.stdout:
+                line = line.rstrip()
+                if line:
+                    self.app.post(lambda l=line: self.sys(l))
+            return p.wait()
+
+        def done(rc):
+            self.flash_btn.configure(state="normal")
+            self.app.auto_flag = was_auto
+            self.sys("flash finished OK - unplug / re-plug the board; the app reconnects by itself" if rc == 0
+                     else f"flash FAILED (exit code {rc}) - see the lines above", err=rc != 0)
+
+        def fail():
+            self.flash_btn.configure(state="normal")
+            self.app.auto_flag = was_auto
+        self.app.bg(work, done, "Flashing failed", fail=fail)
+
+    # ---------------------------------------------------------------- ports + probing
+    def _build_ports(self, parent):
+        c = self.card(parent, "1. Serial ports (is the pad visible to this PC?)")
+        self.port_tree = ttk.Treeview(c, style="Pad.Treeview", columns=("vp", "desc", "res"), show="headings", height=4)
+        for col, txt, w in (("vp", "VID:PID", 80), ("desc", "Port / description", 270), ("res", "Result", 200)):
+            self.port_tree.heading(col, text=txt)
+            self.port_tree.column(col, width=w, anchor="w")
+        self.port_tree.pack(fill="x", padx=8, pady=4)
+        self.port_hint = ctk.CTkLabel(c, text="", text_color="#9aa0a6", wraplength=540, justify="left")
+        self.port_hint.pack(anchor="w", padx=10)
+        r = self.row(c)
+        ctk.CTkButton(r, text="Refresh", width=90, command=self.refresh_ports).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(r, text="Probe all ports (send hello)", width=200, command=self.probe_ports).pack(side="left")
+        self.port_tree.bind("<<TreeviewSelect>>", self._port_selected)
+        self._port_rows = {}
+        self.refresh_ports()
+
+    def refresh_ports(self):
+        self._ports = list_serial_ports()
+        self.port_tree.delete(*self.port_tree.get_children())
+        for p in self._ports:
+            res = "connected (this app)" if (self.app.dev.connected and self.app.dev.port == p["device"]) else ("ESP32 device" if p["esp"] else "")
+            self.port_tree.insert("", "end", iid=p["device"], values=(fmt_vidpid(p), f"{p['device']} - {p['desc']}", res))
+        if not self._ports:
+            self.port_hint.configure(text="No serial ports at all. Check the USB cable (many cables are charge-only) and the port on the board "
+                                          "(use the USB-C of the ESP32-S3-Zero).")
+        elif not any(p["esp"] for p in self._ports):
+            self.port_hint.configure(text="Serial ports exist but none looks like an Espressif device (VID 303A). Is the right cable/port used? "
+                                          "Unplug and re-plug the pad while watching this list.")
+        else:
+            self.port_hint.configure(text="Select a row for details.")
+
+    def _port_selected(self, _e):
+        sel = self.port_tree.selection()
+        for p in getattr(self, "_ports", []):
+            if sel and p["device"] == sel[0]:
+                self.port_hint.configure(text=p["hint"] or ("Not an Espressif device." if not p["esp"] else ""))
+
+    def probe_ports(self):
+        ports = [p for p in list_serial_ports() if not (self.app.dev.connected and self.app.dev.port == p["device"])]
+        self.sys(f"probing {len(ports)} port(s) with hello ...")
+
+        def work():
+            out = {}
+            for p in ports:
+                dev = p["device"]
+                try:
+                    s = Device._open(dev)
+                except Exception as e:                       # noqa: BLE001
+                    out[dev] = f"cannot open: {str(e)[:60]}"
+                    continue
+                try:
+                    got, end = b"", time.monotonic() + 3.0
+                    s.write(b'{"cmd":"hello"}\n')
+                    while time.monotonic() < end and b"desk-companion" not in got:
+                        got += s.read(256)
+                        if b"\n" in got and b"desk-companion" not in got and time.monotonic() > end - 1.5:
+                            s.write(b'{"cmd":"hello"}\n')
+                    if b"desk-companion" in got:
+                        try:
+                            j = json.loads(got.decode("utf-8", "replace").strip().splitlines()[-1])
+                            out[dev] = f"DeskCompanion fw {j.get('fw', '?')}"
+                        except ValueError:
+                            out[dev] = "DeskCompanion (reply unparsable)"
+                    elif got:
+                        out[dev] = f"talks, but not DeskCompanion: {got[:40]!r}"
+                    else:
+                        out[dev] = "opened, no reply in 3 s"
+                finally:
+                    try:
+                        s.close()
+                    except Exception:                        # noqa: BLE001
+                        pass
+            return out
+
+        def done(out):
+            self.refresh_ports()
+            for dev, res in out.items():
+                if self.port_tree.exists(dev):
+                    v = list(self.port_tree.item(dev, "values"))
+                    v[2] = res
+                    self.port_tree.item(dev, values=v)
+                self.sys(f"probe {dev}: {res}")
+        self.app.bg(work, done, "Probe failed")
+
+    # ---------------------------------------------------------------- LED
+    def _build_led(self, parent):
+        c = self.card(parent, "2. Onboard RGB LED (WS2812, GPIO21 on the Waveshare ESP32-S3-Zero)")
+        self.led_vars = [tk.IntVar(value=0) for _ in range(3)]
+        for i, (name, col) in enumerate((("R", "#ff6b6b"), ("G", "#4cd97b"), ("B", "#6ea8fe"))):
+            r = self.row(c)
+            ctk.CTkLabel(r, text=name, width=18, text_color=col).pack(side="left")
+            ctk.CTkSlider(r, from_=0, to=255, number_of_steps=51, variable=self.led_vars[i], command=lambda _v: self._led_slider()).pack(side="left", fill="x", expand=True, padx=6)
+        r = self.row(c)
+        self.led_swatch = tk.Canvas(r, width=36, height=22, highlightthickness=1, highlightbackground="#555", bg="#000000")
+        self.led_swatch.pack(side="left", padx=(0, 8))
+        for text, rgbv in (("Red", (60, 0, 0)), ("Green", (0, 60, 0)), ("Blue", (0, 0, 60)), ("White", (50, 50, 50)), ("Off", (0, 0, 0))):
+            ctk.CTkButton(r, text=text, width=58, command=lambda v=rgbv: self.led_color(*v)).pack(side="left", padx=2)
+        r = self.row(c)
+        for text, mode in (("Blink", "blink"), ("Rainbow", "rainbow"), ("Auto (status)", "auto"), ("LED off", "off")):
+            ctk.CTkButton(r, text=text, width=88, fg_color="#555", command=lambda m=mode: self._led_mode(m)).pack(side="left", padx=2)
+
+    def led_color(self, r, g, b):
+        for v, x in zip(self.led_vars, (r, g, b)):
+            v.set(x)
+        self._led_slider(immediate=True)
+
+    def _led_slider(self, immediate=False):
+        r, g, b = (v.get() for v in self.led_vars)
+        self.led_swatch.configure(bg=f"#{min(255, r * 4):02x}{min(255, g * 4):02x}{min(255, b * 4):02x}")
+        if self._led_job:
+            self.app.after_cancel(self._led_job)
+        self._led_job = self.app.after(0 if immediate else 120, lambda: self.req({"cmd": "led", "r": r, "g": g, "b": b}, None, "LED command failed"))
+
+    def _led_mode(self, mode):
+        self.req({"cmd": "led", "mode": mode}, None, "LED command failed")
+
+    # ---------------------------------------------------------------- inputs
+    def _build_inputs(self, parent):
+        c = self.card(parent, "3. Keys + encoder (press them on the pad - indicators follow live)")
+        r = self.row(c)
+        self.key_labels = []
+        for i in range(5):
+            l = ctk.CTkLabel(r, text=f"K{i + 1}", width=48, height=34, fg_color="#2b2f36", corner_radius=6)
+            l.pack(side="left", padx=3)
+            self.key_labels.append(l)
+        self.enc_lbl = ctk.CTkLabel(r, text="ENC  pos 0", width=110, height=34, fg_color="#2b2f36", corner_radius=6)
+        self.enc_lbl.pack(side="left", padx=(10, 3))
+        r = self.row(c)
+        self.events_var = tk.BooleanVar(value=False)
+        ctk.CTkSwitch(r, text="Live events", variable=self.events_var, command=self.toggle_events).pack(side="left", padx=4)
+        ctk.CTkButton(r, text="Read now", width=90, command=self.read_inputs).pack(side="left", padx=4)
+        ctk.CTkLabel(c, text="Virtual presses run the key's real action (copy / paste / media ...) on THIS computer via the pad:",
+                     text_color="#9aa0a6", wraplength=540, justify="left").pack(anchor="w", padx=10)
+        r = self.row(c)
+        for i in range(5):
+            ctk.CTkButton(r, text=f"Press K{i + 1}", width=70, fg_color="#555",
+                          command=lambda k=i + 1: self.req({"cmd": "input", "k": k}, None, "Input failed")).pack(side="left", padx=2)
+        r = self.row(c)
+        for text, msg in (("Dial left", {"turn": -1}), ("Dial right", {"turn": 1}), ("Dial click", {"click": True}), ("Dial hold", {"hold": True})):
+            ctk.CTkButton(r, text=text, width=88, fg_color="#555", command=lambda m=msg: self.req({"cmd": "input", **m}, None, "Input failed")).pack(side="left", padx=2)
+
+    def toggle_events(self):
+        self.req({"cmd": "events", "val": bool(self.events_var.get())}, None, "Events failed")
+
+    def read_inputs(self):
+        def ok(r):
+            self._show_keys(r.get("keys", []), r.get("enc_sw", 0), r.get("enc_pos", 0))
+            self.sys(f"inputs: keys {r.get('keys')} enc_sw {r.get('enc_sw')} A={r.get('enc_a')} B={r.get('enc_b')} pos {r.get('enc_pos')}")
+        self.req({"cmd": "inputs"}, ok, "Read failed")
+
+    def _show_keys(self, keys, enc_sw, pos):
+        for l, v in zip(self.key_labels, keys):
+            l.configure(fg_color="#2e7d4f" if v else "#2b2f36")
+        self.enc_lbl.configure(text=f"ENC  pos {pos}", fg_color="#2e7d4f" if enc_sw else "#2b2f36")
+
+    def on_event(self, m):
+        """Device -> app messages without a reply slot (key / encoder events). Called from the reader thread."""
+        evt = m.get("evt")
+        if evt == "key" and 1 <= m.get("k", 0) <= 5:
+            k, v = m["k"], m.get("v", 0)
+            self.app.post(lambda: self.key_labels[k - 1].configure(fg_color="#2e7d4f" if v else "#2b2f36"))
+        elif evt == "enc":
+            pos = m.get("pos", 0)
+            self.app.post(lambda: self.enc_lbl.configure(text=f"ENC  pos {pos}  ({'+' if m.get('d', 0) > 0 else '-'})"))
+        elif evt == "encsw":
+            v = m.get("v", 0)
+            self.app.post(lambda: self.enc_lbl.configure(fg_color="#2e7d4f" if v else "#2b2f36"))
+
+    # ---------------------------------------------------------------- display
+    def _build_display(self, parent):
+        c = self.card(parent, "4. Display (test patterns + what the frame buffer shows)")
+        r = self.row(c)
+        for text, msg in (("Red", {"test": "fill", "r": 255}), ("Green", {"test": "fill", "g": 255}), ("Blue", {"test": "fill", "b": 255}),
+                          ("White", {"test": "fill", "r": 255, "g": 255, "b": 255}), ("Black", {"test": "fill"})):
+            ctk.CTkButton(r, text=text, width=64, command=lambda m=msg: self.req({"cmd": "display", **m}, None, "Display test failed")).pack(side="left", padx=2)
+        r = self.row(c)
+        for text, t in (("Colour bars", "bars"), ("Grid", "grid"), ("Text", "text"), ("Back to normal", "off")):
+            ctk.CTkButton(r, text=text, width=100, fg_color="#555", command=lambda t=t: self.req({"cmd": "display", "test": t}, None, "Display test failed")).pack(side="left", padx=2)
+        r = self.row(c)
+        ctk.CTkButton(r, text="Screenshot of the pad's screen", width=220, command=self.snapshot).pack(side="left", padx=2)
+        self.snap_canvas = tk.Canvas(c, width=240, height=240, bg="#111", highlightthickness=1, highlightbackground="#333")
+        self.snap_canvas.pack(pady=6)
+        ctk.CTkLabel(c, text="Test patterns stay for 8 s. A screenshot shows the firmware's frame buffer (not GIF mode).", text_color="#9aa0a6").pack(anchor="w", padx=10, pady=(0, 6))
+
+    def snapshot(self):
+        if not self.app.dev.connected:
+            return self.app.set_status("Not connected", error=True)
+        self.sys("downloading screen snapshot ...")
+        self.app.bg(lambda: self.app.dev.snapshot(), self._show_snap, "Snapshot failed")
+
+    def _show_snap(self, img):
+        self._snap_img = ImageTk.PhotoImage(img)
+        self.snap_canvas.delete("all")
+        self.snap_canvas.create_image(0, 0, anchor="nw", image=self._snap_img)
+        self.sys("snapshot received")
+
+    # ---------------------------------------------------------------- HID
+    def _build_hid(self, parent):
+        c = self.card(parent, "5. Keyboard / media test (the pad types into whatever window has the focus)")
+        r = self.row(c)
+        self.hid_text = tk.StringVar(value="Hello from DeskCompanion!")
+        ctk.CTkEntry(r, textvariable=self.hid_text).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ctk.CTkButton(r, text="Type in 3 s", width=100, command=self.hid_type).pack(side="left")
+        r = self.row(c)
+        for text, name in (("Mute", "MUTE"), ("Vol +", "VOL_UP"), ("Vol -", "VOL_DOWN"), ("Play/Pause", "PLAY_PAUSE"), ("Next", "NEXT")):
+            ctk.CTkButton(r, text=text, width=70, fg_color="#555", command=lambda n=name: self.req({"cmd": "run", "type": "media", "val": n}, None, "HID test failed")).pack(side="left", padx=2)
+        r = self.row(c)
+        ctk.CTkButton(r, text="Ctrl+A in 3 s", width=110, fg_color="#555", command=lambda: self.hid_later({"cmd": "run", "type": "combo", "val": ["CTRL", "a"]})).pack(side="left", padx=2)
+        ctk.CTkButton(r, text="Win key in 3 s", width=110, fg_color="#555", command=lambda: self.hid_later({"cmd": "run", "type": "combo", "val": ["GUI"]})).pack(side="left", padx=2)
+
+    def hid_type(self):
+        self.hid_later({"cmd": "run", "type": "text", "val": self.hid_text.get()})
+
+    def hid_later(self, msg, n=3):
+        if not self.app.dev.connected:
+            return self.app.set_status("Not connected", error=True)
+        if n > 0:
+            self.app.set_status(f"Click into a text editor now ... sending in {n}")
+            self.app.after(1000, lambda: self.hid_later(msg, n - 1))
+        else:
+            self.req(msg, lambda r: self.app.set_status("HID test sent"), "HID test failed (is the pad in USB-OTG / TinyUSB mode?)")
+
+    # ---------------------------------------------------------------- GPIO
+    def _build_gpio(self, parent):
+        c = self.card(parent, "6. GPIO tester (wiring check)")
+        r = self.row(c)
+        self.gpio_pin = tk.StringVar(value="1")
+        ctk.CTkEntry(r, textvariable=self.gpio_pin, width=60).pack(side="left", padx=(0, 6))
+        for text, op in (("Read", "read"), ("Pull-up", "pullup"), ("Drive low", "low"), ("Drive high", "high")):
+            ctk.CTkButton(r, text=text, width=82, fg_color="#555", command=lambda o=op: self.gpio(o)).pack(side="left", padx=2)
+        ctk.CTkButton(r, text="Scan all", width=80, command=self.gpio_scan).pack(side="left", padx=(8, 2))
+        self.gpio_out = ctk.CTkLabel(c, text="Pins used by the pad: K1-K5 = 1,2,4,5,6  ENC A/B/SW = 13,14,15  TFT SDA/SCL/RES/DC/CS/BLK = 11,12,10,9,8,7",
+                                     text_color="#9aa0a6", wraplength=540, justify="left")
+        self.gpio_out.pack(anchor="w", padx=10, pady=(2, 6))
+
+    def gpio(self, op):
+        try:
+            pin = int(self.gpio_pin.get())
+        except ValueError:
+            return self.app.set_status("Pin must be a number", error=True)
+
+        def ok(r):
+            txt = f"GPIO{r['pin']} = {r['val']}  {('(' + r['use'] + ')') if r.get('use') else ''}  {r.get('warn', '')}"
+            self.gpio_out.configure(text=txt)
+            self.sys(txt)
+        self.req({"cmd": "gpio", "pin": pin, "op": op}, ok, "GPIO command refused")
+
+    def gpio_scan(self):
+        def ok(r):
+            hi = [p for p, v in r["pins"] if v]
+            lo = [p for p, v in r["pins"] if not v]
+            txt = f"HIGH: {hi}\nLOW: {lo}"
+            self.gpio_out.configure(text=txt)
+            self.sys("gpio scan " + txt.replace("\n", "  "))
+        self.req({"cmd": "gpio", "op": "scan"}, ok, "Scan failed")
+
+    # ---------------------------------------------------------------- system
+    def _build_system(self, parent):
+        c = self.card(parent, "7. System")
+        r = self.row(c)
+        ctk.CTkButton(r, text="Reboot pad", width=110, command=lambda: self.req({"cmd": "reboot"}, lambda _r: self.sys("rebooting ..."), "Reboot failed")).pack(side="left", padx=2)
+        ctk.CTkButton(r, text="Reboot into download mode", width=190, fg_color="#7a4a1f",
+                      command=self.reboot_download).pack(side="left", padx=2)
+        ctk.CTkButton(r, text="Verify keys on pad", width=150, fg_color="#555", command=self.app.verify_pad_keys).pack(side="left", padx=2)
+        ctk.CTkLabel(c, text="Download mode = the ROM flasher, same as holding BOOT while plugging in; no button needed for the next upload. "
+                     "The port will change - flash from the Arduino IDE, then unplug / re-plug.", text_color="#9aa0a6", wraplength=540, justify="left").pack(anchor="w", padx=10, pady=(2, 6))
+
+    def reboot_download(self):
+        if messagebox.askyesno("Download mode", "Reboot the pad into the ROM download (flashing) mode?\nIt will disappear from the app until you re-flash or re-plug it."):
+            self.req({"cmd": "reboot", "mode": "download"}, lambda _r: self.sys("pad is rebooting into download mode"), "Reboot failed")
+
+    # ---------------------------------------------------------------- composite actions
+    def ping(self):
+        if not self.app.dev.connected:
+            return self.app.set_status("Not connected", error=True)
+
+        def work():
+            times = []
+            for i in range(5):
+                t = time.perf_counter()
+                self.app.dev.request({"cmd": "ping", "t": i}, timeout=2)
+                times.append((time.perf_counter() - t) * 1000)
+            return times
+        self.app.bg(work, lambda t: self.sys(f"ping x5: min {min(t):.1f} ms  avg {sum(t) / len(t):.1f} ms  max {max(t):.1f} ms"), "Ping failed")
+
+    def show_info(self):
+        def ok(r):
+            self.last_info = r
+            self.sys("---- device info ----")
+            for ln in info_lines(r):
+                self.sys(ln)
+            self.sys("---------------------")
+        self.req({"cmd": "info"}, ok, "Info failed")
+
+    def full_selftest(self):
+        dev = self.app.dev
+        if not dev.connected:
+            return self.app.set_status("Not connected - nothing to test", error=True)
+        self.sys("===== full self-test: watch the LED (R,G,B) and the screen =====")
+
+        def work():
+            res = []
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < 90:                    # first boot after flashing: storage is formatted in the background
+                h = dev.request({"cmd": "hello"}, timeout=3)
+                if h.get("fs") or h.get("fs_state") == "failed" or "fs" not in h:
+                    break
+                self.app.post(lambda st=h.get("fs_state"): self.sys(f"waiting for the pad's storage ({st}) - first boot only ..."))
+                time.sleep(3)
+
+            def check(name, fn):
+                try:
+                    detail = fn()
+                    res.append((True, name, detail or ""))
+                except Exception as e:                       # noqa: BLE001
+                    res.append((False, name, str(e)))
+
+            def t_ping():
+                ts = []
+                for i in range(5):
+                    t = time.perf_counter()
+                    dev.request({"cmd": "ping", "t": i}, timeout=2)
+                    ts.append((time.perf_counter() - t) * 1000)
+                return f"avg {sum(ts) / len(ts):.1f} ms"
+
+            def t_echo():
+                msg = {"a": 1, "b": "xé\"y", "c": [1, 2]}
+                r = dev.request({"cmd": "echo", "data": msg}, timeout=2)
+                if r.get("data") != msg:
+                    raise DeviceError(f"echo mismatch: {r.get('data')}")
+
+            def t_info():
+                r = dev.request({"cmd": "info"}, timeout=3)
+                self.last_info = r
+                bad = [k for k in ("ok_prefs", "ok_fs", "ok_disp") if k in r and not r[k]]
+                if r.get("safe"):
+                    raise DeviceError(f"SAFE MODE after {r.get('crashes')} crashes (last reset: {r.get('reset')}) - display disabled")
+                if bad:
+                    raise DeviceError("subsystem(s) failed: " + ", ".join(bad) + f"  boot log: {r.get('boot')}")
+                return f"{r.get('chip')} core {r.get('core')} heap {r.get('heap')} reset {r.get('reset')}"
+
+            def t_led():
+                for rgbv in ((60, 0, 0), (0, 60, 0), (0, 0, 60)):
+                    dev.request({"cmd": "led", "r": rgbv[0], "g": rgbv[1], "b": rgbv[2]}, timeout=2)
+                    time.sleep(0.5)
+                dev.request({"cmd": "led", "mode": "auto"}, timeout=2)
+                return "sent red / green / blue - did the LED change colour?"
+
+            def t_firmware():
+                r = dev.request({"cmd": "selftest"}, timeout=10)
+                bad = [k for k in ("nvs", "fs", "heap_ok") if not r.get(k)]
+                if bad:
+                    raise DeviceError("failed: " + ", ".join(bad))
+                return f"nvs ok, fs ok, heap {r.get('heap')}, display {r.get('display')}"
+
+            def t_inputs():
+                r = dev.request({"cmd": "inputs"}, timeout=2)
+                stuck = [i + 1 for i, v in enumerate(r["keys"]) if v]
+                if stuck:
+                    raise DeviceError(f"key(s) {stuck} read as PRESSED while idle - wiring / short?")
+                return f"all 5 keys idle, encoder A={r.get('enc_a')} B={r.get('enc_b')}"
+
+            def t_keys():
+                r = dev.request({"cmd": "getkeys"}, timeout=3)
+                return f"{sum(1 for s in r['slots'] if not s['def'])} custom key slot(s) stored on the pad"
+
+            check("link: ping x5", t_ping)
+            check("link: JSON echo round trip (unicode / quotes)", t_echo)
+            check("firmware: subsystems + safe mode", t_info)
+            check("firmware: NVS / filesystem / heap self-test", t_firmware)
+            check("onboard LED colour cycle", t_led)
+            check("keys idle (wiring)", t_inputs)
+            check("stored key mappings readable", t_keys)
+            return res
+
+        def done(res):
+            ok = sum(1 for r in res if r[0])
+            for good, name, detail in res:
+                self.sys(f"{'PASS' if good else 'FAIL'}  {name}  {detail}", err=not good)
+            self.sys(f"===== self-test finished: {ok}/{len(res)} passed =====", err=ok != len(res))
+            self.refresh_state()
+        self.app.bg(work, done, "Self-test failed")
+
+    def report(self):
+        d = self.app.dev
+        out = [f"DeskCompanion diagnostic report  {time.strftime('%Y-%m-%d %H:%M:%S')}",
+               f"app: {APP_NAME}  python {platform.python_version()}  {platform.platform()}",
+               f"pyserial {getattr(serial, '__version__', '?')}", "", "serial ports:"]
+        for p in list_serial_ports():
+            out.append(f"  {p['device']:10s} {fmt_vidpid(p)}  {p['desc']}  [{p['mfr']}] {'<-- ESP32' if p['esp'] else ''}")
+        out += ["", f"connected: {d.connected}  port: {d.port}  rx {d.rx_bytes} B  tx {d.tx_bytes} B", "hello:", f"  {d.info}", "info:"]
+        out += ["  " + ln for ln in info_lines(self.last_info)] if self.last_info else ["  (not fetched - press 'Device info')"]
+        out += ["", "last terminal lines:"] + ["  " + ln for ln in self.lines[-150:]]
+        text = "\n".join(out)
+        self.app.clipboard_clear()
+        self.app.clipboard_append(text)
+        path = Path.home() / "deskcompanion_diag.txt"
+        try:
+            path.write_text(text, encoding="utf-8")
+            where = f"and saved to {path}"
+        except OSError:
+            where = ""
+        self.app.set_status(f"Diagnostic report copied to the clipboard {where} - paste it to whoever is helping you")
+        self.sys("diagnostic report copied")
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -1878,19 +2802,32 @@ class App(ctk.CTk):
         Toast(self, title, text, kind)
 
     def _monitor_loop(self):
+        seen = set()
         while not self.closing:
-            ports = candidate_ports()
+            allp = list_serial_ports()
+            info = {p["device"]: p for p in allp}
+            ports = [p["device"] for p in allp if p["esp"]]
+            for d in set(ports) - seen:                      # a pad (or any Espressif device) just appeared
+                p = info[d]
+                self.post(lambda p=p: self._dev_note(f"Espressif USB device appeared: {p['device']}  {fmt_vidpid(p)}  {p['desc']}  - {p['hint']}"))
+            for d in seen - set(ports):
+                self.post(lambda d=d: self._dev_note(f"serial port {d} disappeared (unplugged / rebooting / re-enumerating)"))
+            seen = set(ports)
             gone = set(self._fails) | self._warned
             for p in gone - set(ports):                      # unplugged: forget, so the next plug-in starts fresh
                 self._fails.pop(p, None)
                 self._warned.discard(p)
             if self.auto_flag and not self.dev.connected:
                 for port in ports:
-                    if self._try_connect(port):
+                    if self._try_connect(port, info.get(port)):
                         break
             time.sleep(1.0)
 
-    def _try_connect(self, port):
+    def _dev_note(self, text, err=False):
+        if hasattr(self, "devtab"):
+            self.devtab.sys(text, err)
+
+    def _try_connect(self, port, pinfo=None):
         if not self.connect_lock.acquire(blocking=False):
             return False
         try:
@@ -1899,15 +2836,18 @@ class App(ctk.CTk):
             self._fails[port] = self._fails.get(port, 0) + 1
             msg = str(e).lower()
             busy = isinstance(e, PermissionError) or any(w in msg for w in ("denied", "busy", "permission", "in use"))
+            vp = fmt_vidpid(pinfo) if pinfo else "?"
+            hint = (pinfo or {}).get("hint", "")
             self.post(lambda e=e: self._log(f"connect {port} failed: {e}"))
-            if port not in self._warned and (busy or self._fails[port] >= 3):   # 3 tries = the pad had time to boot
+            self.post(lambda e=e: self._dev_note(f"connect {port} ({vp}) failed: {e}   {hint}", err=True))
+            if port not in self._warned and (busy or self._fails[port] >= 2):   # 2 tries x 8 s = the pad had plenty of time to boot
                 self._warned.add(port)
                 if busy:
                     self.post(lambda: self.notify(f"{port} is in use by another program",
                               "Close the Arduino / PlatformIO serial monitor - DeskCompanion connects by itself afterwards.", "warn"))
                 else:
-                    self.post(lambda: self.notify(f"USB device found on {port}",
-                              "...but it does not answer as DeskCompanion. Re-flash the firmware, then replug it.", "warn"))
+                    self.post(lambda: self.notify(f"USB device found on {port}  ({vp})",
+                              (hint + "  " if hint else "") + "It does not answer as DeskCompanion. Open the Dev tab and press 'Probe all ports'.", "warn"))
             return False
         finally:
             self.connect_lock.release()
@@ -1919,7 +2859,7 @@ class App(ctk.CTk):
     def _build(self):
         self.tabs = ctk.CTkTabview(self)
         self.tabs.pack(fill="both", expand=True, padx=10, pady=(10, 0))
-        for name in ("Virtual Pad", "Dashboard", "Macro Creator", "GIF Upload", "Device"):
+        for name in ("Virtual Pad", "Dashboard", "Macro Creator", "GIF Upload", "Device", "Dev"):
             self.tabs.add(name)
         self.status = ctk.CTkLabel(self, text="Searching for the pad...", anchor="w", text_color="#9aa0a6")
         self.status.pack(fill="x", padx=14, pady=(4, 8))
@@ -1928,6 +2868,8 @@ class App(ctk.CTk):
         self._build_dashboard(self.tabs.tab("Dashboard"))
         self._build_macro(self.tabs.tab("Macro Creator"))
         self._build_gif(self.tabs.tab("GIF Upload"))
+        self.devtab = DevTab(self, self.tabs.tab("Dev"))
+        self.dev.on_line, self.dev.on_event = self.devtab.log, self.devtab.on_event
         self.refresh_ports()
 
     def _title(self, parent, text, row=0):
@@ -2159,6 +3101,44 @@ class App(ctk.CTk):
         self.bg(work, lambda _: self.set_status("Sent to pad: " + ", ".join(SLOT_LABELS[x[0]] for x in jobs)),
                 "Upload failed")
 
+    def _verify_keys_sync(self):
+        """Compare what the pad stored (getkeys: length + CRC of each slot's JSON) with what the app believes it uploaded.
+        Returns a list of problems, or None when the firmware is too old to answer."""
+        try:
+            r = self.dev.request({"cmd": "getkeys"}, timeout=4)
+        except DeviceError:
+            return None
+        bad = []
+        for slot in r.get("slots", []):
+            s = slot["s"]
+            m = self.cfg["map"][str(s)]
+            spec = resolve_spec(self.cfg, m["cat"], m["action"])
+            if slot["def"]:
+                if (m["cat"], m["action"]) != DEFAULT_MAP[s]:
+                    bad.append(f"{SLOT_LABELS[s]}: still factory default on the pad")
+                continue
+            if not spec:
+                continue
+            j = compact_json({"type": spec[0], "val": spec[1]}).encode("utf-8")
+            if slot["len"] != len(j) or slot["crc"] != (zlib.crc32(j) & 0xFFFFFFFF):
+                bad.append(f"{SLOT_LABELS[s]}: pad has different data than the app sent")
+        return bad
+
+    def verify_pad_keys(self):
+        if not self.dev.connected:
+            return self.set_status("Not connected", error=True)
+
+        def done(bad):
+            if bad is None:
+                self.set_status("This firmware cannot report its key slots (older version)", error=True)
+            elif bad:
+                self.set_status("Key check: " + "; ".join(bad), error=True)
+                self._dev_note("key check FAILED: " + "; ".join(bad), err=True)
+            else:
+                self.set_status("Key check OK: the pad stores exactly what the app uploaded")
+                self._dev_note("key check OK")
+        self.bg(self._verify_keys_sync, done, "Key check failed")
+
     def upload_all(self):
         if not self.dev.connected:
             return self.set_status("Connect the pad first (Device tab / USB cable)", error=True)
@@ -2181,10 +3161,15 @@ class App(ctk.CTk):
             self.dev.request({"cmd": "brightness", "val": bright})
             self.dev.request({"cmd": "mode", "val": mode})
             self.post(lambda: self._mark_display_pushed(mode, bright))
+            return self._verify_keys_sync()
 
-        def done(_):
+        def done(bad):
             self.upload_btn2.configure(state="normal")
-            self.set_status("Uploaded to the pad: all 7 key slots, brightness and mode")
+            if bad:
+                self.set_status("Uploaded, but the read-back check found problems: " + "; ".join(bad), error=True)
+            else:
+                self.set_status("Uploaded to the pad: all 7 key slots, brightness and mode" +
+                                ("" if bad is None else " (read back and verified)"))
             self.vp_log("uploaded everything to the physical pad")
         self.bg(work, done, "Upload failed", fail=lambda: self.upload_btn2.configure(state="normal"))
 
@@ -2507,6 +3492,9 @@ class App(ctk.CTk):
                          else "Pad connected")
         self._was_connected = True
         self.notify("DeskCompanion connected", f"{label}  -  firmware {info.get('fw', '?')}", "ok")
+        self._dev_note(f"connected on {label}: {info}")
+        self.devtab.refresh_state()
+        self.devtab.refresh_ports()
         self.bright.set(info.get("bright", 200))
         self.mode_var.set(MODE_CHOICES[max(0, min(4, info.get("mode", 1) - 1))])
         m, b = max(1, min(5, int(info.get("mode", 1)))), int(info.get("bright", 200))
@@ -2528,6 +3516,10 @@ class App(ctk.CTk):
         self.conn_btn.configure(text="Connect")
         self.sim_btn.configure(text="Simulate pad (no hardware)")
         self.set_status("Pad disconnected - waiting for it to reappear" if self.auto_flag else "Disconnected")
+        if hasattr(self, "devtab"):
+            self.devtab.refresh_state()
+            self.devtab.refresh_ports()
+            self._dev_note("disconnected")
         if self._was_connected:
             self._was_connected = False
             self.notify("DeskCompanion disconnected", "Waiting for the pad to be plugged in again...", "off")

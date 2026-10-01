@@ -1,39 +1,176 @@
-# Desk Companion — setup guide
+# Desk Companion - ESP32-S3 macro pad (Waveshare ESP32-S3-Zero)
 
-A round-screen ESP32-S3 macro pad. The firmware is fully standalone; the Python app is optional
-and only needed to change key mappings, build macros, or upload a GIF.
+A round-screen macro pad: 5 keys + a rotary encoder, GC9A01 1.28" display, USB keyboard / media keys, and a desktop
+companion app. The firmware works standalone; the app is only needed to remap keys, build macros, upload a GIF and
+for the **Dev tab** (bring-up and diagnostics).
 
-## 1. Arduino IDE setup
+```
+CoreBringup/CoreBringup.ino    STEP 1  tiny sketch, no libraries: LED + USB serial link + wiring test
+DeskCompanion/DeskCompanion.ino STEP 2  the full firmware (display, keys, macros, GIFs, ...)
+companion_app.py                desktop app (Dev tab, virtual pad, macro creator, GIF upload)
+User_Setup.h, platformio.ini    TFT_eSPI pin setup / PlatformIO alternative
+tools/                          emulator test-suite for the firmware (developers; no hardware needed)
+```
 
-1. **Board support**: File → Preferences → "Additional Boards Manager URLs" →
+## The bring-up ladder - do it in this order
+
+The idea: prove each layer on its own, so when something is wrong you know *which* layer.
+
+| Step | What | Proves |
+|---|---|---|
+| 0 | Flash **CoreBringup** | board, USB cable, driver, Arduino settings, the onboard LED |
+| 1 | Run the app, open the **Dev** tab | the PC <-> pad link (JSON over USB serial), pins, keys, HID |
+| 2 | Flash **DeskCompanion** (full firmware) | display, filesystem, key actions, GIFs |
+| 3 | Dev tab -> *Full self-test* | everything, with a PASS/FAIL list |
+
+### Step 0 - Arduino IDE setup (Waveshare ESP32-S3-Zero)
+
+1. **Boards manager**: File -> Preferences -> *Additional boards manager URLs*:
    `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`
-   Then Tools → Board → Boards Manager → install **esp32 by Espressif Systems** (3.0.0 or newer).
-2. **Board**: Tools → Board → "ESP32S3 Dev Module" (or your specific "ESP32-S3 Zero" entry if your
-   board package adds one).
-3. **Critical USB settings** (Tools menu) — the sketch will not compile without these:
-   - **USB Mode**: `USB-OTG (TinyUSB)`
-   - **USB CDC On Boot**: `Enabled`
-   - **Upload Mode**: `UART0 / Hardware CDC` (use this if the board isn't detected for the very
-     first upload; after that, "USB-OTG CDC" also works since the sketch enumerates as a CDC device)
-   - **Partition Scheme**: `Default 4MB with spiffs` (or any scheme that includes a SPIFFS/LittleFS
-     data partition — the GIF and settings need it)
-   - **Flash Size**: `4MB` (match your board)
-4. **Libraries** — Tools → Manage Libraries, install:
-   - `TFT_eSPI` by Bodmer
-   - `AnimatedGIF` by bitbank2
-   - `Bounce2` by Thomas O Fredericks
-   - `ArduinoJson` by Benoit Blanchon — **version 7.x** (the code uses the v7 `JsonDocument` API)
-5. **Configure TFT_eSPI**: copy `User_Setup.h` from this package over
-   `<Arduino sketchbook>/libraries/TFT_eSPI/User_Setup.h` (back up the original first). This
-   sets the GC9A01 driver, the exact pin map, and the fonts the firmware uses.
-6. Open `DeskCompanion/DeskCompanion.ino`, select the correct COM/serial port, and upload.
-   First boot takes a few extra seconds — it generates a small demo radar animation in LittleFS.
+   Install **esp32 by Espressif Systems**. **3.1.0 or newer is recommended** (keyboard-layout support);
+   2.0.x also builds (the layout feature is compiled out).
+2. **Board**: *Waveshare ESP32-S3-Zero* (if your core lists it) or *ESP32S3 Dev Module*.
+3. **Tools menu** - these matter:
 
-### PlatformIO alternative
-A ready `platformio.ini` is included (uses the same pins as flags, so you can skip step 5 above).
-From the folder containing both `platformio.ini` and `DeskCompanion/`: `pio run -t upload`.
+   | Setting | Value |
+   |---|---|
+   | USB Mode | **USB-OTG (TinyUSB)**  (needed for the keyboard; "Hardware CDC and JTAG" still gives you the serial link) |
+   | USB CDC On Boot | **Enabled** |
+   | Flash Size | 4MB (32Mb) |
+   | Partition Scheme | **Default 4MB with spiffs** |
+   | PSRAM | **Disabled**  (a wrong PSRAM type makes S3 boards boot-loop) |
+   | Upload Mode | UART0 / Hardware CDC |
 
-### Wiring checklist
+4. **Download mode** (needed for the first flash, and whenever the sketch is not running): hold **BOOT**, plug in USB
+   (or tap RESET while holding BOOT), release BOOT. A *new* COM port appears (Espressif, `303A:1001`) - select it and upload.
+   After the upload, unplug / re-plug (or press RESET): the port number usually **changes** again.
+   Once a pad runs this firmware you can skip the button: Dev tab -> *Reboot into download mode*.
+
+### Step 0a (alternative) - flash prebuilt images, no Arduino IDE at all
+
+`firmware/` contains prebuilt images (built from this repo with arduino-esp32 core 3.2.1, USB-OTG/TinyUSB + CDC-on-boot,
+4 MB flash, DIO 80 MHz, PSRAM off) and a flasher:
+
+```
+pip install esptool pyserial
+python firmware/flash.py --image core     # CoreBringup (step 1)
+python firmware/flash.py --image full     # DeskCompanion (step 2)
+```
+Put the board in download mode first (hold BOOT while plugging in USB). If the pad already runs one of these firmwares the
+script reboots it into download mode by itself. The same thing is a button in the app: **Dev tab -> 0. Flash firmware**.
+`python firmware/flash.py --list` shows the serial ports (the board in download mode is `303A:1001`).
+*The images were built and emulator-tested here but have not been run on real hardware by the author.*
+
+### Step 0b - flash CoreBringup (Arduino IDE)
+
+Open `CoreBringup/CoreBringup.ino` (the folder name must stay `CoreBringup`). **No libraries needed.** Upload.
+
+**The LED tells you what is happening** (WS2812 on GPIO21 - the tiny RGB LED next to the USB port):
+
+| LED | Meaning |
+|---|---|
+| purple | sketch started |
+| blue | USB serial is up |
+| red, green, blue, white (0.25 s each) | LED self-test |
+| dim green blip every 3 s | alive, waiting for the app |
+
+No LED at all? -> the sketch did not run. See *Troubleshooting*.
+
+### Step 1 - the app
+
+```
+pip install customtkinter pyserial psutil pillow
+python companion_app.py
+```
+Plug the pad in (before or after, any order). The app finds Espressif USB devices every second and connects by itself.
+Open the **Dev** tab:
+
+* **1. Serial ports** - every port with `VID:PID`. Your pad should show `303A:xxxx`. *Probe all ports* sends `hello`
+  to each and shows what came back (useful when the app does not connect by itself).
+* **2. LED** - sliders, colour buttons, blink / rainbow / auto. *This is the "light up the LED" proof.*
+* **3. Keys + encoder** - switch on *Live events*, press the physical keys: the indicators light up.
+  *Press K1..K5 / Dial* buttons trigger the same code as the physical keys.
+* **4. Display** - fill colours, colour bars, grid, text; *Screenshot* downloads what the firmware thinks is on screen.
+* **5. Keyboard / media test** - makes the pad type text / press media keys / Ctrl+A on this PC.
+* **6. GPIO tester** - read / pull-up / drive any free pin, scan all pins (wiring checks).
+* **7. System** - reboot, reboot into download mode, *Verify keys on pad*.
+* **Top bar**: *Ping x5*, *Device info*, *Full self-test*, *Copy diagnostic report* (paste it to whoever is helping you).
+* **Terminal**: every line on the wire in both directions, plus anything the pad prints that is not protocol JSON
+  (boot text, panics). You can type raw JSON lines.
+
+No hardware yet? **Dashboard -> Simulate pad (no hardware)** connects the app to an in-process stand-in that speaks the
+same protocol, so the whole app (including the Dev tab) can be tried.
+
+### Step 2 - the full firmware
+
+1. Libraries (Library manager): **TFT_eSPI** (Bodmer), **AnimatedGIF** (bitbank2), **Bounce2**, **ArduinoJson 7.x**.
+2. Copy `User_Setup.h` over `<sketchbook>/libraries/TFT_eSPI/User_Setup.h`.
+3. Open `DeskCompanion/DeskCompanion.ino`, upload.
+
+What the full firmware does differently from a plain sketch - **the core comes first**:
+
+1. LED purple -> blue (USB up; the PC sees the pad **before** any display / filesystem work happens) -> cyan (filesystem) -> amber (display) -> heartbeat.
+2. Every subsystem reports its own init result (`info` / Dev tab), a failed display or filesystem never takes the USB link down.
+3. **Safe mode**: three crashes / watchdog resets in a row boot the pad with the display and GIF engine disabled and a **red double blink**, so it stays reachable from the app (Dev tab shows `SAFE MODE`, the reset reason and the boot log). A power cycle or a clean reboot tries the full firmware again.
+4. LED heartbeat colour: **green** = all good, **amber** = a subsystem failed, **red** = safe mode.
+
+Default key map (works with no app): K1 copy, K2 paste, K3 undo, K4 play/pause, K5 mute, dial = volume, dial click = radial
+menu (brightness / volume / mode / exit), dial hold = next display mode. Modes: clock, focus timer (K1 start/pause, K2 reset,
+dial = minutes), media dashboard, system telemetry, GIF.
+
+## Troubleshooting
+
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| Upload fails / no port | not in download mode | hold BOOT while plugging in; try another cable (charge-only cables have no data lines) |
+| Port appears as `303A:1001` and stays there | board is in the ROM bootloader, or the sketch uses *Hardware CDC and JTAG* | re-plug without BOOT. For the keyboard use *USB Mode = USB-OTG (TinyUSB)* |
+| App says "found on COMx ... does not answer" | wrong USB settings, a different sketch, or the port is held by the Serial Monitor | close the Serial Monitor; Dev tab -> *Probe all ports*; check *USB CDC On Boot = Enabled* |
+| No LED, nothing happens after upload | sketch is boot-looping (often PSRAM = OPI/QSPI selected by mistake) or the upload was not completed | set PSRAM = Disabled, re-upload; watch the port list - a port that appears / disappears every few seconds = boot loop |
+| LED blue but the app does not connect | serial link fine, but another program holds the port, or Windows needs the CDC driver | Device Manager -> Ports: *USB Serial Device*; close other terminals |
+| LED works, screen stays dark | display wiring / `User_Setup.h` not installed / wrong colour setup | Dev tab -> Display tests; check `User_Setup.h` was copied into the TFT_eSPI library; try `USE_HSPI_PORT` there |
+| Screen colours inverted / red-blue swapped | panel variant | uncomment `TFT_INVERSION_ON/OFF` or `TFT_RGB_ORDER TFT_BGR` in `User_Setup.h` |
+| Keys do nothing | wiring, or HID not enumerated | Dev tab -> Keys: indicators must light up; Keyboard test must type. HID needs *USB Mode = TinyUSB* |
+| Red double-blink | safe mode (3 crashes in a row) | Dev tab -> *Device info*: look at `reset`, `boot`; usually a bad display / wiring or wrong board settings |
+| `KeyboardLayout_xx not declared` while compiling | very old/new core mismatch | use core 3.1.0+; or 2.0.x (layout feature is compiled out automatically) |
+
+Windows check: Device Manager should list, under *Ports*, a **USB Serial Device (COMn)** and, under *Keyboards*,
+a **HID Keyboard Device** while the full firmware runs.
+
+## Serial protocol (JSON lines, USB CDC, 115200 - the baud rate is ignored by native USB)
+
+One JSON object per line. Every request may carry `"id": n`, which is echoed in the reply (the app uses it to match
+replies). Replies have `"ok": true|false` (`"err"` on failure). Messages **without** `ok` are asynchronous events.
+
+| Command | Purpose |
+|---|---|
+| `hello` | identity + health (`fw`, `hid`, `disp`, `fs`, `safe`, ...) |
+| `ping` (`t`) | round-trip test |
+| `info` | chip, heap, reset reason, crash counter, USB mode, subsystem status, boot log |
+| `echo` (`data`) | returns `data` unchanged |
+| `led` (`r g b` / `hex` / `mode`: auto,off,solid,blink,rainbow; `save`) | onboard RGB LED |
+| `gpio` (`pin`, `op`: read,pullup,input,low,high,scan) | wiring tests; GPIO 0, 19, 20, 21 and 26-32 are protected |
+| `inputs` | current key / encoder levels |
+| `events` (`val`) | stream `{"evt":"key","k":1,"v":1}`, `{"evt":"enc","d":1,"pos":n}`, `{"evt":"encsw","v":1}` |
+| `input` (`k` 1-5 / `turn` / `click` / `hold`) | virtual key press through the real UI/action code |
+| `run` (`type`,`val`) | execute an action now (keyboard test) without saving it |
+| `display` (`test`: fill,bars,grid,text,off) / `snapshot` | test patterns / frame-buffer download |
+| `selftest` | NVS + filesystem + heap + LED + display self-test |
+| `reboot` (`mode`: normal,download) | restart (download = ROM flasher, no BOOT button) |
+| `remap` / `reset_keys` / `getkeys` | key slots 1-5 = K1-K5, 6/7 = dial right/left; `getkeys` returns length + CRC for read-back |
+| `brightness`, `mode`, `os`, `layout`, `time`, `wifi`, `media`, `stats` | settings / telemetry |
+| `gif_begin` / `gif_chunk` / `gif_end` / `gif_abort` / `gif_delete` | chunked GIF upload with CRC32 |
+
+Error codes include `json`, `unknown_cmd`, `key`, `spec`, `too_long`, `nvs_full`, `pin`, `pin_protected`, `no_display`,
+`no_hid`, `no_space`, `crc`, `seq`, `b64`.
+
+## Testing without hardware
+
+`tools/` contains an emulator test-suite: the real firmware (compiled with `-DDC_SIM`) runs inside Espressif's QEMU
+ESP32-S3 and ~15 test groups drive the protocol, all five screens (with PNG screenshots), the filesystem / GIF path,
+persistence, a fuzz run and safe mode. See `tools/README.md`. The app's *Simulate pad* uses a Python model of the same protocol.
+
+## Wiring (from the project spec)
+
 | Function | GPIO | | Function | GPIO |
 |---|---|---|---|---|
 | TFT SCLK | 12 | | K1 | 1 |
@@ -41,136 +178,17 @@ From the folder containing both `platformio.ini` and `DeskCompanion/`: `pio run 
 | TFT RES | 10 | | K3 | 4 |
 | TFT DC | 9 | | K4 | 5 |
 | TFT CS | 8 | | K5 | 6 |
-| TFT BLK (PWM) | 7 | | Encoder A | 13 |
-| | | | Encoder B | 14 |
-| | | | Encoder SW | 15 |
-All switches and the encoder button are wired to GND and use internal pull-ups — no external
-resistors needed.
+| TFT BLK (PWM) | 7 | | Encoder A / B / SW | 13 / 14 / 15 |
+| Onboard RGB LED | 21 | | BOOT button | 0 |
 
-## 2. What works with zero configuration
-Power it over USB and it immediately behaves as a keyboard + media-key HID device:
-K1 Copy, K2 Paste, K3 Undo, K4 Play/Pause, K5 Mute, encoder turn = Volume, encoder click = radial
-menu (Brightness / Volume / Mode / Exit, auto-closes after 4 s), encoder long-press = next display
-mode. Five modes: Clock, Focus timer (K1 start/pause, K2 reset, turn dial to set minutes while
-idle), Media dashboard, System telemetry (shows live host CPU/RAM when the app is running,
-otherwise pad uptime/temperature), and a looping GIF (a small built-in demo until you upload
-your own). All key mappings, the current mode, and brightness survive power loss.
+Keys and the encoder switch go to GND (internal pull-ups). GPIO 19/20 are the USB pins, 0/3/45/46 are strapping pins.
+If a pin you wired is not exposed on your board revision the Dev tab's *Keys* / *GPIO* tools show it immediately.
 
-## 3. Desktop companion app
-```
-pip install customtkinter pyserial psutil pillow
-python companion_app.py
-```
-On Windows that is all - the live test uses the built-in Windows input API. (On macOS/Linux add
-`pynput` for the live test; everything else works without it.)
+## Notes
 
-**Zero setup connection:** just start the app and plug the pad in (before or after, any order).
-It looks for Espressif USB devices every second, performs the `hello` handshake (retried while
-the pad is still booting) and connects by itself; if the cable is pulled it reconnects when the
-pad returns. A popup + the Windows device sound say **DeskCompanion connected / disconnected**
-(switch under *Device*). If Windows sees the board but it does not answer - or another program
-such as the Arduino serial monitor holds the COM port - an orange popup says so. The popups need
-the app to be running; the pad itself works without it.
-
-**No pad handy?** Click **Simulate pad (no hardware)** on the Dashboard tab. It connects the app
-to an in-process stand-in (`SimFirmware`/`SimPort`) that speaks the exact same JSON wire protocol
-as the real firmware - no serial port, driver, or OS-specific loopback trick involved, so it works
-identically on Windows/macOS/Linux. Everything that talks to "the pad" (remapping keys, the Macro
-Creator, brightness/mode, and the full chunked GIF upload with CRC check) runs through the same
-`Device` code used for real hardware, so you can try the whole app, including uploading a GIF, before
-ever touching an ESP32. Click it again (now labelled **Stop simulating**) to disconnect. The app also sends your PC's keyboard
-layout to the pad (Device tab, *auto*), so Ctrl+Z is Undo on QWERTZ keyboards too instead of Redo. The **Virtual Pad** tab (see below) is the main screen. The **Dashboard** tab is the
-same key mapping as a plain list: K1–K5 and both encoder directions, 52 built-in actions plus
-"Unassigned"; edits are *staged* and go to the pad with **Upload**. The **Macro Creator** tab builds custom key
-combos, ASCII text auto-typers, and multi-step sequences (combo + text + delay + media steps, up
-to 64 steps) and assigns them to any key. The **GIF Upload** tab opens with a **preset library** of
-8 procedurally-generated quick-start animations (Heartbeat, Spinner, Pulse Rings, Confetti Burst,
-Fire, Rainbow Sweep, Loading Dots, Checkmark Pop) you can preview and upload with one click - no
-file needed; these are plain geometric generators, not copyrighted sticker/meme art, so there is
-nothing to source or license. Below that, **Select GIF...** still lets you load your own file, which
-crops/resizes it to a circular 240×240 image and automatically reduces colours/frames to fit the
-pad's free flash; either path previews on the round canvas and uploads with a progress bar. The
-**Device** tab covers brightness, active mode, host OS
-(for the Ctrl-vs-Cmd modifier), keyboard layout, and optional Wi-Fi/NTP time sync.
-
-### Virtual Pad (digital twin)
-The first tab is a live copy of the device: the round screen, the five keys and the encoder.
-- **Live screen** - the twin runs the same state machine and scenes as the firmware (Clock, Focus
-  timer, Media, System with your real CPU/RAM, GIF, radial menu, upload progress). The GIF mode
-  plays the GIF you processed on the *GIF Upload* tab *before* you upload it. Fonts are an
-  approximation of the TFT's bitmap fonts; layout and behaviour match.
-- **Use it like the pad** - click a key; click the knob (menu), hold it 0.65 s or right-click it
-  (next mode / close menu); scroll over the knob or click the ◀ ▶ buttons to turn it. The focus
-  timer, menu, volume and play state react exactly like on the device.
-- **Drag and drop** - drag any action from the library onto a key or an encoder arrow; drag a key
-  onto another key to swap them; right-click a key for *Test / Clear / Assign*. Double-click a
-  library entry for an "Assign to…" menu. Custom macros appear under *Custom*.
-- **Test before uploading** - **Run actions for real** (on by default when available) makes the
-  virtual keys press the actual shortcut / media key / text on *this* computer. On Windows the
-  app remembers the last program you used and hands the keyboard focus back to it before pressing
-  keys, so a click on a virtual key acts on e.g. your editor, not on the app. Click into the
-  **Sandbox** box to test inside the app instead, or set a **Delay** (up to 5 s). The Macro Creator
-  has **Test** buttons for combos, text and sequences. Switch the toggle off for a *dry run*
-  (screen + log only). Lock Workstation and Close Window ask first.
-- **Upload** - edits are staged; orange dots mark keys the physical pad doesn't have yet, and the
-  button shows how many changes are unsent. **Upload to pad** sends all 7 key slots, brightness
-  and mode in one go; "Upload every change immediately" sends each edit as you make it.
-- **Limits, honestly:** on macOS/Linux a click gives the app the focus, so live actions land in
-  the app itself unless you use the sandbox or the delay; macOS asks for *Accessibility* permission
-  the first time, Linux needs X11 (Wayland blocks synthetic input), and pynput cannot send Media
-  Stop / Fast-forward / Rewind. On Windows an elevated (admin) target window ignores a
-  non-elevated app, and Fast-forward/Rewind work only in players that listen for them. The live
-  test types text by Unicode, the pad types by keyboard layout - special characters may differ.
-  The twin does not read the pad back: it adopts the pad's mode/brightness on connect, and
-  remembers what it last uploaded.
-
-## 4. Serial protocol reference (JSON, one object per line, USB CDC @ 115200)
-Host → pad: `{"cmd":"stats","cpu":42,"ram":58}` (no reply) · `{"cmd":"hello"}` → device info ·
-`{"cmd":"remap","key":1..7,"type":"combo|media|text|macro|none","val":...}` (keys 1-5 = K1-K5,
-6/7 = encoder CW/CCW) · `{"cmd":"reset_keys"}` · `{"cmd":"brightness","val":5..255}` ·
-`{"cmd":"mode","val":1..5}` · `{"cmd":"os","val":"win|mac|linux"}` ·
-`{"cmd":"time","epoch":...,"tz":...}` · `{"cmd":"wifi","ssid":"...","pass":"..."}` ·
-`{"cmd":"media","vol":0..100,"playing":bool,"muted":bool}` · GIF upload: `gif_begin` (size, crc32)
-→ `gif_chunk` (seq, base64 data, ≤`chunk` bytes as reported by `gif_ready`: 768, or 128 on core 2.x) × N → `gif_end`, or `gif_abort`/`gif_delete`. Every
-command gets `{"ok":true/false,...}` except `stats`.
-
-## 5. Notes
-- Text snippets are typed as **US-layout ASCII only** (control chars, high-Unicode and emoji are
-  rejected client-side before they ever reach the pad).
-- "PRIMARY" in a combo resolves to Ctrl on Windows/Linux and Cmd (GUI) on macOS, based on the
-  Host OS setting.
-- GIF capacity depends on your flash/partition scheme; the app always fits the file to the pad's
-  actual reported free space, degrading colours and frame count as needed.
-- Firmware needs **arduino-esp32 3.x** for the 8 KB USB-CDC receive buffer (fast GIF upload). On
-  core 2.0.x it still works - the sketch detects the small buffer and uploads in 128-byte chunks.
-- With *USB CDC On Boot* the core starts USB before `setup()`, so the USB product name cannot be
-  changed from the sketch; the app recognises the pad by VID `0x303A` plus the `hello` reply.
-- Fast encoder turns queue their key/media steps (bounded) instead of dropping them; text
-  snippets are never stacked.
-- Keyboard layout switching (the `{"cmd":"layout"}` command and the Device tab's *Keyboard layout*
-  field) needs **arduino-esp32 core 3.0.0+** - `USBHIDKeyboard::begin(const uint8_t*)` and the
-  `KeyboardLayout_xx_xx` tables it needs don't exist on 2.0.x. The sketch detects the core version
-  at compile time (`ESP_ARDUINO_VERSION_MAJOR`) and compiles that feature out on older cores instead
-  of failing to build; the pad still works standalone with plain US-ASCII key codes either way, and
-  the app's `layout` request gets a clean `nack` instead of silently doing nothing. Supported
-  layouts are `en_US de_DE fr_FR es_ES it_IT pt_PT pt_BR sv_SE da_DK hu_HU` - Swiss-French and
-  Japanese are deliberately not offered: `KeyboardLayout_fr_CH`/`KeyboardLayout_ja_JP` were only
-  added to arduino-esp32 in 3.3.8/3.3.9, so every other 3.x release (which is most installs) does
-  not declare them at all - a hard compile error, not a runtime fallback - so including them would
-  have broken the build for most core 3.x users exactly like the 2.0.x case above.
-- A failed `prefs.putString()` in the `remap` handler (NVS, the ~20 KB settings partition, can fill
-  up if several key slots hold large custom macros) used to still `ack` as if the save had worked;
-  it now checks the return value and `nack`s with `nvs_full` so a remap that didn't actually persist
-  is visible instead of silently reverting after the next reboot.
-- Verified by compiling the `.ino` with arduino-cli, end to end, against ESP32 cores 2.0.9, 3.2.1
-  (representative of the pre-3.3.8 releases most 3.x users have) and 3.3.12 (TFT_eSPI 2.5.44,
-  AnimatedGIF 2.2.3, Bounce2 2.72, ArduinoJson 7.4.2): 3.3.12 builds to
-  83 % of the app partition / 107 KB RAM; 2.0.9 to 64 % / 84 KB RAM (smaller, since the keyboard-layout
-  tables are compiled out). All function prototypes are now written explicitly rather than left to the
-  Arduino IDE's automatic (ctags-based) generator, and the two backlight functions no longer have
-  `#if/#else/#endif` inside their body - both were observed, in this compile verification, to be able
-  to make that generator misparse the rest of the file; writing them out is a pure, behaviour-preserving
-  addition that removes the exposure regardless of which ctags build a given Arduino install bundles.
-- The companion app's wire protocol (handshake, remap, brightness, and the full chunked GIF upload
-  with CRC) was verified end to end against a protocol-accurate firmware stand-in, independent of the
-  in-app **Simulate pad** feature described above.
+- Text snippets are typed as US-layout ASCII. `PRIMARY` in a combo = Ctrl (Windows/Linux) or Cmd (macOS), from the *Host OS* setting.
+- Keyboard layouts (core 3.0+): `en_US de_DE fr_FR es_ES it_IT pt_PT pt_BR sv_SE da_DK hu_HU`
+  (`fr_CH` / `ja_JP` only exist in arduino-esp32 3.3.8 / 3.3.9+, so they are not offered).
+- The `.ino` files contain explicit function prototypes and keep `#if` blocks out of function bodies on purpose: the
+  Arduino IDE's automatic prototype generator can mis-parse such sketches.
+- PlatformIO: `platformio.ini` is provided but was **not** build-tested in this repository (only arduino-cli + the emulator were).

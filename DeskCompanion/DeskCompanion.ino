@@ -1,22 +1,43 @@
 /*
-  DeskCompanion.ino - ESP32-S3 Zero macro pad firmware v1.0.0
+  DeskCompanion.ino - ESP32-S3 macro pad firmware v1.1.0  (target: Waveshare ESP32-S3-Zero)
 
-  Hardware : ESP32-S3 Zero, GC9A01 1.28" round TFT (SPI), 5 keys, EC11 encoder
-  USB      : native USB -> HID keyboard + HID consumer control + CDC serial (JSON lines)
-  Works 100% standalone; the Python companion app is optional.
+  Hardware : ESP32-S3-Zero, GC9A01 1.28" round TFT (SPI), 5 keys, EC11 encoder, onboard WS2812 LED (GPIO21)
+  USB      : native USB -> CDC serial (JSON lines) + HID keyboard + HID consumer control
+  Works standalone; the Python companion app is optional.
+
+  CORE FIRST: the USB serial link, the onboard LED and the command interpreter come up before anything
+  else and never depend on the display, keys, filesystem or HID. Every other subsystem reports its own
+  init result ("info" command / Dev tab in the app); if the firmware crash-loops it boots into SAFE MODE
+  (no display / GIF) so the pad stays reachable instead of vanishing from the PC.
 
   Arduino IDE settings (see README.md):
-    USB Mode = "USB-OTG (TinyUSB)", USB CDC On Boot = "Enabled",
-    Partition Scheme = "Default 4MB with spiffs", ESP32 core >= 3.0.0
+    Board = "Waveshare ESP32-S3-Zero" (or "ESP32S3 Dev Module"), USB Mode = "USB-OTG (TinyUSB)",
+    USB CDC On Boot = "Enabled", Flash 4MB, Partition Scheme = "Default 4MB with spiffs", PSRAM = Disabled
   Libraries: TFT_eSPI, AnimatedGIF, Bounce2, ArduinoJson (7.x)
 
   Key slots used by the "remap" command: 1..5 = K1..K5, 6 = encoder CW, 7 = encoder CCW
+
+  Build flags (optional):  -DDC_SIM       emulator test build: no USB, no real display (see tools/)
+                           -DDC_RGB_PIN=n onboard RGB LED pin (default 21 = Waveshare ESP32-S3-Zero)
 */
-#if !defined(ARDUINO_USB_MODE) || (ARDUINO_USB_MODE != 0)
-#error "Arduino IDE: Tools > USB Mode must be 'USB-OTG (TinyUSB)'."
+#ifndef DC_RGB_PIN
+#define DC_RGB_PIN 21
 #endif
-#if !ARDUINO_USB_CDC_ON_BOOT
-#error "Arduino IDE: Tools > USB CDC On Boot must be 'Enabled'."
+
+#if defined(DC_SIM)
+  #define DC_HAS_HID 0
+  #define DC_HAS_TFT 0
+#else
+  #define DC_HAS_TFT 1
+  #if !defined(ARDUINO_USB_CDC_ON_BOOT) || !ARDUINO_USB_CDC_ON_BOOT
+    #error "Arduino IDE: Tools > USB CDC On Boot must be 'Enabled'."
+  #endif
+  #if defined(ARDUINO_USB_MODE) && (ARDUINO_USB_MODE == 0)
+    #define DC_HAS_HID 1
+  #else
+    #define DC_HAS_HID 0     // hardware-CDC mode: the serial link + LED + display work, only the USB keyboard is off
+    #warning "Tools > USB Mode is not 'USB-OTG (TinyUSB)': serial link works, but keyboard / media keys are disabled."
+  #endif
 #endif
 
 #include <Arduino.h>
@@ -32,16 +53,44 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 #include "esp_sntp.h"
+#include "esp_system.h"
+#include "esp_attr.h"
+#include "driver/gpio.h"
+#include "soc/rtc_cntl_reg.h"
+#if DC_HAS_HID
 #include "USB.h"
 #include "USBHIDKeyboard.h"
 #include "USBHIDConsumerControl.h"
+#define DC_KB_TYPE USBHIDKeyboard
+#define DC_CC_TYPE USBHIDConsumerControl
+#else
+struct HidStub {                               // keeps every call site valid when USB HID is not available
+  void begin() {}
+  size_t press(uint16_t) { return 0; }
+  size_t write(uint8_t) { return 0; }
+  void release() {}
+  void releaseAll() {}
+};
+#define DC_KB_TYPE HidStub
+#define DC_CC_TYPE HidStub
+#endif
+#ifdef DC_SIM
+#define DC_SIM_FLAG 1
+#else
+#define DC_SIM_FLAG 0
+#endif
+#ifdef DC_FORCE_SAFE_MODE
+#define DC_FORCE_SAFE 1                // test builds: boot straight into safe mode
+#else
+#define DC_FORCE_SAFE 0
+#endif
 
 // ================================================================ types (kept above all functions)
 enum StepType : uint8_t { ST_KEYS, ST_MEDIA, ST_TEXT, ST_DELAY };
 struct Step { uint8_t t = 0; uint8_t n = 0; uint8_t keys[6] = {0, 0, 0, 0, 0, 0}; uint16_t val = 0; String text; };
 struct KeyName { const char* name; uint8_t code; };
 struct MediaName { const char* name; uint16_t code; };
-struct FileOut { File f; void put(const uint8_t* b, size_t n) { f.write(b, n); } void tick() { yield(); } };
+struct FileOut { File f; void put(const uint8_t* b, size_t n) { f.write(b, n); } void tick() { delay(1); } };
 enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF };
 enum PomoState : uint8_t { PS_IDLE, PS_RUN, PS_PAUSE, PS_DONE };
 
@@ -83,6 +132,7 @@ static void sceneGifMsg();
 static void sceneUpload();
 static void sceneMenu();
 static void renderScene();
+static void pushScreen();
 static void renderFrame();
 static uint32_t renderInterval();
 static void lzwByte(uint8_t b);
@@ -91,6 +141,9 @@ static void lzwFlush();
 static uint8_t demoPix(int x, int y, int f, int F, int S);
 static void demoGif(FileOut& o, int S, int F);
 static bool makeDemoGif();
+static void fsTask(void* arg);
+static void fsPrepTask(void* arg);
+static void fsStartAsync(TaskFunction_t fn, uint8_t state);
 static void* GIFOpenFile(const char* fname, int32_t* pSize);
 static void GIFCloseFile(void* pHandle);
 static int32_t GIFReadFile(GIFFILE* pFile, uint8_t* pBuf, int32_t iLen);
@@ -110,13 +163,45 @@ static void onKey(int i);
 static void onEncSteps(int steps);
 static void onEncClick();
 static void onEncLong();
-static void IRAM_ATTR encISR();
+static void encTurned(int steps);
+static void encISR();
 static void inputsService();
 static void onNtp(struct timeval*);
 static void netService();
 static void uploadAbort();
 static const uint8_t* layoutByName(const char* n);
 static void cmdHello();
+static String coreVersionStr();
+static void cmdInfo();
+static void cmdLed(JsonDocument& doc);
+static const char* pinUse(int p);
+static bool gpioReadable(int p);
+static bool gpioDrivable(int p);
+static void cmdGpio(JsonDocument& doc);
+static void cmdInputs();
+static void cmdDisplay(JsonDocument& doc);
+static void b64enc(const uint8_t* in, size_t n, char* out);
+static void cmdSnapshot();
+static void cmdRun(JsonDocument& doc);
+static void cmdSelftest();
+static void cmdGetKeys();
+static void cmdInput(JsonDocument& doc);
+static bool cmdDebug(const char* cmd);
+static void cmdReboot(JsonDocument& doc);
+static bool hostActive();
+static void txRaw(const uint8_t* p, size_t n);
+static void txLine(String s);
+static void evtKey(int k, int down);
+static void evtEnc(int dir, int pos);
+static void evtEncSw(int down);
+static float chipTemp();
+static void bootNote(const char* what, bool ok);
+static const char* resetReasonStr(esp_reset_reason_t r);
+static void ledPixel(uint8_t r, uint8_t g, uint8_t b);
+static void ledRaw(uint8_t r, uint8_t g, uint8_t b);
+static void hsv2rgb(uint16_t h, uint8_t* r, uint8_t* g, uint8_t* b);
+static void ledBoot(uint8_t r, uint8_t g, uint8_t b);
+static void ledService();
 static void handleLine(const String& line);
 static void serialService();
 static void loadSettings();
@@ -135,10 +220,12 @@ static const uint32_t MENU_TIMEOUT_MS = 4000;     // radial menu auto-close
 static const int      VCC_SENSE_PIN = -1;         // optional ADC pin behind a divider (ESP32-S3 cannot measure its own VCC)
 static const float    VCC_DIVIDER = 2.0f;
 static const size_t   RX_MAX = 6000;              // longest accepted JSON line
-static const char*    FW_VERSION = "1.0.0";
+static const bool     DC_IS_SIM = DC_SIM_FLAG;
+static const uint8_t  PIN_RGB = DC_RGB_PIN;       // onboard WS2812 (Waveshare ESP32-S3-Zero: GPIO21)
+static const char*    FW_VERSION = "1.1.0";
 static const char*    MODE_NAME[6] = {"", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF"};
 
-static constexpr uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
+static inline uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
 static const uint16_t C_BG = 0x0000, C_TXT = 0xFFFF;
 static const uint16_t C_DIM = rgb(38, 42, 52), C_DIM2 = rgb(70, 76, 92), C_GRAY = rgb(140, 146, 160);
 static const uint16_t C_ACC = rgb(0, 210, 255), C_ACC2 = rgb(255, 70, 170), C_OK = rgb(70, 220, 110);
@@ -149,8 +236,8 @@ TFT_eSPI tft;
 TFT_eSprite spr(&tft);
 AnimatedGIF gif;
 Preferences prefs;
-USBHIDKeyboard Keyboard;
-USBHIDConsumerControl ConsumerControl;
+DC_KB_TYPE Keyboard;
+DC_CC_TYPE ConsumerControl;
 Bounce keyBtn[5];
 Bounce encBtn;
 
@@ -203,6 +290,35 @@ uint32_t encDownAt = 0;
 bool     encHeld = false, encLongDone = false;
 time_t   lastClockSec = 0;
 
+// ---- bring-up / diagnostics state
+static RTC_NOINIT_ATTR uint32_t rtcMagic;      // survives panics / watchdog resets, cleared on power-on
+static RTC_NOINIT_ATTR uint32_t rtcCrashCount;
+static const uint32_t RTC_MAGIC = 0xDC5AFE01u;
+bool     okPrefs = false, okSprite = false, okDisp = false;
+volatile bool okFs = false;                    // true only while LittleFS is mounted AND no background job is using it
+uint32_t fsStartAt = 0;                         // start of the background filesystem job (0 = already started)
+volatile bool demoFailed = false;               // building the built-in demo animation failed (storage full / error)
+volatile uint8_t fsState = 0;                  // FS_* below: mounting / formatting / preparing / ready / failed
+bool     safeMode = false;                     // 3+ crashes in a row: display / GIF disabled so the core stays reachable
+uint32_t crashCount = 0;
+esp_reset_reason_t resetReason = ESP_RST_UNKNOWN;
+String   bootLog;
+uint32_t lastRxMs = 0;                         // last time any byte arrived from the host
+bool     eventsOn = false;                     // stream key / encoder events to the app's Dev tab
+int32_t  reqId = -1;                           // "id" of the request being answered (echoed back)
+int32_t  encPos = 0;
+uint32_t dispHoldUntil = 0;                    // test pattern on screen: normal rendering paused until then
+bool     gpioTouched = false;
+
+enum FsState : uint8_t { FS_IDLE, FS_MOUNTING, FS_FORMATTING, FS_PREPARING, FS_READY, FS_FAILED };
+static const char* const FS_STATE_NAME[6] = {"idle", "mounting", "formatting", "preparing", "ready", "failed"};
+enum LedMode : uint8_t { LM_AUTO, LM_OFF, LM_SOLID, LM_BLINK, LM_RAINBOW };
+uint8_t  ledMode = LM_AUTO, ledUserR = 0, ledUserG = 0, ledUserB = 0;
+uint8_t  ledBootR = 24, ledBootG = 0, ledBootB = 24;
+uint8_t  ledLastR = 0, ledLastG = 0, ledLastB = 0;
+bool     ledReady = false;
+uint32_t ledNextAt = 0;
+
 // ================================================================ backlight (PWM on GPIO7)
 // NOTE: #if/#else/#endif must NOT appear *inside* a function body in a .ino file - the Arduino
 // prototype-generator (ctags-based) can misparse the brace nesting and corrupt every prototype it
@@ -245,10 +361,122 @@ static void uiTouch() { menuTouched = millis(); }
 static uint32_t gifFileSize() { File f = LittleFS.open("/anim.gif", "r"); if (!f) return 0; uint32_t s = f.size(); f.close(); return s; }
 static uint32_t fsFreeBytes() { return (uint32_t)(LittleFS.totalBytes() - LittleFS.usedBytes()) + gifFileSize(); }
 
+// ================================================================ serial TX (bounded: never stalls the firmware)
+static bool hostActive() { return lastRxMs != 0 && (uint32_t)(millis() - lastRxMs) < 8000; }
+static void txRaw(const uint8_t* p, size_t n) {
+  size_t off = 0;
+  uint32_t t0 = millis();
+  while (off < n && (uint32_t)(millis() - t0) < 250) {          // gives up after 250 ms if the host stopped reading
+    int room = Serial.availableForWrite();
+    if (room <= 0) { delay(1); continue; }
+    size_t k = n - off;
+    if (k > (size_t)room) k = room;
+    size_t w = Serial.write(p + off, k);
+    if (w == 0) { delay(1); continue; }
+    off += w;
+  }
+}
+static void txLine(String s) { s += '\n'; txRaw((const uint8_t*)s.c_str(), s.length()); }   // one write = one USB packet train
+
 // ================================================================ JSON replies
-static void sendDoc(JsonDocument& d) { serializeJson(d, Serial); Serial.write('\n'); }
+static void sendDoc(JsonDocument& d) {
+  if (reqId >= 0) d["id"] = reqId;
+  String s;
+  serializeJson(d, s);
+  txLine(s);
+}
 static void ack(const char* evt) { JsonDocument d; d["ok"] = true; d["evt"] = evt; sendDoc(d); }
 static void nack(const char* err) { JsonDocument d; d["ok"] = false; d["err"] = err; sendDoc(d); }
+static void evtKey(int k, int down) {
+  if (!eventsOn || !hostActive()) return;
+  char b[64]; int n = snprintf(b, sizeof b, "{\"evt\":\"key\",\"k\":%d,\"v\":%d}\n", k, down);
+  txRaw((const uint8_t*)b, n);
+}
+static void evtEnc(int dir, int pos) {
+  if (!eventsOn || !hostActive()) return;
+  char b[80]; int n = snprintf(b, sizeof b, "{\"evt\":\"enc\",\"d\":%d,\"pos\":%d}\n", dir, pos);
+  txRaw((const uint8_t*)b, n);
+}
+static void evtEncSw(int down) {
+  if (!eventsOn || !hostActive()) return;
+  char b[48]; int n = snprintf(b, sizeof b, "{\"evt\":\"encsw\",\"v\":%d}\n", down);
+  txRaw((const uint8_t*)b, n);
+}
+
+// ================================================================ boot log + onboard RGB LED (WS2812, GRB handled by the core)
+#ifdef DC_SIM
+static float chipTemp() { return 25.0f; }          // the emulator has no temperature sensor (reading it would hang)
+#else
+static float chipTemp() { return temperatureRead(); }
+#endif
+static void bootNote(const char* what, bool ok) {
+  if (bootLog.length() < 360) { bootLog += String(millis()); bootLog += ':'; bootLog += what; bootLog += ok ? "=ok;" : "=FAIL;"; }
+}
+static const char* resetReasonStr(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "INT_WDT";
+    case ESP_RST_TASK_WDT: return "TASK_WDT";
+    case ESP_RST_WDT: return "WDT";
+    case ESP_RST_DEEPSLEEP: return "deep-sleep";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    default: return "unknown";
+  }
+}
+#ifndef DC_SIM
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 1, 0)
+static void ledPixel(uint8_t r, uint8_t g, uint8_t b) { rgbLedWrite(PIN_RGB, r, g, b); }
+#else
+static void ledPixel(uint8_t r, uint8_t g, uint8_t b) { neopixelWrite(PIN_RGB, r, g, b); }
+#endif
+#else
+static void ledPixel(uint8_t r, uint8_t g, uint8_t b) { (void)r; (void)g; (void)b; }   // emulator build: no LED peripheral
+#endif
+static void ledRaw(uint8_t r, uint8_t g, uint8_t b) {
+  static uint32_t wroteAt = 0;
+  uint32_t now = millis();
+  if (wroteAt && r == ledLastR && g == ledLastG && b == ledLastB && (uint32_t)(now - wroteAt) < 1000) return;   // unchanged: refresh once a second
+  wroteAt = now; ledLastR = r; ledLastG = g; ledLastB = b;
+  ledPixel(r, g, b);
+}
+static void hsv2rgb(uint16_t h, uint8_t* r, uint8_t* g, uint8_t* b) {      // h 0..359, full saturation / value 0..255
+  uint8_t region = h / 60, rem = (h % 60) * 255 / 60;
+  uint8_t q = 255 - rem, t = rem;
+  switch (region) {
+    case 0: *r = 255; *g = t; *b = 0; break;
+    case 1: *r = q; *g = 255; *b = 0; break;
+    case 2: *r = 0; *g = 255; *b = t; break;
+    case 3: *r = 0; *g = q; *b = 255; break;
+    case 4: *r = t; *g = 0; *b = 255; break;
+    default: *r = 255; *g = 0; *b = q; break;
+  }
+}
+static void ledBoot(uint8_t r, uint8_t g, uint8_t b) {                // boot-stage colour, visible even if USB / display fail
+  ledBootR = r; ledBootG = g; ledBootB = b;
+  if (ledMode == LM_AUTO) ledRaw(r, g, b);
+}
+static void ledService() {
+  uint32_t now = millis();
+  if ((int32_t)(now - ledNextAt) < 0) return;
+  switch (ledMode) {
+    case LM_OFF: ledRaw(0, 0, 0); ledNextAt = now + 500; break;
+    case LM_SOLID: ledRaw(ledUserR, ledUserG, ledUserB); ledNextAt = now + 500; break;
+    case LM_BLINK: ledRaw(((now / 400) & 1) ? ledUserR : 0, ((now / 400) & 1) ? ledUserG : 0, ((now / 400) & 1) ? ledUserB : 0); ledNextAt = now + 40; break;
+    case LM_RAINBOW: { uint8_t r, g, b; hsv2rgb((now / 8) % 360, &r, &g, &b); ledRaw(r / 4, g / 4, b / 4); ledNextAt = now + 20; break; }
+    default:                                                          // LM_AUTO
+      if (!ledReady) { ledRaw(ledBootR, ledBootG, ledBootB); ledNextAt = now + 100; }
+      else if (safeMode) { uint32_t t = now % 1500; ledRaw((t < 150 || (t > 300 && t < 450)) ? 40 : 0, 0, 0); ledNextAt = now + 30; }
+      else {                                                          // heartbeat: green = all good, amber = a subsystem failed
+        bool bad = !okFs || !okDisp;
+        bool on = (now % 3000) < 120;
+        ledRaw(on && bad ? 30 : 0, on ? (bad ? 18 : 24) : 0, 0);
+        ledNextAt = now + 30;
+      }
+  }
+}
 
 // ================================================================ HID: key names, media, macro engine
 static const KeyName KEY_NAMES[] = {
@@ -501,7 +729,7 @@ static void sceneMedia() {
 static void sceneTelemetry() {
   bool live = lastStatsMs && (millis() - lastStatsMs < 3500);
   float vcc = VCC_SENSE_PIN >= 0 ? analogReadMilliVolts(VCC_SENSE_PIN) * VCC_DIVIDER / 1000.0f : 0;
-  float temp = temperatureRead();
+  float temp = chipTemp();
   uint32_t heapTot = ESP.getHeapSize(), heapFree = ESP.getFreeHeap();
   spr.fillSprite(C_BG);
   gauge(120, 120, 116, 103, live ? hostCpu / 100.0f : 1.0f - (float)heapFree / heapTot, C_ACC);
@@ -586,13 +814,19 @@ static void renderScene() {
     default:      sceneGifMsg(); break;
   }
 }
+static void pushScreen() {
+#if DC_HAS_TFT
+  if (okDisp) spr.pushSprite(0, 0);
+#endif
+}
 static void renderFrame() {
+  if (!okSprite) return;
   if (uploading) sceneUpload();
   else {
     if (menuOpen && mode == M_GIF) spr.fillSprite(C_BG); else renderScene();
     if (menuOpen) sceneMenu();
   }
-  spr.pushSprite(0, 0);
+  pushScreen();
 }
 static uint32_t renderInterval() {
   if (uploading || menuOpen) return 100;
@@ -671,6 +905,38 @@ static bool makeDemoGif() {
   return LittleFS.rename("/anim.tmp", "/anim.gif");
 }
 
+// Mounting a blank flash partition formats it, which takes 10-30 s on real hardware - far too long to block setup():
+// the USB link, LED and command interpreter must already be answering. So the filesystem is brought up by a
+// background task; okFs flips to true when it is done, and every filesystem user checks okFs first.
+#ifndef ARDUINO_RUNNING_CORE
+#define ARDUINO_RUNNING_CORE (portNUM_PROCESSORS - 1)
+#endif
+static void fsTask(void* arg) {
+  (void)arg;
+  bool ok = LittleFS.begin(false);
+  if (!ok) { fsState = FS_FORMATTING; ok = LittleFS.begin(true); }
+  if (ok && !safeMode && !LittleFS.exists("/anim.gif")) { fsState = FS_PREPARING; if (!makeDemoGif()) demoFailed = true; }
+  fsState = ok ? FS_READY : FS_FAILED;
+  okFs = ok;
+  gifRestart = true;
+  vTaskDelete(NULL);
+}
+static void fsPrepTask(void* arg) {                       // regenerate the built-in demo animation after "gif_delete"
+  (void)arg;
+  if (!safeMode && !makeDemoGif()) demoFailed = true;
+  fsState = FS_READY;
+  okFs = true;
+  gifRestart = true;
+  vTaskDelete(NULL);
+}
+static void fsStartAsync(TaskFunction_t fn, uint8_t state) {
+  fsState = state;
+  if (xTaskCreatePinnedToCore(fn, "fs", 12288, nullptr, 1, nullptr, ARDUINO_RUNNING_CORE) != pdPASS) {
+    fsState = FS_FAILED;                                   // out of memory: leave okFs as it is
+    if (fn == fsPrepTask) okFs = true;
+  }
+}
+
 // ================================================================ GIF playback (AnimatedGIF + LittleFS, drawn straight to the panel)
 static void* GIFOpenFile(const char* fname, int32_t* pSize) {
   gifFile = LittleFS.open(fname, "r");
@@ -711,25 +977,37 @@ static void GIFDraw(GIFDRAW* pDraw) {
     while (x < w) {
       int n = 0;
       while (x + n < w && s[x + n] != tr) { line[n] = pal[s[x + n]]; n++; }
-      if (n) { tft.setAddrWindow(x0 + x, y, n, 1); tft.pushPixels(line, n); x += n; }
+      if (n) {
+#if DC_HAS_TFT
+        tft.setAddrWindow(x0 + x, y, n, 1); tft.pushPixels(line, n);
+#endif
+        x += n;
+      }
       while (x < w && s[x] == tr) x++;
     }
   } else {
     for (int x = 0; x < w; x++) line[x] = pal[s[x]];
+#if DC_HAS_TFT
     tft.setAddrWindow(x0, y, w, 1);
     tft.pushPixels(line, w);
+#endif
   }
 }
 static void gifClose() { if (gifOpen) { gif.close(); gifOpen = false; } }
 static void gifBegin() {
   gifFailed = false;
   if (!LittleFS.exists("/anim.gif")) {
+    if (demoFailed) { gifFailed = true; needRedraw = true; return; }
     spr.fillSprite(C_BG); spr.setTextDatum(MC_DATUM); spr.setTextColor(C_TXT);
     spr.drawString("Preparing demo", 120, 110, 4); spr.drawString("animation...", 120, 140, 4);
-    spr.pushSprite(0, 0);
-    makeDemoGif();
+    pushScreen();
+    okFs = false;                                           // regenerate the demo in the background; gifRestart is set when done
+    fsStartAsync(fsPrepTask, FS_PREPARING);
+    return;
   }
+#if DC_HAS_TFT
   tft.fillScreen(TFT_BLACK);
+#endif
   if (gif.open("/anim.gif", GIFOpenFile, GIFCloseFile, GIFReadFile, GIFSeekFile, GIFDraw)) {
     gifOpen = true;
     gifOffX = (240 - gif.getCanvasWidth()) / 2; gifOffY = (240 - gif.getCanvasHeight()) / 2;
@@ -739,12 +1017,17 @@ static void gifBegin() {
   } else { gifFailed = true; needRedraw = true; }
 }
 static void gifService() {
+  if (!okFs) return;                                      // filesystem still starting / being rewritten
   if (gifRestart) { gifClose(); gifRestart = false; gifBegin(); }
   if (!gifOpen || (int32_t)(millis() - gifNextAt) < 0) return;
   int d = 0;
+#if DC_HAS_TFT
   tft.startWrite();
+#endif
   int r = gif.playFrame(false, &d);
+#if DC_HAS_TFT
   tft.endWrite();
+#endif
   if (r == 0) gif.reset();                              // finished the last frame: loop
   else if (r < 0) { gifClose(); gifFailed = true; needRedraw = true; return; }
   gifNextAt = millis() + (d < 10 ? 10 : d);
@@ -814,6 +1097,10 @@ static void onEncSteps(int steps) {
   int n = steps < 0 ? -steps : steps;
   for (int i = 0; i < n; i++) runSlot(steps > 0 ? 5 : 6);
 }
+static void encTurned(int steps) {                       // every detent, whatever screen / menu state: counter + event for the Dev tab
+  encPos += steps;
+  evtEnc(steps > 0 ? 1 : -1, encPos);
+}
 static void onEncClick() {
   if (menuOpen) { menuClick(); return; }
   menuOpen = true; menuSel = 0; menuEdit = 0; menuMode = mode; savedBright = brightness; uiTouch(); needRedraw = true;
@@ -826,12 +1113,17 @@ static void IRAM_ATTR encISR() {
   uint32_t now = micros();
   if (now - encLastUs < 400) return;                    // contact-bounce guard
   encLastUs = now;
-  encAccum += (digitalRead(PIN_ENC_A) != digitalRead(PIN_ENC_B)) ? 1 : -1;
+  encAccum += (gpio_get_level((gpio_num_t)PIN_ENC_A) != gpio_get_level((gpio_num_t)PIN_ENC_B)) ? 1 : -1;   // IRAM-safe reads
 }
 static void inputsService() {
-  for (int i = 0; i < 5; i++) { keyBtn[i].update(); if (keyBtn[i].fell()) onKey(i); }
+  for (int i = 0; i < 5; i++) {
+    keyBtn[i].update();
+    if (keyBtn[i].fell()) { evtKey(i + 1, 1); onKey(i); }
+    if (keyBtn[i].rose()) evtKey(i + 1, 0);
+  }
   encBtn.update();
-  if (encBtn.fell()) { encDownAt = millis(); encHeld = true; encLongDone = false; }
+  if (encBtn.fell()) { encDownAt = millis(); encHeld = true; encLongDone = false; evtEncSw(1); }
+  if (encBtn.rose()) evtEncSw(0);
   if (encHeld && !encLongDone && millis() - encDownAt >= ENC_HOLD_MS) { encLongDone = true; onEncLong(); }
   if (encBtn.rose()) { if (encHeld && !encLongDone) onEncClick(); encHeld = false; }
   int32_t d;
@@ -840,7 +1132,7 @@ static void inputsService() {
   int steps = encRem / ENC_EDGES_PER_DETENT;
   encRem -= steps * ENC_EDGES_PER_DETENT;
   if (ENC_INVERT) steps = -steps;
-  if (steps) onEncSteps(steps);
+  if (steps) { encTurned(steps); onEncSteps(steps); }
 }
 
 // ================================================================ Wi-Fi / NTP (only if credentials were sent via {"cmd":"wifi"})
@@ -872,7 +1164,7 @@ static void uploadAbort() {
 // USBHIDKeyboard::begin(const uint8_t*) and the KeyboardLayout_xx_xx tables only exist on arduino-esp32
 // core 3.0.0+; on older cores (2.0.x, still a common Boards Manager install) those symbols do not exist
 // at all, so this whole feature is compiled out there and the pad simply stays on US ASCII mapping.
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#if (ESP_ARDUINO_VERSION_MAJOR >= 3) && DC_HAS_HID
 #define DC_HAS_KB_LAYOUT 1
 // KeyboardLayout_fr_CH and KeyboardLayout_ja_JP were only added to arduino-esp32 in 3.3.8 and 3.3.9
 // respectively - every other 3.x release (3.0.0 through 3.3.7/3.3.8, i.e. most real-world installs)
@@ -899,14 +1191,257 @@ static void cmdHello() {
   JsonDocument d;
   d["ok"] = true; d["evt"] = "hello"; d["dev"] = "desk-companion"; d["fw"] = FW_VERSION;
   d["mode"] = mode; d["bright"] = brightness; d["os"] = osMac ? "mac" : "win";
-  d["gif"] = LittleFS.exists("/anim.gif"); d["fs_free"] = fsFreeBytes(); d["fs_total"] = (uint32_t)LittleFS.totalBytes();
+  d["gif"] = okFs && LittleFS.exists("/anim.gif");
+  d["fs_free"] = okFs ? fsFreeBytes() : 0; d["fs_total"] = okFs ? (uint32_t)LittleFS.totalBytes() : 0;
   d["synced"] = timeSynced; d["layout"] = kbLayout;
+  d["hid"] = (bool)DC_HAS_HID; d["disp"] = okDisp; d["fs"] = okFs; d["fs_state"] = FS_STATE_NAME[fsState]; d["safe"] = safeMode; d["led_pin"] = PIN_RGB;
   sendDoc(d);
 }
+static String coreVersionStr() {
+  return String(ESP_ARDUINO_VERSION_MAJOR) + "." + String(ESP_ARDUINO_VERSION_MINOR) + "." + String(ESP_ARDUINO_VERSION_PATCH);
+}
+static void cmdInfo() {
+  JsonDocument d;
+  d["ok"] = true; d["evt"] = "info"; d["fw"] = FW_VERSION; d["build"] = __DATE__ " " __TIME__;
+  d["chip"] = ESP.getChipModel(); d["rev"] = ESP.getChipRevision(); d["cores"] = ESP.getChipCores(); d["cpu_mhz"] = ESP.getCpuFreqMHz();
+  d["flash"] = ESP.getFlashChipSize();
+  d["heap"] = ESP.getFreeHeap(); d["heap_min"] = ESP.getMinFreeHeap(); d["heap_blk"] = ESP.getMaxAllocHeap(); d["psram"] = ESP.getPsramSize();
+  float t = chipTemp(); d["temp"] = isnan(t) ? 0.0f : t;
+  d["up_ms"] = millis(); d["reset"] = resetReasonStr(resetReason); d["crashes"] = crashCount; d["safe"] = safeMode;
+  d["core"] = coreVersionStr();
+#ifdef ARDUINO_USB_MODE
+  d["usb_mode"] = ARDUINO_USB_MODE;                     // 0 = USB-OTG (TinyUSB), 1 = hardware CDC / JTAG
+#endif
+#ifdef ARDUINO_USB_CDC_ON_BOOT
+  d["cdc_boot"] = ARDUINO_USB_CDC_ON_BOOT;
+#endif
+  d["hid"] = (bool)DC_HAS_HID; d["tft"] = (bool)DC_HAS_TFT; d["sim"] = DC_IS_SIM;
+  d["ok_prefs"] = okPrefs; d["ok_fs"] = okFs; d["fs_state"] = FS_STATE_NAME[fsState]; d["ok_sprite"] = okSprite; d["ok_disp"] = okDisp;
+  d["fs_free"] = okFs ? fsFreeBytes() : 0; d["fs_total"] = okFs ? (uint32_t)LittleFS.totalBytes() : 0;
+  d["rx_ms_ago"] = lastRxMs ? (uint32_t)(millis() - lastRxMs) : 0; d["events"] = eventsOn; d["gpio_touched"] = gpioTouched;
+  d["led_pin"] = PIN_RGB; d["led_mode"] = ledMode; d["mode"] = mode; d["bright"] = brightness;
+  d["boot"] = bootLog;
+  sendDoc(d);
+}
+static void cmdLed(JsonDocument& doc) {
+  const char* m = doc["mode"] | "";
+  if (!doc["hex"].isNull()) {                                   // "#RRGGBB"
+    const char* h = doc["hex"] | "";
+    if (*h == '#') h++;
+    unsigned long v = strtoul(h, nullptr, 16);
+    ledUserR = (v >> 16) & 255; ledUserG = (v >> 8) & 255; ledUserB = v & 255; ledMode = LM_SOLID;
+  }
+  if (!doc["r"].isNull() || !doc["g"].isNull() || !doc["b"].isNull()) {
+    ledUserR = (uint8_t)constrain(doc["r"] | 0, 0, 255); ledUserG = (uint8_t)constrain(doc["g"] | 0, 0, 255); ledUserB = (uint8_t)constrain(doc["b"] | 0, 0, 255);
+    ledMode = LM_SOLID;
+  }
+  if (!strcmp(m, "auto")) ledMode = LM_AUTO;
+  else if (!strcmp(m, "off")) ledMode = LM_OFF;
+  else if (!strcmp(m, "solid")) ledMode = LM_SOLID;
+  else if (!strcmp(m, "blink")) ledMode = LM_BLINK;
+  else if (!strcmp(m, "rainbow")) ledMode = LM_RAINBOW;
+  else if (*m) { nack("led_mode"); return; }
+  if (doc["save"] | false) prefs.putUChar("ledm", ledMode == LM_OFF ? 1 : 0);   // only auto/off survive a reboot
+  ledNextAt = 0;
+  JsonDocument d; d["ok"] = true; d["evt"] = "led"; d["mode"] = ledMode; d["pin"] = PIN_RGB;
+  d["r"] = ledUserR; d["g"] = ledUserG; d["b"] = ledUserB;
+  sendDoc(d);
+}
+
+// ---- GPIO tester (wiring checks from the app's Dev tab)
+static const char* pinUse(int p) {
+  switch (p) {
+    case 7: return "TFT BLK"; case 8: return "TFT CS"; case 9: return "TFT DC"; case 10: return "TFT RES";
+    case 11: return "TFT SDA"; case 12: return "TFT SCL"; case 13: return "ENC A"; case 14: return "ENC B"; case 15: return "ENC SW";
+    case 1: return "K1"; case 2: return "K2"; case 4: return "K3"; case 5: return "K4"; case 6: return "K5";
+    case 21: return "RGB LED"; case 0: return "BOOT button"; case 19: case 20: return "USB"; default: return "";
+  }
+}
+static bool gpioReadable(int p) { return (p >= 0 && p <= 18) || p == 21 || (p >= 33 && p <= 48); }
+static bool gpioDrivable(int p) { return (p >= 1 && p <= 18) || (p >= 33 && p <= 42); }
+static void cmdGpio(JsonDocument& doc) {
+  const char* op = doc["op"] | "read";
+  if (!strcmp(op, "scan")) {                                    // every readable pin, current level, no mode change
+    JsonDocument d; d["ok"] = true; d["evt"] = "gpio_scan";
+    JsonArray a = d["pins"].to<JsonArray>();
+    for (int p = 0; p <= 48; p++) if (gpioReadable(p)) { JsonArray e = a.add<JsonArray>(); e.add(p); e.add(digitalRead(p)); }
+    sendDoc(d); return;
+  }
+  int p = doc["pin"] | -1;
+  if (!gpioReadable(p)) { nack("pin"); return; }
+  const char* use = pinUse(p);
+  if (!strcmp(op, "read")) { /* no pin mode change */ }
+  else if (!gpioDrivable(p)) { nack("pin_protected"); return; }
+  else if (!strcmp(op, "high")) { pinMode(p, OUTPUT); digitalWrite(p, HIGH); gpioTouched = true; }
+  else if (!strcmp(op, "low")) { pinMode(p, OUTPUT); digitalWrite(p, LOW); gpioTouched = true; }
+  else if (!strcmp(op, "pullup")) { pinMode(p, INPUT_PULLUP); gpioTouched = true; }
+  else if (!strcmp(op, "input")) { pinMode(p, INPUT); gpioTouched = true; }
+  else { nack("op"); return; }
+  JsonDocument d; d["ok"] = true; d["evt"] = "gpio"; d["pin"] = p; d["val"] = digitalRead(p); d["use"] = use;
+  if (gpioTouched && *use && strcmp(op, "read")) d["warn"] = "pin is used by the pad - reboot to restore it";
+  sendDoc(d);
+}
+static void cmdInputs() {
+  JsonDocument d; d["ok"] = true; d["evt"] = "inputs";
+  JsonArray k = d["keys"].to<JsonArray>();
+  for (int i = 0; i < 5; i++) k.add(digitalRead(PIN_KEY[i]) == LOW ? 1 : 0);        // 1 = pressed
+  d["enc_sw"] = digitalRead(PIN_ENC_SW) == LOW ? 1 : 0; d["enc_a"] = digitalRead(PIN_ENC_A); d["enc_b"] = digitalRead(PIN_ENC_B);
+  d["enc_pos"] = encPos;
+  sendDoc(d);
+}
+
+// ---- display test patterns + screenshot of the frame buffer
+static void cmdDisplay(JsonDocument& doc) {
+  if (!okSprite) { nack("no_display"); return; }
+  const char* t = doc["test"] | "fill";
+  if (!strcmp(t, "off")) { dispHoldUntil = 0; if (mode == M_GIF) gifRestart = true; needRedraw = true; ack("display"); return; }
+  uint32_t hold = (uint32_t)constrain(doc["hold"] | 8000, 500, 60000);
+  spr.setTextDatum(MC_DATUM);
+  if (!strcmp(t, "fill")) {
+    spr.fillSprite(rgb((uint8_t)constrain(doc["r"] | 0, 0, 255), (uint8_t)constrain(doc["g"] | 0, 0, 255), (uint8_t)constrain(doc["b"] | 0, 0, 255)));
+  } else if (!strcmp(t, "bars")) {
+    static const uint16_t col[8] = {0xFFFF, 0xFFE0, 0x07FF, 0x07E0, 0xF81F, 0xF800, 0x001F, 0x0000};
+    for (int i = 0; i < 8; i++) spr.fillRect(i * 30, 0, 30, 240, col[i]);
+  } else if (!strcmp(t, "grid")) {
+    spr.fillSprite(TFT_BLACK);
+    for (int v = 0; v <= 240; v += 20) { spr.drawFastHLine(0, v, 240, v == 120 ? C_ACC : C_DIM2); spr.drawFastVLine(v, 0, 240, v == 120 ? C_ACC : C_DIM2); }
+    spr.drawCircle(120, 120, 119, TFT_WHITE); spr.drawCircle(120, 120, 60, C_ACC2);
+    spr.fillRect(0, 0, 14, 14, TFT_RED); spr.fillRect(226, 0, 14, 14, TFT_GREEN); spr.fillRect(0, 226, 14, 14, TFT_BLUE); spr.fillRect(226, 226, 14, 14, TFT_WHITE);
+  } else if (!strcmp(t, "text")) {
+    spr.fillSprite(TFT_BLACK);
+    spr.setTextColor(TFT_WHITE); spr.drawString("DeskCompanion", 120, 90, 4);
+    spr.setTextColor(C_OK); spr.drawString("display OK", 120, 125, 4);
+    spr.setTextColor(C_GRAY); char b[40]; snprintf(b, sizeof b, "fw %s  240x240", FW_VERSION); spr.drawString(b, 120, 160, 2);
+  } else { nack("pattern"); return; }
+  pushScreen();
+  dispHoldUntil = millis() + hold;
+  ack("display");
+}
+static void b64enc(const uint8_t* in, size_t n, char* out) {
+  static const char* A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  size_t o = 0;
+  for (size_t i = 0; i < n; i += 3) {
+    uint32_t v = (uint32_t)in[i] << 16;
+    if (i + 1 < n) v |= (uint32_t)in[i + 1] << 8;
+    if (i + 2 < n) v |= in[i + 2];
+    out[o++] = A[(v >> 18) & 63]; out[o++] = A[(v >> 12) & 63];
+    out[o++] = (i + 1 < n) ? A[(v >> 6) & 63] : '=';
+    out[o++] = (i + 2 < n) ? A[v & 63] : '=';
+  }
+  out[o] = 0;
+}
+static void cmdSnapshot() {                              // what the sprite (= what the screen shows, except GIF mode) contains
+  if (!okSprite) { nack("no_display"); return; }
+  const uint8_t* px = (const uint8_t*)spr.getPointer();
+  if (!px) { nack("no_display"); return; }
+  const size_t total = 240 * 240 * 2, CH = 360;
+  { JsonDocument d; d["ok"] = true; d["evt"] = "snap_begin"; d["w"] = 240; d["h"] = 240; d["fmt"] = "rgb565be"; d["bytes"] = (uint32_t)total; d["chunk"] = (uint32_t)CH; sendDoc(d); }
+  static char line[560];
+  for (size_t off = 0; off < total; off += CH) {
+    size_t n = total - off < CH ? total - off : CH;
+    int h = snprintf(line, sizeof line, "{\"evt\":\"snap\",\"o\":%u,\"d\":\"", (unsigned)off);
+    b64enc(px + off, n, line + h);
+    size_t l = strlen(line);
+    line[l++] = '"'; line[l++] = '}'; line[l++] = '\n';
+    txRaw((const uint8_t*)line, l);
+  }
+  txRaw((const uint8_t*)"{\"evt\":\"snap_end\"}\n", 19);
+}
+
+static void cmdRun(JsonDocument& doc) {                  // run an action immediately (HID test) without saving it to a key
+  if (!DC_HAS_HID) { nack("no_hid"); return; }
+  JsonDocument spec;
+  spec["type"] = doc["type"]; spec["val"] = doc["val"];
+  std::vector<Step> steps;
+  if (!parseSpec(spec.as<JsonVariantConst>(), steps)) { nack("spec"); return; }
+  size_t n = steps.size();
+  macroStart(steps);
+  JsonDocument d; d["ok"] = true; d["evt"] = "run"; d["steps"] = (uint32_t)n; sendDoc(d);
+}
+static void cmdSelftest() {
+  JsonDocument d; d["ok"] = true; d["evt"] = "selftest";
+  bool nvs = false;
+  if (okPrefs) { prefs.putUInt("selftest", 0xC0FFEEu); nvs = prefs.getUInt("selftest", 0) == 0xC0FFEEu; prefs.remove("selftest"); }
+  d["nvs"] = nvs;
+  bool fs = false;
+  if (okFs) {
+    File f = LittleFS.open("/selftest.tmp", "w");
+    if (f) {
+      uint8_t buf[256]; for (int i = 0; i < 256; i++) buf[i] = (uint8_t)(i * 7 + 3);
+      bool w = f.write(buf, sizeof buf) == sizeof buf; f.close();
+      File r = LittleFS.open("/selftest.tmp", "r");
+      if (r) { uint8_t rb[256]; bool rd = r.read(rb, sizeof rb) == sizeof rb && !memcmp(buf, rb, sizeof buf); r.close(); fs = w && rd; }
+    }
+    LittleFS.remove("/selftest.tmp");
+  }
+  d["fs"] = fs;
+  d["heap_ok"] = ESP.getFreeHeap() > 40000; d["heap"] = ESP.getFreeHeap();
+  uint8_t pm = ledMode; ledMode = LM_SOLID;                      // LED: red, green, blue
+  const uint8_t cols[3][3] = {{60, 0, 0}, {0, 60, 0}, {0, 0, 60}};
+  for (int i = 0; i < 3; i++) { ledRaw(cols[i][0], cols[i][1], cols[i][2]); delay(250); }
+  ledMode = pm; ledNextAt = 0;
+  d["led"] = "cycled";
+  if (okSprite) {
+    const uint16_t pc[3] = {TFT_RED, TFT_GREEN, TFT_BLUE};
+    for (int i = 0; i < 3; i++) { spr.fillSprite(pc[i]); pushScreen(); delay(250); }
+    needRedraw = true; if (mode == M_GIF) gifRestart = true;
+    d["display"] = "drawn";
+  } else d["display"] = "unavailable";
+  d["hid"] = (bool)DC_HAS_HID;
+  JsonArray k = d["keys"].to<JsonArray>();
+  for (int i = 0; i < 5; i++) k.add(digitalRead(PIN_KEY[i]) == LOW ? 1 : 0);
+  sendDoc(d);
+}
+static void cmdGetKeys() {                                // lets the app verify what is really stored on the pad
+  JsonDocument d; d["ok"] = true; d["evt"] = "keys";
+  JsonArray a = d["slots"].to<JsonArray>();
+  for (uint8_t i = 0; i < 7; i++) {
+    char k[4]; slotKey(i, k);
+    String js = prefs.getString(k, "");
+    JsonObject o = a.add<JsonObject>();
+    o["s"] = i + 1; o["def"] = js.length() == 0; o["len"] = (uint32_t)js.length();
+    o["crc"] = js.length() ? crc32u(0, (const uint8_t*)js.c_str(), js.length()) : 0u;
+  }
+  sendDoc(d);
+}
+static void cmdInput(JsonDocument& doc) {               // virtual key presses: exercises the real action / UI code from the app
+  if (!doc["k"].isNull()) {
+    int k = doc["k"] | 0;
+    if (k < 1 || k > 5) { nack("key"); return; }
+    evtKey(k, 1); onKey(k - 1); evtKey(k, 0);
+  } else if (!doc["turn"].isNull()) {
+    int t = doc["turn"] | 0;
+    if (t == 0 || t > 20 || t < -20) { nack("turn"); return; }
+    encTurned(t); onEncSteps(t);
+  } else if (doc["click"] | false) onEncClick();
+  else if (doc["hold"] | false) onEncLong();
+  else { nack("input"); return; }
+  ack("input");
+}
+#ifdef DC_SIM
+static bool cmdDebug(const char* cmd) {                  // emulator-only: provoke a panic to test crash-loop / safe mode
+  if (!strcmp(cmd, "debug_crash")) { ack("debug_crash"); delay(50); volatile int* p = nullptr; *p = 1; return true; }
+  return false;
+}
+#else
+static bool cmdDebug(const char* cmd) { (void)cmd; return false; }
+#endif
+static void cmdReboot(JsonDocument& doc) {
+  const char* m = doc["mode"] | "normal";
+  ack("reboot");
+  delay(120);
+#ifndef DC_SIM
+  if (!strcmp(m, "download")) REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);   // ROM USB flasher, no BOOT button needed
+#endif
+  esp_restart();
+}
+
 static void handleLine(const String& line) {
   JsonDocument doc;
+  reqId = -1;
   if (deserializeJson(doc, line)) { nack("json"); return; }
   const char* cmd = doc["cmd"] | "";
+  reqId = doc["id"] | -1;
 
   if (!strcmp(cmd, "stats")) {                                  // no reply (1 Hz telemetry)
     hostCpu = (uint8_t)constrain(doc["cpu"].as<int>(), 0, 100);
@@ -915,6 +1450,21 @@ static void handleLine(const String& line) {
     if (mode == M_TELEM) needRedraw = true;
   }
   else if (!strcmp(cmd, "hello")) cmdHello();
+  else if (!strcmp(cmd, "ping")) { JsonDocument d; d["ok"] = true; d["evt"] = "pong"; d["up"] = millis(); if (!doc["t"].isNull()) d["t"] = doc["t"]; sendDoc(d); }
+  else if (!strcmp(cmd, "info")) cmdInfo();
+  else if (!strcmp(cmd, "led")) cmdLed(doc);
+  else if (!strcmp(cmd, "gpio")) cmdGpio(doc);
+  else if (!strcmp(cmd, "inputs")) cmdInputs();
+  else if (!strcmp(cmd, "events")) { eventsOn = doc["val"] | true; ack("events"); }
+  else if (!strcmp(cmd, "display")) cmdDisplay(doc);
+  else if (!strcmp(cmd, "snapshot")) cmdSnapshot();
+  else if (!strcmp(cmd, "run")) cmdRun(doc);
+  else if (!strcmp(cmd, "input")) cmdInput(doc);
+  else if (!strcmp(cmd, "getkeys")) cmdGetKeys();
+  else if (cmdDebug(cmd)) { }
+  else if (!strcmp(cmd, "selftest")) cmdSelftest();
+  else if (!strcmp(cmd, "reboot")) cmdReboot(doc);
+  else if (!strcmp(cmd, "echo")) { JsonDocument d; d["ok"] = true; d["evt"] = "echo"; d["data"] = doc["data"]; sendDoc(d); }
   else if (!strcmp(cmd, "remap")) {
     int key = doc["key"] | 0;
     if (key < 1 || key > 7) { nack("key"); return; }
@@ -970,6 +1520,11 @@ static void handleLine(const String& line) {
   }
   else if (!strcmp(cmd, "gif_begin")) {
     uint32_t size = doc["size"] | 0u;
+    if (!okFs && fsState == FS_PREPARING) {                      // demo animation being rebuilt after a failed upload: it ends soon
+      uint32_t t0 = millis();
+      while (!okFs && (uint32_t)(millis() - t0) < 12000) delay(5);
+    }
+    if (!okFs) { nack("fs_busy"); return; }                      // first boot: storage is still being formatted
     uploadAbort();
     gifClose();                                                   // release the file handle before deleting the file
     LittleFS.remove("/anim.gif");
@@ -1003,13 +1558,22 @@ static void handleLine(const String& line) {
     setMode(M_GIF); gifRestart = true; ack("gif_done");
   }
   else if (!strcmp(cmd, "gif_abort")) { uploadAbort(); ack("gif_abort"); }
-  else if (!strcmp(cmd, "gif_delete")) { LittleFS.remove("/anim.gif"); gifRestart = true; ack("gif_delete"); }
+  else if (!strcmp(cmd, "gif_delete")) {
+    if (!okFs) { nack("fs_busy"); return; }
+    uploadAbort(); gifClose();
+    LittleFS.remove("/anim.gif");
+    okFs = false;                                                // the demo animation is regenerated in the background
+    fsStartAsync(fsPrepTask, FS_PREPARING);
+    ack("gif_delete");
+  }
   else nack("unknown_cmd");
+  reqId = -1;
 }
 static void serialService() {
   int guard = 0;
   while (Serial.available() && guard++ < 4096) {
     char c = (char)Serial.read();
+    lastRxMs = millis();
     if (c == '\n') { if (!rxOverflow && rxLine.length()) handleLine(rxLine); rxLine = ""; rxOverflow = false; }
     else if (c != '\r') { if (rxLine.length() < RX_MAX) rxLine += c; else rxOverflow = true; }
   }
@@ -1025,49 +1589,80 @@ static void loadSettings() {
   pomoMinutes = prefs.getUChar("pomo", 25); if (pomoMinutes < 1 || pomoMinutes > 90) pomoMinutes = 25;
   pomoRemain = pomoMinutes * 60000UL;
   tzOff = prefs.getInt("tz", 0);
+  ledMode = prefs.getUChar("ledm", 0) == 1 ? LM_OFF : LM_AUTO;
   wifiSsid = prefs.getString("ssid", ""); wifiPass = prefs.getString("wpass", "");
   uint32_t e = prefs.getULong("epoch", 0);                       // last known time: clock starts close even without host/NTP
   if (e > 1700000000UL) { struct timeval tv = {(time_t)e, 0}; settimeofday(&tv, nullptr); }
 }
 
 void setup() {
+  // ---- 1. LED first: the very first visible sign of life (purple), before anything can fail
+  ledBoot(24, 0, 24);
   for (int i = 0; i < 5; i++) { keyBtn[i].attach(PIN_KEY[i], INPUT_PULLUP); keyBtn[i].interval(8); }
   encBtn.attach(PIN_ENC_SW, INPUT_PULLUP); encBtn.interval(8);
   pinMode(PIN_ENC_A, INPUT_PULLUP); pinMode(PIN_ENC_B, INPUT_PULLUP);
   backlightInit(); backlightSet(0);
 
-  prefs.begin("deskcomp", false);
-  loadSettings();                    // needs kbLayout loaded before Keyboard.begin() below
+  // ---- 2. crash-loop protection: panic / watchdog / brownout resets are counted in RTC memory
+  resetReason = esp_reset_reason();
+  bool crashed = resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT ||
+                 resetReason == ESP_RST_WDT || resetReason == ESP_RST_BROWNOUT;
+  if (rtcMagic != RTC_MAGIC || resetReason == ESP_RST_POWERON) { rtcMagic = RTC_MAGIC; rtcCrashCount = 0; }
+  rtcCrashCount = crashed ? rtcCrashCount + 1 : 0;
+  crashCount = rtcCrashCount;
+  safeMode = DC_FORCE_SAFE || crashCount >= 3;
+  bootNote(resetReasonStr(resetReason), !crashed);
 
-  // With "USB CDC On Boot" the core has already called Serial.begin() and USB.begin() before setup(), and the
-  // HID classes register their interfaces in their global constructors - so USB descriptors (product name...)
-  // can no longer be changed here; the app finds the pad by VID + a "hello" handshake instead.
+  // ---- 3. settings, then USB (serial + HID) - no display / filesystem work before the PC can see the device
+  okPrefs = prefs.begin("deskcomp", false);
+  bootNote("prefs", okPrefs);
+  loadSettings();                    // needs kbLayout before Keyboard.begin() below
+
   upChunk = (Serial.setRxBufferSize(8192) >= 4096) ? 768 : 128;  // core 2.0.x cannot grow the RX queue after boot -> small chunks
   Serial.begin(115200);
+#if DC_HAS_HID
+  USB.productName("DeskCompanion");  // CDC was registered by the core at boot, USB itself starts at USB.begin() below
+  USB.manufacturerName("DeskCompanion");
 #if DC_HAS_KB_LAYOUT
   Keyboard.begin(layoutByName(kbLayout.c_str()));   // host keyboard layout saved on the pad; begin() exactly once
 #else
   Keyboard.begin();
 #endif
   ConsumerControl.begin();
-  USB.begin();                       // no-op when the core already started USB at boot
+  USB.begin();
+#endif
   rxLine.reserve(RX_MAX + 16);
+  bootNote("usb", true);
+  ledBoot(0, 0, 40);                 // blue: USB is up, the app can already talk to the pad
+
+  // ---- 4. filesystem
   gif.begin(BIG_ENDIAN_PIXELS);      // TFT_eSPI::pushPixels() expects big-endian RGB565 (same as the library's TFT_eSPI example)
+  fsState = FS_MOUNTING;             // the job itself starts ~3 s later from loop(), after the PC finished enumerating the USB device
+  fsStartAt = millis() + 3000;       // (flash erase stalls non-IRAM interrupts for tens of ms - keep that away from USB enumeration)
+  bootNote("fs-scheduled", true);
+  ledBoot(0, 30, 30);                // cyan: filesystem scheduled
 
-  LittleFS.begin(true);
+  // ---- 5. display (skipped in safe mode; a failure here never takes the serial link down)
+  if (!safeMode) {
+#if DC_HAS_TFT
+    tft.init();
+    tft.fillScreen(TFT_BLACK);
+#endif
+    spr.setColorDepth(16);
+    okSprite = spr.createSprite(240, 240) != nullptr;
+    okDisp = okSprite;
+    bootNote("display", okDisp);
+  } else bootNote("display-skipped(safe-mode)", false);
+  ledBoot(30, 24, 0);                // amber: display done
 
-  tft.init();
-  tft.fillScreen(TFT_BLACK);
-  spr.setColorDepth(16);
-  if (!spr.createSprite(240, 240)) {
-    tft.setTextColor(TFT_RED); tft.drawString("Out of RAM", 60, 110, 4);
-    backlightSet(brightness);
-    while (true) delay(1000);
-  }
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), encISR, CHANGE);
-  if (mode == M_GIF) gifRestart = true;
-  else { renderFrame(); }
+  if (mode == M_GIF && okDisp) gifRestart = true;
+  else renderFrame();
   backlightSet(brightness);
+
+  ledReady = true;                   // from here the LED shows the heartbeat (green = ok, amber = degraded, red = safe mode)
+  ledNextAt = 0;
+  bootNote("ready", true);
 }
 
 void loop() {
@@ -1076,20 +1671,27 @@ void loop() {
   macroTick();
   pomoTick();
   netService();
+  ledService();
   uint32_t now = millis();
 
+  if (fsStartAt && (int32_t)(now - fsStartAt) >= 0) { fsStartAt = 0; fsStartAsync(fsTask, FS_MOUNTING); }
   if (uploading && now - upLast > 6000) uploadAbort();           // host vanished mid-upload
   if (menuOpen && now - menuTouched > MENU_TIMEOUT_MS) menuCloseNow();
   if (timeSynced && now - lastEpochSave > 1800000UL) { lastEpochSave = now; prefs.putULong("epoch", (uint32_t)time(nullptr)); }
+  if (dispHoldUntil && (int32_t)(now - dispHoldUntil) >= 0) {     // a Dev-tab test pattern timed out: back to the normal screen
+    dispHoldUntil = 0; needRedraw = true; if (mode == M_GIF) gifRestart = true;
+  }
   if (mode == M_CLOCK && !menuOpen && !uploading) {
     time_t s = time(nullptr) + tzOff;
     if (s != lastClockSec) { lastClockSec = s; needRedraw = true; }
   }
 
-  bool gifMode = (mode == M_GIF && !menuOpen && !uploading);
-  if (gifMode) gifService();
-  if (!(gifMode && gifOpen)) {
-    if (needRedraw || now - lastRender >= renderInterval()) { needRedraw = false; lastRender = now; renderFrame(); }
+  if (okDisp && !dispHoldUntil) {
+    bool gifMode = (mode == M_GIF && !menuOpen && !uploading);
+    if (gifMode) gifService();
+    if (!(gifMode && gifOpen)) {
+      if (needRedraw || now - lastRender >= renderInterval()) { needRedraw = false; lastRender = now; renderFrame(); }
+    }
   }
   delay(1);
 }
