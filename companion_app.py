@@ -12,6 +12,7 @@ brightness / mode / OS / time / Wi-Fi settings, and a VIRTUAL PAD: a live digita
 and one-click upload of everything to the physical pad. The pad works fine without this app running.
 """
 import base64
+import colorsys
 import ctypes
 import ctypes.wintypes
 import functools
@@ -236,6 +237,127 @@ def fit_gif(frames, durs, max_bytes, dither=False):
     raise ValueError(f"GIF still larger than {max_bytes // 1024} KB after maximum reduction")
 
 
+# ============================================================================ built-in preset animation library
+# Procedurally generated quick-start animations (no copyrighted sticker/meme art bundled - these are
+# plain geometric generators) so there is always something to try on the GIF tab before hunting for a file.
+@functools.lru_cache(maxsize=1)
+def _preset_mask():
+    m = Image.new("L", (LCD, LCD), 0)
+    ImageDraw.Draw(m).ellipse((0, 0, LCD - 1, LCD - 1), fill=255)
+    return m
+
+
+def _preset_frames(n_frames, duration_ms, draw_fn):
+    black = Image.new("RGB", (LCD, LCD), (0, 0, 0))
+    mask = _preset_mask()
+    frames = []
+    for i in range(n_frames):
+        im = Image.new("RGB", (LCD, LCD), (10, 10, 14))
+        draw_fn(ImageDraw.Draw(im), i, n_frames)
+        frames.append(Image.composite(im, black, mask))
+    return frames, [duration_ms] * n_frames
+
+
+def _heart_points(cx, cy, s):
+    pts = []
+    for deg in range(0, 360, 6):
+        t = math.radians(deg)
+        x = 16 * math.sin(t) ** 3
+        y = 13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t)
+        pts.append((cx + x * s, cy - y * s))
+    return pts
+
+
+def _draw_heartbeat(d, i, n):
+    beat = abs(math.sin(math.pi * i / n)) ** 0.5
+    d.polygon(_heart_points(120, 128, 5.6 + 1.1 * beat), fill=(230, 45, 95))
+
+
+def _draw_spinner(d, i, n):
+    d.ellipse((38, 38, 202, 202), outline=(40, 44, 54), width=10)
+    for k in range(12):
+        a = math.radians(k * 30 - i * 360 / n)
+        x, y = 120 + 70 * math.sin(a), 120 - 70 * math.cos(a)
+        fade = k / 12
+        col = (int(10 + 200 * (1 - fade)), int(90 + 120 * (1 - fade)), 255)
+        r = 5 + 6 * (1 - fade)
+        d.ellipse((x - r, y - r, x + r, y + r), fill=col)
+
+
+def _draw_rings(d, i, n):
+    for ring in range(3):
+        t = ((i / n) + ring / 3.0) % 1.0
+        r = 8 + t * 108
+        fade = 1 - t
+        col = (int(0 * fade), int(210 * fade), int(255 * fade))
+        d.ellipse((120 - r, 120 - r, 120 + r, 120 + r), outline=col, width=max(1, int(7 * fade)))
+
+
+def _draw_confetti(d, i, n):
+    colors = [(255, 70, 170), (0, 210, 255), (255, 176, 0), (70, 220, 110), (170, 110, 255)]
+    t = i / n
+    for k in range(40):
+        ang = math.radians((k * 29) % 360)
+        r = (30 + (k % 7) * 13) * t
+        x, y = 120 + r * math.sin(ang), 120 - r * math.cos(ang) * 0.9 + 60 * t * t
+        rad = 5 - 3 * t
+        if rad > 0.5:
+            d.ellipse((x - rad, y - rad, x + rad, y + rad), fill=colors[k % len(colors)])
+
+
+def _draw_fire(d, i, n):
+    t = i / n
+    for layer, h, col in ((0, 95, (255, 205, 60)), (1, 75, (255, 120, 30)), (2, 55, (230, 40, 20))):
+        wob = 10 * math.sin(2 * math.pi * (t * 3 + layer * 0.3))
+        pts = [(120 - 42 + layer * 7, 205), (120 + wob, 205 - h), (120 + 42 - layer * 7, 205)]
+        d.polygon(pts, fill=col)
+
+
+def _draw_rainbow(d, i, n):
+    for a in range(0, 360, 3):
+        hue = ((a + i * 360 / n) % 360) / 360.0
+        r, g, b = (int(c * 255) for c in colorsys.hsv_to_rgb(hue, 1, 1))
+        rad = math.radians(a)
+        x0, y0 = 120 + 30 * math.sin(rad), 120 - 30 * math.cos(rad)
+        x1, y1 = 120 + 116 * math.sin(rad), 120 - 116 * math.cos(rad)
+        d.line((x0, y0, x1, y1), fill=(r, g, b), width=5)
+
+
+def _draw_dots(d, i, n):
+    for k in range(3):
+        phase = ((i / n) - k * 0.15) % 1.0
+        bounce = abs(math.sin(phase * math.pi))
+        x, y = 90 + k * 30, 150 - 50 * bounce
+        d.ellipse((x - 11, y - 11, x + 11, y + 11), fill=(0, 210, 255))
+
+
+def _draw_check(d, i, n):
+    t = min(1.0, (i / n) / 0.4) if n else 1.0
+    cx, cy = 120, 120
+    pts = [(-42, 4), (-10, 36), (52, -36)]
+    scaled = [(cx + x * t, cy + y * t) for x, y in pts]
+    if t > 0.02:
+        d.line(scaled, fill=(70, 220, 110), width=int(14 * t) + 2, joint="curve")
+    d.ellipse((cx - 92, cy - 92, cx + 92, cy + 92), outline=(70, 220, 110), width=4)
+
+
+GIF_PRESETS = {
+    "Heartbeat": (24, 70, _draw_heartbeat),
+    "Spinner": (24, 55, _draw_spinner),
+    "Pulse Rings": (30, 55, _draw_rings),
+    "Confetti Burst": (20, 70, _draw_confetti),
+    "Fire": (16, 85, _draw_fire),
+    "Rainbow Sweep": (36, 45, _draw_rainbow),
+    "Loading Dots": (24, 55, _draw_dots),
+    "Checkmark Pop": (18, 70, _draw_check),
+}
+
+
+def build_preset(name):
+    n_frames, duration_ms, draw_fn = GIF_PRESETS[name]
+    return _preset_frames(n_frames, duration_ms, draw_fn)
+
+
 # ============================================================================ serial device
 class DeviceError(Exception):
     pass
@@ -250,6 +372,174 @@ def candidate_ports():
     return out
 
 
+SIM_PORT = "SIMULATED (no hardware)"
+SIM_FS_TOTAL = 1_500_000
+SIM_FS_RESERVED = 400_000           # firmware + always-on demo gif, matching the real pad's flash budget roughly
+
+
+class SimFirmware:
+    """Implements the DeskCompanion wire protocol in pure Python, standing in for real hardware so the
+    app's connect / remap / brightness / GIF-upload code paths can be exercised with nothing plugged in."""
+
+    def __init__(self, emit):
+        self.emit = emit                      # callable(bytes) -> pushes firmware->app bytes
+        self._buf = b""
+        self.mode, self.bright, self.osv, self.layout = 1, 200, "win", "en_US"
+        self.slots = {}
+        self.gif_present = True               # the built-in demo animation, like the real pad on first boot
+        self.gif_bytes_used = 60_000
+        self._up = None
+
+    def feed(self, data):
+        self._buf += data
+        while b"\n" in self._buf:
+            line, self._buf = self._buf.split(b"\n", 1)
+            self._handle(line)
+
+    def _send(self, obj):
+        self.emit((json.dumps(obj, separators=(",", ":")) + "\n").encode())
+
+    def _fs_free(self):
+        used = SIM_FS_RESERVED + (self.gif_bytes_used if self.gif_present else 0)
+        return max(0, SIM_FS_TOTAL - used)
+
+    def _handle(self, line):
+        try:
+            msg = json.loads(line.decode("utf-8", "replace"))
+        except ValueError:
+            return
+        cmd = msg.get("cmd")
+        if cmd == "stats":
+            return                             # 1 Hz telemetry, no reply - matches the real firmware
+        if cmd == "hello":
+            self._send({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": "SIM",
+                        "mode": self.mode, "bright": self.bright, "os": self.osv, "gif": self.gif_present,
+                        "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "synced": False, "layout": self.layout})
+        elif cmd == "remap":
+            key = msg.get("key")
+            if not isinstance(key, int) or not 1 <= key <= 7:
+                self._send({"ok": False, "err": "key"})
+            else:
+                self.slots[key] = {"type": msg.get("type"), "val": msg.get("val")}
+                self._send({"ok": True, "evt": "remap"})
+        elif cmd == "reset_keys":
+            self.slots.clear()
+            self._send({"ok": True, "evt": "reset_keys"})
+        elif cmd == "brightness":
+            self.bright = max(5, min(255, int(msg.get("val", 200))))
+            self._send({"ok": True, "evt": "brightness"})
+        elif cmd == "mode":
+            v = int(msg.get("val", 1))
+            if 1 <= v <= 5:
+                self.mode = v
+                self._send({"ok": True, "evt": "mode"})
+            else:
+                self._send({"ok": False, "err": "mode"})
+        elif cmd == "os":
+            self.osv = msg.get("val", "win")
+            self._send({"ok": True, "evt": "os"})
+        elif cmd == "layout":
+            self.layout = msg.get("val", "en_US")
+            self._send({"ok": True, "evt": "layout"})
+        elif cmd == "time":
+            self._send({"ok": True, "evt": "time"})
+        elif cmd == "wifi":
+            self._send({"ok": True, "evt": "wifi"})
+        elif cmd == "media":
+            self._send({"ok": True, "evt": "media"})
+        elif cmd == "gif_begin":
+            size = int(msg.get("size", 0))
+            if size <= 0 or size + 8192 > SIM_FS_TOTAL - SIM_FS_RESERVED:
+                self._send({"ok": False, "err": "no_space"})
+                return
+            self._up = {"size": size, "crc": msg.get("crc", 0), "rx": 0, "seq": 0, "buf": bytearray()}
+            self._send({"ok": True, "evt": "gif_ready", "chunk": 768})
+        elif cmd == "gif_chunk":
+            up = self._up
+            if not up:
+                self._send({"ok": False, "err": "no_upload"})
+                return
+            if msg.get("seq") != up["seq"]:
+                self._send({"ok": False, "err": "seq"})
+                return
+            try:
+                part = base64.b64decode(msg.get("data", ""))
+            except Exception:
+                self._up = None
+                self._send({"ok": False, "err": "b64"})
+                return
+            if up["rx"] + len(part) > up["size"]:
+                self._up = None
+                self._send({"ok": False, "err": "overflow"})
+                return
+            up["buf"] += part
+            up["rx"] += len(part)
+            up["seq"] += 1
+            self._send({"ok": True, "evt": "gif_ack", "seq": msg.get("seq"), "rx": up["rx"]})
+        elif cmd == "gif_end":
+            up = self._up
+            self._up = None
+            if not up:
+                self._send({"ok": False, "err": "no_upload"})
+                return
+            if up["rx"] != up["size"] or (zlib.crc32(bytes(up["buf"])) & 0xFFFFFFFF) != up["crc"]:
+                self._send({"ok": False, "err": "crc"})
+                return
+            self.gif_present, self.gif_bytes_used, self.mode = True, up["rx"], M_GIF
+            self._send({"ok": True, "evt": "gif_done"})
+        elif cmd == "gif_abort":
+            self._up = None
+            self._send({"ok": True, "evt": "gif_abort"})
+        elif cmd == "gif_delete":
+            self.gif_present, self.gif_bytes_used, self._up = False, 0, None
+            self._send({"ok": True, "evt": "gif_delete"})
+        else:
+            self._send({"ok": False, "err": "unknown_cmd"})
+
+
+class SimPort:
+    """Stands in for serial.Serial: an in-process, OS-independent loopback so Device can talk to a
+    SimFirmware without any real COM port, pty, or socket (works identically on Windows/macOS/Linux)."""
+
+    def __init__(self):
+        self._out = bytearray()
+        self._cv = threading.Condition()
+        self._closed = False
+        self.sim = SimFirmware(self._feed)
+
+    def _feed(self, data):
+        with self._cv:
+            if self._closed:
+                return
+            self._out += data
+            self._cv.notify_all()
+
+    @property
+    def in_waiting(self):
+        with self._cv:
+            return len(self._out)
+
+    def read(self, n=1):
+        with self._cv:
+            if not self._out:
+                self._cv.wait(timeout=0.1)       # mirrors pyserial's timeout=0.1 read behaviour
+            n = min(n, len(self._out))
+            data = bytes(self._out[:n])
+            del self._out[:n]
+            return data
+
+    def write(self, data):
+        if self._closed:
+            raise OSError("simulated port closed")
+        self.sim.feed(bytes(data))
+        return len(data)
+
+    def close(self):
+        with self._cv:
+            self._closed = True
+            self._cv.notify_all()
+
+
 class Device:
     def __init__(self, on_drop):
         self.ser, self.port, self.info, self.busy, self._ready = None, "", {}, False, False
@@ -261,7 +551,7 @@ class Device:
 
     def connect(self, port):
         self.disconnect()
-        ser = serial.Serial(port, BAUD, timeout=0.1, write_timeout=3)
+        ser = SimPort() if port == SIM_PORT else serial.Serial(port, BAUD, timeout=0.1, write_timeout=3)
         self.ser = ser
         threading.Thread(target=self._reader, args=(ser,), daemon=True).start()
         last = None
@@ -2078,8 +2368,15 @@ class App(ctk.CTk):
         self.auto_var = tk.BooleanVar(value=True)
         ctk.CTkSwitch(box, text="Auto-connect", variable=self.auto_var,
                       command=lambda: setattr(self, "auto_flag", self.auto_var.get())).grid(row=1, column=3, padx=12)
+        self.sim_btn = ctk.CTkButton(box, text="Simulate pad (no hardware)", width=200, fg_color="#555",
+                                     command=self.toggle_simulate)
+        self.sim_btn.grid(row=1, column=4, padx=(4, 12))
         self.conn_lbl = ctk.CTkLabel(box, text="Not connected", text_color="#ffb454")
         self.conn_lbl.grid(row=2, column=0, columnspan=6, sticky="w", padx=12, pady=(2, 10))
+        ctk.CTkLabel(box, text="No pad handy? 'Simulate' connects the app to an in-process stand-in that speaks the "
+                     "same protocol, so you can try remapping, macros and GIF upload end-to-end without hardware.",
+                     text_color="#9aa0a6", wraplength=900, justify="left").grid(
+            row=3, column=0, columnspan=6, sticky="w", padx=12, pady=(0, 8))
 
         met = ctk.CTkFrame(tab)
         met.pack(fill="x", padx=6, pady=4)
@@ -2181,17 +2478,33 @@ class App(ctk.CTk):
         self.set_status(f"Connecting to {port}...")
         self.bg(lambda: self._connect_locked(port), self._on_connected, "Connect failed")
 
+    def toggle_simulate(self):
+        if self.dev.connected:
+            was_sim = self.dev.port == SIM_PORT
+            self.dev.disconnect()
+            self._on_disconnected()
+            if was_sim:
+                return
+        self.auto_var.set(False)
+        self.auto_flag = False
+        self.set_status("Starting simulated pad...")
+        self.bg(lambda: self._connect_locked(SIM_PORT), self._on_connected, "Simulate failed")
+
     def _connect_locked(self, port):
         with self.connect_lock:
             return self.dev.connect(port)
 
     def _on_connected(self, info):
-        self.conn_lbl.configure(text=f"Connected on {self.dev.port} - firmware {info.get('fw', '?')}, "
+        simulated = self.dev.port == SIM_PORT
+        label = "Simulated pad (no hardware)" if simulated else self.dev.port
+        self.conn_lbl.configure(text=f"Connected on {label} - firmware {info.get('fw', '?')}, "
                                      f"free flash {info.get('fs_free', 0) // 1024} KB", text_color="#4cd97b")
         self.conn_btn.configure(text="Disconnect")
-        self.set_status("Pad connected")
+        self.sim_btn.configure(text="Stop simulating" if simulated else "Simulate pad (no hardware)")
+        self.set_status("Simulated pad connected - try remapping keys, macros or a GIF upload" if simulated
+                         else "Pad connected")
         self._was_connected = True
-        self.notify("DeskCompanion connected", f"{self.dev.port}  -  firmware {info.get('fw', '?')}", "ok")
+        self.notify("DeskCompanion connected", f"{label}  -  firmware {info.get('fw', '?')}", "ok")
         self.bright.set(info.get("bright", 200))
         self.mode_var.set(MODE_CHOICES[max(0, min(4, info.get("mode", 1) - 1))])
         m, b = max(1, min(5, int(info.get("mode", 1)))), int(info.get("bright", 200))
@@ -2211,6 +2524,7 @@ class App(ctk.CTk):
     def _on_disconnected(self):
         self.conn_lbl.configure(text="Not connected", text_color="#ffb454")
         self.conn_btn.configure(text="Connect")
+        self.sim_btn.configure(text="Simulate pad (no hardware)")
         self.set_status("Pad disconnected - waiting for it to reappear" if self.auto_flag else "Disconnected")
         if self._was_connected:
             self._was_connected = False
@@ -2418,42 +2732,70 @@ class App(ctk.CTk):
         self._pv_item = self.gif_canvas.create_image(0, 0, anchor="nw")
         self.gif_canvas.tag_lower(self._pv_item)
         ctk.CTkLabel(left, text="Round display preview", text_color="#9aa0a6").pack(pady=(0, 10))
-        right = ctk.CTkFrame(tab)
+        right = ctk.CTkScrollableFrame(tab)
         right.pack(side="left", fill="both", expand=True, padx=6, pady=6)
-        self._title(right, "Animated GIF -> pad")
-        ctk.CTkButton(right, text="Select GIF...", command=self.choose_gif).grid(row=1, column=0, padx=12, pady=6, sticky="w")
+
+        self._title(right, "Quick-start animations")
+        ctk.CTkLabel(right, text="Procedurally generated placeholders - pick one to preview and upload, "
+                     "no file needed.", text_color="#9aa0a6", wraplength=520, justify="left").grid(
+            row=1, column=0, columnspan=5, sticky="w", padx=12, pady=(0, 6))
+        grid = ctk.CTkFrame(right, fg_color="transparent")
+        grid.grid(row=2, column=0, columnspan=5, sticky="w", padx=6, pady=(0, 10))
+        self._preset_thumbs = {}
+        for idx, name in enumerate(GIF_PRESETS):
+            frames, _ = build_preset(name)
+            thumb = frames[0].resize((56, 56), RESAMPLE)
+            cimg = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=(56, 56))
+            self._preset_thumbs[name] = cimg
+            ctk.CTkButton(grid, text=name, image=cimg, compound="top", width=96, height=96, fg_color="#2b2f36",
+                          hover_color="#3a3f48", command=lambda n=name: self.use_preset(n)).grid(
+                row=idx // 4, column=idx % 4, padx=4, pady=4)
+
+        self._title(right, "Or upload your own GIF", row=3)
+        ctk.CTkButton(right, text="Select GIF...", command=self.choose_gif).grid(row=4, column=0, padx=12, pady=6, sticky="w")
         self.gif_name = ctk.CTkLabel(right, text="no file selected", anchor="w")
-        self.gif_name.grid(row=1, column=1, sticky="w", padx=8)
+        self.gif_name.grid(row=4, column=1, columnspan=4, sticky="w", padx=8)
         self.dither_var = tk.BooleanVar(value=False)
         ctk.CTkCheckBox(right, text="Dithering (smoother gradients, larger file)", variable=self.dither_var).grid(
-            row=2, column=0, columnspan=2, padx=12, pady=4, sticky="w")
+            row=5, column=0, columnspan=4, padx=12, pady=4, sticky="w")
         self.gif_info = ctk.CTkLabel(right, text="Frames are centre-cropped, resized to 240x240 and masked to a circle.",
                                      justify="left", wraplength=470, anchor="w")
-        self.gif_info.grid(row=3, column=0, columnspan=2, padx=12, pady=6, sticky="w")
+        self.gif_info.grid(row=6, column=0, columnspan=4, padx=12, pady=6, sticky="w")
         self.gif_bar = ctk.CTkProgressBar(right, width=440)
-        self.gif_bar.grid(row=4, column=0, columnspan=2, padx=12, pady=8, sticky="w")
+        self.gif_bar.grid(row=7, column=0, columnspan=4, padx=12, pady=8, sticky="w")
         self.gif_bar.set(0)
         self.upload_btn = ctk.CTkButton(right, text="Upload to pad", state="disabled", command=self.upload_gif)
-        self.upload_btn.grid(row=5, column=0, padx=12, pady=6, sticky="w")
-        ctk.CTkButton(right, text="Delete GIF on pad", fg_color="#555", command=self.delete_gif).grid(row=5, column=1, sticky="w", padx=8)
+        self.upload_btn.grid(row=8, column=0, padx=12, pady=6, sticky="w")
+        ctk.CTkButton(right, text="Delete GIF on pad", fg_color="#555", command=self.delete_gif).grid(row=8, column=1, sticky="w", padx=8)
+
+    def _gif_source_ready(self, label):
+        self.gif_name.configure(text=label)
+        self.gif_info.configure(text="Processing...")
+        self.upload_btn.configure(state="disabled")
+        self.gif_bar.set(0)
+        free = self.dev.info.get("fs_free") if self.dev.connected else None
+        return min(max((free or 1_000_000) - 16384, 50_000), 1_400_000), self.dither_var.get()
 
     def choose_gif(self):
         path = filedialog.askopenfilename(filetypes=[("GIF images", "*.gif"), ("All files", "*.*")])
         if not path:
             return
-        self.gif_name.configure(text=os.path.basename(path))
-        self.gif_info.configure(text="Processing...")
-        self.upload_btn.configure(state="disabled")
-        self.gif_bar.set(0)
-        free = self.dev.info.get("fs_free") if self.dev.connected else None
-        limit = min(max((free or 1_000_000) - 16384, 50_000), 1_400_000)
-        dither = self.dither_var.get()
+        limit, dither = self._gif_source_ready(os.path.basename(path))
 
         def work():
             frames, durs = load_gif_frames(path)
             data, colors, n = fit_gif(frames, durs, limit, dither)
             return frames, durs, data, colors, n, limit
         self.bg(work, self._gif_ready, "GIF processing failed")
+
+    def use_preset(self, name):
+        limit, dither = self._gif_source_ready(f"preset: {name}")
+
+        def work():
+            frames, durs = build_preset(name)
+            data, colors, n = fit_gif(frames, durs, limit, dither)
+            return frames, durs, data, colors, n, limit
+        self.bg(work, self._gif_ready, "Preset processing failed")
 
     def _gif_ready(self, res):
         self.gif_frames, self.gif_durs, self.gif_data, colors, n, limit = res

@@ -45,6 +45,84 @@ struct FileOut { File f; void put(const uint8_t* b, size_t n) { f.write(b, n); }
 enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF };
 enum PomoState : uint8_t { PS_IDLE, PS_RUN, PS_PAUSE, PS_DONE };
 
+// ================================================================ forward declarations
+// Written out explicitly rather than relying on the Arduino IDE's automatic (ctags-based)
+// prototype generator: on a single-file sketch this large that step can misparse a function and
+// silently corrupt the auto-generated declaration for every function after it in the file,
+// producing confusing "ambiguating declaration" / "was not declared" errors at compile time.
+static void backlightInit();
+static void backlightSet(uint8_t v);
+static uint32_t crc32u(uint32_t crc, const uint8_t* p, size_t n);
+static int b64dec(const char* in, size_t n, uint8_t* out);
+static void localTm(struct tm& t);
+static void uiTouch();
+static uint32_t gifFileSize();
+static uint32_t fsFreeBytes();
+static void sendDoc(JsonDocument& d);
+static void ack(const char* evt);
+static void nack(const char* err);
+static bool resolveKey(const char* nm, uint8_t& code);
+static bool resolveMedia(const char* nm, uint16_t& code);
+static void sendMedia(uint16_t code);
+static bool parseKeys(JsonVariantConst arr, Step& s);
+static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out);
+static void macroStart(std::vector<Step>& steps);
+static void macroTick();
+static void slotKey(uint8_t i, char* out);
+static void runSlot(uint8_t i);
+static void arcBand(int cx, int cy, float ro, float ri, float a0, float a1, uint16_t col);
+static void gauge(int cx, int cy, float ro, float ri, float frac, uint16_t col);
+static void thickLine(float x0, float y0, float x1, float y1, float w, uint16_t col);
+static void hand(float deg, float len, float w, uint16_t col);
+static void dimSprite();
+static void sceneClock();
+static void scenePomo();
+static void sceneMedia();
+static void sceneTelemetry();
+static void sceneGifMsg();
+static void sceneUpload();
+static void sceneMenu();
+static void renderScene();
+static void renderFrame();
+static uint32_t renderInterval();
+static void lzwByte(uint8_t b);
+static void lzwEmit(uint16_t code);
+static void lzwFlush();
+static uint8_t demoPix(int x, int y, int f, int F, int S);
+static void demoGif(FileOut& o, int S, int F);
+static bool makeDemoGif();
+static void* GIFOpenFile(const char* fname, int32_t* pSize);
+static void GIFCloseFile(void* pHandle);
+static int32_t GIFReadFile(GIFFILE* pFile, uint8_t* pBuf, int32_t iLen);
+static int32_t GIFSeekFile(GIFFILE* pFile, int32_t iPosition);
+static void GIFDraw(GIFDRAW* pDraw);
+static void gifClose();
+static void gifBegin();
+static void gifService();
+static void setMode(uint8_t m);
+static void pomoToggle();
+static void pomoReset();
+static void pomoTick();
+static void menuCloseNow();
+static void menuTurn(int steps);
+static void menuClick();
+static void onKey(int i);
+static void onEncSteps(int steps);
+static void onEncClick();
+static void onEncLong();
+static void IRAM_ATTR encISR();
+static void inputsService();
+static void onNtp(struct timeval*);
+static void netService();
+static void uploadAbort();
+static const uint8_t* layoutByName(const char* n);
+static void cmdHello();
+static void handleLine(const String& line);
+static void serialService();
+static void loadSettings();
+void setup();
+void loop();
+
 // ================================================================ pin map & tunables
 static const uint8_t PIN_BLK = 7;
 static const uint8_t PIN_KEY[5] = {1, 2, 4, 5, 6};            // K1..K5, active LOW
@@ -126,21 +204,16 @@ bool     encHeld = false, encLongDone = false;
 time_t   lastClockSec = 0;
 
 // ================================================================ backlight (PWM on GPIO7)
-static void backlightInit() {
+// NOTE: #if/#else/#endif must NOT appear *inside* a function body in a .ino file - the Arduino
+// prototype-generator (ctags-based) can misparse the brace nesting and corrupt every prototype it
+// generates for the rest of the file. Each branch below is therefore a complete, separate function.
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcAttach(PIN_BLK, 5000, 8);
+static void backlightInit() { ledcAttach(PIN_BLK, 5000, 8); }
+static void backlightSet(uint8_t v) { ledcWrite(PIN_BLK, v); }
 #else
-  ledcSetup(0, 5000, 8);
-  ledcAttachPin(PIN_BLK, 0);
+static void backlightInit() { ledcSetup(0, 5000, 8); ledcAttachPin(PIN_BLK, 0); }
+static void backlightSet(uint8_t v) { ledcWrite(0, v); }
 #endif
-}
-static void backlightSet(uint8_t v) {
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcWrite(PIN_BLK, v);
-#else
-  ledcWrite(0, v);
-#endif
-}
 
 // ================================================================ small utilities
 static uint32_t crc32u(uint32_t crc, const uint8_t* p, size_t n) {   // zlib-compatible, chainable
@@ -796,17 +869,26 @@ static void uploadAbort() {
   upFile.close(); LittleFS.remove("/anim.tmp"); uploading = false; gifRestart = true; needRedraw = true;
 }
 // ---- host keyboard layout: Keyboard.press('z') sends the key that is labelled 'z' on the chosen layout
+// USBHIDKeyboard::begin(const uint8_t*) and the KeyboardLayout_xx_xx tables only exist on arduino-esp32
+// core 3.0.0+; on older cores (2.0.x, still a common Boards Manager install) those symbols do not exist
+// at all, so this whole feature is compiled out there and the pad simply stays on US ASCII mapping.
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#define DC_HAS_KB_LAYOUT 1
 struct LayoutDef { const char* name; const uint8_t* map; };
 static const LayoutDef LAYOUTS[] = {
   {"en_US", KeyboardLayout_en_US}, {"de_DE", KeyboardLayout_de_DE}, {"fr_FR", KeyboardLayout_fr_FR},
   {"fr_CH", KeyboardLayout_fr_CH}, {"es_ES", KeyboardLayout_es_ES}, {"it_IT", KeyboardLayout_it_IT},
   {"pt_PT", KeyboardLayout_pt_PT}, {"pt_BR", KeyboardLayout_pt_BR}, {"sv_SE", KeyboardLayout_sv_SE},
   {"da_DK", KeyboardLayout_da_DK}, {"hu_HU", KeyboardLayout_hu_HU}, {"ja_JP", KeyboardLayout_ja_JP}};
-static String kbLayout = "en_US";
 static const uint8_t* layoutByName(const char* n) {
   for (const LayoutDef& l : LAYOUTS) if (!strcmp(l.name, n)) return l.map;
   return nullptr;
 }
+#else
+#define DC_HAS_KB_LAYOUT 0
+static const uint8_t* layoutByName(const char* n) { return !strcmp(n, "en_US") ? (const uint8_t*)"" : nullptr; }
+#endif
+static String kbLayout = "en_US";
 
 static void cmdHello() {
   JsonDocument d;
@@ -852,12 +934,16 @@ static void handleLine(const String& line) {
     osMac = !strcmp(doc["val"] | "win", "mac") ? 1 : 0; prefs.putUChar("os", osMac); ack("os");
   }
   else if (!strcmp(cmd, "layout")) {
+#if DC_HAS_KB_LAYOUT
     const char* n = doc["val"] | "en_US";
     const uint8_t* map = layoutByName(n);
     if (!map) { nack("layout"); return; }
     kbLayout = n; prefs.putString("kbl", kbLayout);
     Keyboard.releaseAll(); Keyboard.begin(map);
     ack("layout");
+#else
+    nack("layout_unsupported_core");                 // needs arduino-esp32 core 3.0.0+
+#endif
   }
   else if (!strcmp(cmd, "time")) {
     struct timeval tv = {(time_t)doc["epoch"].as<uint32_t>(), 0};
@@ -945,20 +1031,24 @@ void setup() {
   pinMode(PIN_ENC_A, INPUT_PULLUP); pinMode(PIN_ENC_B, INPUT_PULLUP);
   backlightInit(); backlightSet(0);
 
+  prefs.begin("deskcomp", false);
+  loadSettings();                    // needs kbLayout loaded before Keyboard.begin() below
+
   // With "USB CDC On Boot" the core has already called Serial.begin() and USB.begin() before setup(), and the
   // HID classes register their interfaces in their global constructors - so USB descriptors (product name...)
   // can no longer be changed here; the app finds the pad by VID + a "hello" handshake instead.
   upChunk = (Serial.setRxBufferSize(8192) >= 4096) ? 768 : 128;  // core 2.0.x cannot grow the RX queue after boot -> small chunks
   Serial.begin(115200);
+#if DC_HAS_KB_LAYOUT
+  Keyboard.begin(layoutByName(kbLayout.c_str()));   // host keyboard layout saved on the pad; begin() exactly once
+#else
   Keyboard.begin();
+#endif
   ConsumerControl.begin();
   USB.begin();                       // no-op when the core already started USB at boot
   rxLine.reserve(RX_MAX + 16);
   gif.begin(BIG_ENDIAN_PIXELS);      // TFT_eSPI::pushPixels() expects big-endian RGB565 (same as the library's TFT_eSPI example)
 
-  prefs.begin("deskcomp", false);
-  loadSettings();
-  Keyboard.begin(layoutByName(kbLayout.c_str()));   // host keyboard layout saved on the pad
   LittleFS.begin(true);
 
   tft.init();

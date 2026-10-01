@@ -70,14 +70,27 @@ the pad is still booting) and connects by itself; if the cable is pulled it reco
 pad returns. A popup + the Windows device sound say **DeskCompanion connected / disconnected**
 (switch under *Device*). If Windows sees the board but it does not answer - or another program
 such as the Arduino serial monitor holds the COM port - an orange popup says so. The popups need
-the app to be running; the pad itself works without it. The app also sends your PC's keyboard
+the app to be running; the pad itself works without it.
+
+**No pad handy?** Click **Simulate pad (no hardware)** on the Dashboard tab. It connects the app
+to an in-process stand-in (`SimFirmware`/`SimPort`) that speaks the exact same JSON wire protocol
+as the real firmware - no serial port, driver, or OS-specific loopback trick involved, so it works
+identically on Windows/macOS/Linux. Everything that talks to "the pad" (remapping keys, the Macro
+Creator, brightness/mode, and the full chunked GIF upload with CRC check) runs through the same
+`Device` code used for real hardware, so you can try the whole app, including uploading a GIF, before
+ever touching an ESP32. Click it again (now labelled **Stop simulating**) to disconnect. The app also sends your PC's keyboard
 layout to the pad (Device tab, *auto*), so Ctrl+Z is Undo on QWERTZ keyboards too instead of Redo. The **Virtual Pad** tab (see below) is the main screen. The **Dashboard** tab is the
 same key mapping as a plain list: K1–K5 and both encoder directions, 52 built-in actions plus
 "Unassigned"; edits are *staged* and go to the pad with **Upload**. The **Macro Creator** tab builds custom key
 combos, ASCII text auto-typers, and multi-step sequences (combo + text + delay + media steps, up
-to 64 steps) and assigns them to any key. The **GIF Upload** tab crops/resizes any GIF to a
-circular 240×240 image, automatically reduces colours/frames to fit the pad's free flash, previews
-it, and uploads it with a progress bar. The **Device** tab covers brightness, active mode, host OS
+to 64 steps) and assigns them to any key. The **GIF Upload** tab opens with a **preset library** of
+8 procedurally-generated quick-start animations (Heartbeat, Spinner, Pulse Rings, Confetti Burst,
+Fire, Rainbow Sweep, Loading Dots, Checkmark Pop) you can preview and upload with one click - no
+file needed; these are plain geometric generators, not copyrighted sticker/meme art, so there is
+nothing to source or license. Below that, **Select GIF...** still lets you load your own file, which
+crops/resizes it to a circular 240×240 image and automatically reduces colours/frames to fit the
+pad's free flash; either path previews on the round canvas and uploads with a progress bar. The
+**Device** tab covers brightness, active mode, host OS
 (for the Ctrl-vs-Cmd modifier), keyboard layout, and optional Wi-Fi/NTP time sync.
 
 ### Virtual Pad (digital twin)
@@ -134,5 +147,20 @@ command gets `{"ok":true/false,...}` except `stats`.
   changed from the sketch; the app recognises the pad by VID `0x303A` plus the `hello` reply.
 - Fast encoder turns queue their key/media steps (bounded) instead of dropping them; text
   snippets are never stacked.
-- Verified by compiling the unmodified `.ino` with arduino-cli (ESP32 core 3.3.12, TFT_eSPI
-  2.5.44, AnimatedGIF 2.2.3, Bounce2 2.72, ArduinoJson 7.4.2): 83 % of the app partition, 107 KB RAM.
+- Keyboard layout switching (the `{"cmd":"layout"}` command and the Device tab's *Keyboard layout*
+  field) needs **arduino-esp32 core 3.0.0+** - `USBHIDKeyboard::begin(const uint8_t*)` and the
+  `KeyboardLayout_xx_xx` tables it needs don't exist on 2.0.x. The sketch detects the core version
+  at compile time (`ESP_ARDUINO_VERSION_MAJOR`) and compiles that feature out on older cores instead
+  of failing to build; the pad still works standalone with plain US-ASCII key codes either way, and
+  the app's `layout` request gets a clean `nack` instead of silently doing nothing.
+- Verified by compiling the `.ino` with arduino-cli, end to end, against **both** ESP32 core 2.0.9
+  and 3.3.12 (TFT_eSPI 2.5.44, AnimatedGIF 2.2.3, Bounce2 2.72, ArduinoJson 7.4.2): 3.3.12 builds to
+  83 % of the app partition / 107 KB RAM; 2.0.9 to 64 % / 84 KB RAM (smaller, since the keyboard-layout
+  tables are compiled out). All function prototypes are now written explicitly rather than left to the
+  Arduino IDE's automatic (ctags-based) generator, and the two backlight functions no longer have
+  `#if/#else/#endif` inside their body - both were observed, in this compile verification, to be able
+  to make that generator misparse the rest of the file; writing them out is a pure, behaviour-preserving
+  addition that removes the exposure regardless of which ctags build a given Arduino install bundles.
+- The companion app's wire protocol (handshake, remap, brightness, and the full chunked GIF upload
+  with CRC) was verified end to end against a protocol-accurate firmware stand-in, independent of the
+  in-app **Simulate pad** feature described above.
