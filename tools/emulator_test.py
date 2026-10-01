@@ -180,7 +180,7 @@ def t_first_boot_responsive(c):
 
 def t_hello(c):
     h = c.e.request({"cmd": "hello"})
-    expect(h["ok"] and h["dev"] == "desk-companion" and h["fw"] == "1.1.0", f"bad hello {h}")
+    expect(h["ok"] and h["dev"] == "desk-companion" and h["fw"] == "1.2.0", f"bad hello {h}")
     for k in ("mode", "bright", "os", "fs_free", "fs_total", "layout", "hid", "disp", "fs", "safe", "led_pin"):
         expect(k in h, f"hello lacks {k}")
     expect(h["led_pin"] == 21, "LED pin should default to GPIO21 (Waveshare ESP32-S3-Zero)")
@@ -328,6 +328,7 @@ def t_remap_persistence(c):
     j = json.dumps(spec, separators=(",", ":"))
     k = e.request({"cmd": "getkeys"})["slots"]
     expect(k[0]["def"] is False and k[0]["len"] == len(j) and k[0]["crc"] == (zlib.crc32(j.encode()) & 0xFFFFFFFF), f"slot 1 readback {k[0]}")
+    expect(e.request({"cmd": "remap", "key": 3, "layer": 1, "type": "text", "val": "layer two"})["ok"], "remap on layer 2")
     e.request({"cmd": "brightness", "val": 77})
     e.request({"cmd": "mode", "val": 3})
     e.request({"cmd": "os", "val": "mac"})
@@ -336,6 +337,8 @@ def t_remap_persistence(c):
     expect(h["bright"] == 77 and h["mode"] == 3 and h["os"] == "mac", f"settings did not survive a power cycle: {h}")
     k2 = e.request({"cmd": "getkeys"})["slots"]
     expect(k2[0]["crc"] == k[0]["crc"] and k2[5]["def"] is False, "key mappings did not survive a power cycle")
+    l1 = e.request({"cmd": "getkeys", "layer": 1})["slots"]
+    expect(l1[2]["def"] is False and l1[0]["def"] is True, "layer 2 key mapping did not survive a power cycle")
     expect(e.request({"cmd": "info"})["reset"] in ("power-on", "unknown", "external"), "reset reason after power cycle")
     e.request({"cmd": "reset_keys"})
     e.request({"cmd": "mode", "val": 1})
@@ -361,8 +364,11 @@ def make_gif(frames=8, size=240):
     return b.getvalue()
 
 
-def upload(e, data, crc=None, chunk_override=None, abort_at=None):
-    r = e.request({"cmd": "gif_begin", "size": len(data), "crc": zlib.crc32(data) & 0xFFFFFFFF if crc is None else crc}, timeout=20)
+def upload(e, data, crc=None, chunk_override=None, abort_at=None, slot=None):
+    req = {"cmd": "gif_begin", "size": len(data), "crc": zlib.crc32(data) & 0xFFFFFFFF if crc is None else crc}
+    if slot is not None:
+        req["slot"] = slot
+    r = e.request(req, timeout=20)
     if not r.get("ok"):
         return r
     chunk = chunk_override or r["chunk"]
@@ -504,6 +510,8 @@ def t_safe_mode(c):
         expect(e.request({"cmd": "led", "r": 5})["ok"], "LED still works in safe mode")
         i = e.request({"cmd": "info"})
         expect(i["safe"] is True and i["ok_disp"] is False and "display-skipped" in i["boot"], f"info in safe mode {i}")
+        expect(i["safe_why"] == "forced", f"safe_why {i['safe_why']}")
+        expect(e.request({"cmd": "safe_retry", "reboot": False})["ok"], "safe_retry acknowledged")
         expect(e.request({"cmd": "remap", "key": 1, "type": "text", "val": "x"})["ok"], "key remap works in safe mode")
         expect(e.request({"cmd": "mode", "val": 5})["ok"], "switching to GIF mode in safe mode must not touch the display")
         e.pump(1.5)
@@ -513,8 +521,206 @@ def t_safe_mode(c):
         e.close()
 
 
+def t_layers(c):
+    e = c.e
+    e.request({"cmd": "reset_keys"})
+    h = e.request({"cmd": "hello"})
+    expect(h["layers"] == 3 and h["layer"] == 0 and h["modes"] == 6, f"hello layers/modes: {h}")
+    for cap in ("layers", "mouse", "host", "info", "gifslots", "factory"):
+        expect(cap in h["caps"], f"capability {cap} missing: {h['caps']}")
+    # layers are separate key tables; layer 0 keeps the old NVS names
+    expect(e.request({"cmd": "remap", "key": 1, "layer": 1, "type": "text", "val": "L2K1"})["ok"], "remap layer 2")
+    expect(e.request({"cmd": "remap", "key": 1, "layer": 2, "type": "text", "val": "L3K1"})["ok"], "remap layer 3")
+    expect(e.request({"cmd": "remap", "key": 1, "layer": 3, "type": "text", "val": "x"})["err"] == "layer", "layer 4 invalid")
+    expect(e.request({"cmd": "remap", "key": 1, "layer": -1, "type": "text", "val": "x"})["err"] == "layer", "layer -1 invalid")
+    g0, g1, g2 = (e.request({"cmd": "getkeys", "layer": n}) for n in range(3))
+    expect(g0["slots"][0]["def"] and not g1["slots"][0]["def"] and not g2["slots"][0]["def"], "layers must not share slots")
+    expect(g1["layer"] == 1 and g1["cur"] == 0 and g1["layers"] == 3, f"getkeys layer info {g1}")
+    expect(e.request({"cmd": "getkeys", "layer": 3})["err"] == "layer", "getkeys layer 4")
+    # full spec of a single slot: stored value or the layer's default
+    sp = e.request({"cmd": "getkeys", "layer": 1, "slot": 1})
+    expect(sp["spec"] == {"type": "text", "val": "L2K1"} and sp["def"] is False, f"slot spec {sp}")
+    sp = e.request({"cmd": "getkeys", "layer": 1, "slot": 2})
+    expect(sp["def"] is True and sp["spec"] == {"type": "media", "val": "PLAY_PAUSE"}, f"default of layer 2 K2: {sp}")
+    sp = e.request({"cmd": "getkeys", "layer": 0, "slot": 1})
+    expect(sp["spec"] == {"type": "combo", "val": ["PRIMARY", "c"]}, f"default of layer 1 K1: {sp}")
+    expect(e.request({"cmd": "getkeys", "layer": 0, "slot": 9})["err"] == "key", "slot 9")
+    # switching
+    e.msgs.clear()
+    r = e.request({"cmd": "layer", "val": 1})
+    expect(r["ok"] and r["n"] == 1, f"layer 1 {r}")
+    expect(e.request({"cmd": "hello"})["layer"] == 1, "hello reports the active layer")
+    expect(e.request({"cmd": "layer", "val": "next"})["n"] == 2, "next -> 2")
+    expect(e.request({"cmd": "layer", "val": "next"})["n"] == 0, "next wraps")
+    expect(e.request({"cmd": "layer", "val": "prev"})["n"] == 2, "prev wraps")
+    expect(e.request({"cmd": "layer", "val": 7})["err"] == "layer" and e.request({"cmd": "layer", "val": "sideways"})["err"] == "layer", "bad layer")
+    e.request({"cmd": "layer", "val": 0})
+    # a key can switch layers (and says so through an event the app listens to)
+    expect(e.request({"cmd": "remap", "key": 5, "type": "layer", "val": "next"})["ok"], "remap layer action")
+    expect(e.request({"cmd": "remap", "key": 5, "type": "layer", "val": 9})["err"] == "spec", "layer action 9 invalid")
+    e.msgs.clear()
+    expect(e.request({"cmd": "input", "k": 5})["ok"], "press K5")
+    e.pump(0.6)
+    evs = list(e.msgs)                                                    # (the next request clears e.msgs)
+    expect(e.request({"cmd": "hello"})["layer"] == 1, "K5 switched to layer 2")
+    expect(any(m.get("evt") == "layer" and m.get("n") == 1 and "id" not in m for m in evs), f"layer event missing: {evs}")
+    # the radial menu has a LAYER entry: turn to it, enter, turn, confirm
+    e.request({"cmd": "layer", "val": 0})
+    for step in ({"click": True}, {"turn": 3}, {"click": True}, {"turn": 1}, {"click": True}):
+        expect(e.request({"cmd": "input", **step})["ok"], f"menu step {step}")
+    e.pump(0.4)
+    expect(e.request({"cmd": "hello"})["layer"] == 1, "menu LAYER entry switched the layer")
+    e.request({"cmd": "layer", "val": 0})
+    # selective reset
+    expect(e.request({"cmd": "reset_keys", "layer": 1})["ok"], "reset layer 2")
+    g1, g2 = e.request({"cmd": "getkeys", "layer": 1}), e.request({"cmd": "getkeys", "layer": 2})
+    expect(g1["slots"][0]["def"] and not g2["slots"][0]["def"], "reset of one layer leaves the others")
+    e.request({"cmd": "reset_keys"})
+    expect(all(s["def"] for n in range(3) for s in e.request({"cmd": "getkeys", "layer": n})["slots"]), "reset_keys without layer clears all")
+    img = rgb565be_to_image(snapshot(e))                              # layer badge: L2 pill at the bottom
+    e.request({"cmd": "layer", "val": 1})
+    e.pump(0.6)
+    img2 = rgb565be_to_image(snapshot(e))
+    c.save(img2, "layer_badge.png")
+    expect(list(img.getdata()) != list(img2.getdata()), "no layer badge on the screen")
+    e.request({"cmd": "layer", "val": 0})
+
+
+def t_new_actions(c):
+    e = c.e
+    e.request({"cmd": "reset_keys"})
+    e.request({"cmd": "mode", "val": 1})
+    url = {"op": "url", "arg": "https://example.com/a?b=1"}
+    expect(e.request({"cmd": "remap", "key": 1, "type": "host", "val": url})["ok"], "host url")
+    for op, arg in (("app", "calc.exe"), ("shell", "echo hi"), ("file", "/tmp/x.txt"), ("notify", "done")):
+        expect(e.request({"cmd": "remap", "key": 2, "type": "host", "val": {"op": op, "arg": arg}})["ok"], f"host {op}")
+    expect(e.request({"cmd": "remap", "key": 2, "type": "host", "val": {"op": "clipboard"}})["ok"], "host clipboard needs no argument")
+    expect(e.request({"cmd": "remap", "key": 2, "type": "host", "val": {"op": "url"}})["err"] == "spec", "url needs an argument")
+    expect(e.request({"cmd": "remap", "key": 2, "type": "host", "val": {"op": "format-c", "arg": "x"}})["err"] == "spec", "unknown host op")
+    expect(e.request({"cmd": "remap", "key": 2, "type": "host", "val": {"op": "url", "arg": "x" * 401}})["err"] == "spec", "host argument too long")
+    for m in ({"btn": "left"}, {"btn": "right", "act": "double"}, {"btn": "middle", "act": "down"}, {"btn": "back", "act": "up"},
+              {"wheel": -3}, {"wheel": 99}, {"move": [10, -10]}):
+        expect(e.request({"cmd": "remap", "key": 3, "type": "mouse", "val": m})["ok"], f"mouse {m}")
+    for m in ({"btn": "banana"}, {"btn": "left", "act": "tickle"}, {"move": [1]}, 7):
+        expect(e.request({"cmd": "remap", "key": 3, "type": "mouse", "val": m})["err"] == "spec", f"bad mouse {m}")
+    macro = [{"combo": ["CTRL", "c"]}, {"host": url}, {"mouse": {"btn": "left"}}, {"layer": "next"}, {"delay": 10}, {"layer": 0}]
+    expect(e.request({"cmd": "remap", "key": 4, "type": "macro", "val": macro})["ok"], "macro mixing every step type")
+    expect(e.request({"cmd": "remap", "key": 4, "type": "macro", "val": [{"host": {"op": "nope", "arg": "x"}}]})["err"] == "spec", "bad host step")
+    expect(e.request({"cmd": "remap", "key": 4, "type": "macro", "val": [{"layer": 5}]})["err"] == "spec", "bad layer step")
+    # a real key press makes the pad ask the app to open the URL
+    expect(e.request({"cmd": "remap", "key": 1, "type": "host", "val": url})["ok"], "host url again")
+    e.msgs.clear()
+    expect(e.request({"cmd": "input", "k": 1})["ok"], "press K1")
+    e.pump(0.6)
+    ev = [m for m in e.msgs if m.get("evt") == "host"]
+    expect(len(ev) == 1 and ev[0]["op"] == "url" and ev[0]["arg"] == url["arg"] and "id" not in ev[0], f"host event: {ev}")
+    # the macro with host + mouse + layer steps runs to the end without crashing the firmware, ending back on layer 1
+    e.request({"cmd": "remap", "key": 4, "type": "macro", "val": macro})
+    e.msgs.clear()
+    expect(e.request({"cmd": "input", "k": 4})["ok"], "press K4")
+    e.pump(1.2)
+    macro_evs = list(e.msgs)
+    expect(e.request({"cmd": "hello"})["layer"] == 0 and not e.panicked(), "macro with layer steps")
+    expect(any(m.get("evt") == "host" for m in macro_evs), "host step inside a macro did not fire")
+    e.request({"cmd": "reset_keys"})
+
+
+def t_info_screen(c):
+    e = c.e
+    expect(e.request({"cmd": "mode", "val": 6})["ok"], "mode 6")
+    expect(e.request({"cmd": "hello"})["mode"] == 6, "mode 6 accepted")
+    e.pump(0.8)
+    empty = rgb565be_to_image(snapshot(e))
+    c.save(empty, "info_nodata.png")
+    expect(len(set(empty.getdata())) >= 4, "info screen without data is blank")
+    cards = [{"k": "m", "label": "NOW PLAYING", "t": "Midnight City", "a": "M83", "b": "Hurry Up, We're Dreaming"},
+             {"k": "w", "label": "WEATHER  Zurich", "t": "21 C", "a": "Partly cloudy", "b": "wind 9 km/h"},
+             {"k": "e", "label": "NEXT EVENT", "t": "14:30", "a": "Design review with a very long title", "b": "in 25 min"}]
+    r = e.request({"cmd": "info_cards", "cards": cards, "badges": [{"name": "mail", "n": 3}, {"name": "chat", "n": 120}], "rot": 2})
+    expect(r["ok"] and r["cards"] == 3 and r["badges"] == 2, f"info_cards reply {r}")
+    e.pump(0.8)
+    full = rgb565be_to_image(snapshot(e))
+    c.save(full, "info_cards.png")
+    expect(list(full.getdata()) != list(empty.getdata()), "info cards did not change the screen")
+    e.pump(2.6)                                                            # rotation: the next card is drawn
+    nxt = rgb565be_to_image(snapshot(e))
+    c.save(nxt, "info_cards_next.png")
+    expect(list(nxt.getdata()) != list(full.getdata()), "cards do not rotate")
+    expect(e.request({"cmd": "info_cards", "cards": [{}] * 9, "badges": [{"n": 5}] * 9})["cards"] == 4, "cards are limited to 4")
+    expect(e.request({"cmd": "info_cards", "cards": []})["cards"] == 0, "empty card list")
+    expect(e.request({"cmd": "ping"})["ok"] and not e.panicked(), "alive after info updates")
+    # the menu cycles through 6 display modes and the long press moves on from mode 6 to 1
+    expect(e.request({"cmd": "input", "hold": True})["ok"], "hold = next mode")
+    e.pump(0.5)
+    expect(e.request({"cmd": "hello"})["mode"] == 1, "mode 6 -> 1")
+    e.request({"cmd": "mode", "val": 1})
+
+
+def t_gif_slots(c):
+    e = c.e
+    data = make_gif(4, 120)
+    for sl in (1, 2):
+        r = upload(e, data, slot=sl)
+        expect(r["ok"] and r["evt"] == "gif_done", f"upload slot {sl}: {r}")
+    expect(upload(e, data, slot=4).get("err") == "slot", "slot 4 invalid")
+    expect(upload(e, data, slot=-1).get("err") == "slot", "slot -1 invalid")
+    lst = e.request({"cmd": "gif_list"})
+    slots = {x["s"]: x["size"] for x in lst["slots"]}
+    expect(1 in slots and 2 in slots and slots[1] == len(data) and lst["cur"] == 2 and lst["max"] == 4, f"gif_list {lst}")
+    h = e.request({"cmd": "hello"})
+    expect(h["gifs"] >= 2 and h["mode"] == 5, f"hello after slot uploads {h}")
+    e.pump(1.5)
+    expect(e.request({"cmd": "ping"})["ok"] and not e.panicked(), "firmware died playing a slot")
+    # explicit selection and rotation
+    expect(e.request({"cmd": "gif_cfg", "slot": 1})["cur"] == 1, "select slot 1")
+    expect(e.request({"cmd": "gif_cfg", "slot": 3})["err"] == "slot", "slot 3 is empty")
+    r = e.request({"cmd": "gif_cfg", "rot": 1})
+    expect(r["rot"] == 1, f"rotation set {r}")
+    seen, t0 = set(), time.time()
+    while time.time() - t0 < 30 and len(seen) < 2:
+        e.pump(0.7)
+        seen.add(e.request({"cmd": "gif_list"})["cur"])
+    expect(len(seen) >= 2, f"rotation never changed slot: {seen}")
+    expect(e.request({"cmd": "gif_cfg", "rot": 0})["rot"] == 0, "rotation off")
+    # delete: slot 1 goes away, others stay; deleting everything regenerates the demo
+    expect(e.request({"cmd": "gif_delete", "slot": 1})["ok"], "delete slot 1")
+    expect(1 not in {x["s"] for x in e.request({"cmd": "gif_list"})["slots"]}, "slot 1 still listed")
+    expect(e.request({"cmd": "gif_delete", "slot": 9})["err"] == "slot", "bad slot delete")
+    e.request({"cmd": "gif_delete", "slot": 2})
+    e.request({"cmd": "gif_delete", "slot": 0})
+    t0 = time.time()
+    while time.time() - t0 < 120:
+        e.pump(1.0)
+        if e.request({"cmd": "hello"})["gif"]:
+            break
+    expect(e.request({"cmd": "hello"})["gif"] is True and not e.panicked(), "demo animation not regenerated after deleting every slot")
+    e.request({"cmd": "mode", "val": 1})
+
+
+def t_recovery(c):
+    e = c.e
+    expect(e.request({"cmd": "factory"})["err"] == "confirm", "factory needs confirm")
+    expect(e.request({"cmd": "factory", "confirm": True, "what": "everything"})["err"] == "what", "unknown factory target")
+    e.request({"cmd": "remap", "key": 1, "type": "text", "val": "keep me?"})
+    e.request({"cmd": "remap", "key": 1, "layer": 2, "type": "text", "val": "and me?"})
+    expect(e.request({"cmd": "factory", "confirm": True, "what": "keys"})["ok"], "factory keys")
+    expect(all(s["def"] for n in range(3) for s in e.request({"cmd": "getkeys", "layer": n})["slots"]), "factory keys leaves stored keys behind")
+    e.request({"cmd": "brightness", "val": 40})
+    expect(e.request({"cmd": "factory", "confirm": True, "what": "settings", "reboot": False})["ok"], "factory settings")
+    expect(e.request({"cmd": "ping"})["ok"], "alive after factory settings")
+    r = e.request({"cmd": "boot_opt", "nodisp": True})
+    expect(r["ok"] and r["nodisp"] is True, f"boot_opt {r}")
+    expect(e.request({"cmd": "info"})["nodisp"] is True, "info shows nodisp")
+    expect(e.request({"cmd": "boot_opt", "nodisp": False})["nodisp"] is False, "nodisp off again")
+    expect(e.request({"cmd": "safe_retry", "reboot": False})["ok"], "safe_retry")
+    expect(e.request({"cmd": "info"})["crashes"] == 0, "crash counter cleared")
+    expect(e.request({"cmd": "ota", "val": True})["err"] in ("no_wifi", "ota_unsupported"), "OTA needs Wi-Fi credentials first")
+    expect(e.request({"cmd": "info"})["ip"] == "", "no IP without Wi-Fi")
+    e.request({"cmd": "brightness", "val": 200})
+
+
 TESTS = [t_first_boot_responsive, t_hello, t_ping_echo_id, t_info, t_led, t_gpio, t_inputs, t_display_and_snapshot, t_modes_render, t_virtual_input,
-         t_events, t_remap_persistence, t_gif, t_selftest_misc, t_fuzz, t_safe_mode]
+         t_events, t_remap_persistence, t_gif, t_layers, t_new_actions, t_info_screen, t_gif_slots, t_recovery, t_selftest_misc, t_fuzz, t_safe_mode]
 
 
 def main():

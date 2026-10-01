@@ -674,6 +674,78 @@ def rgb565be_image(raw, w=240, h=240):
     return img
 
 
+FW_BUNDLED = "1.2.0"                     # version of firmware/DeskCompanion.bin shipped with this app
+LAYERS, GIF_SLOTS = 3, 4
+HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify")
+DEFAULT_LAYERS = [
+    [{"type": "combo", "val": ["PRIMARY", "c"]}, {"type": "combo", "val": ["PRIMARY", "v"]}, {"type": "combo", "val": ["PRIMARY", "z"]},
+     {"type": "media", "val": "PLAY_PAUSE"}, {"type": "media", "val": "MUTE"}, {"type": "media", "val": "VOL_UP"}, {"type": "media", "val": "VOL_DOWN"}],
+    [{"type": "media", "val": "PREV"}, {"type": "media", "val": "PLAY_PAUSE"}, {"type": "media", "val": "NEXT"},
+     {"type": "media", "val": "STOP"}, {"type": "media", "val": "MUTE"}, {"type": "media", "val": "VOL_UP"}, {"type": "media", "val": "VOL_DOWN"}],
+    [{"type": "combo", "val": ["ALT", "LEFT"]}, {"type": "combo", "val": ["ALT", "RIGHT"]}, {"type": "combo", "val": ["F5"]},
+     {"type": "combo", "val": ["PRIMARY", "t"]}, {"type": "combo", "val": ["PRIMARY", "w"]}, {"type": "combo", "val": ["PGDN"]}, {"type": "combo", "val": ["PGUP"]}],
+]
+
+
+def spec_ok(spec):
+    """Same acceptance rules as the firmware's parseSpec() - used by the simulated pad (and by the UI before it uploads)."""
+    t, v = spec.get("type", "none"), spec.get("val")
+    def layer_ok(x):
+        return x in ("next", "prev") or (isinstance(x, int) and not isinstance(x, bool) and 0 <= x < LAYERS)
+    def host_ok(o):
+        return (isinstance(o, dict) and o.get("op") in HOST_OPS and len(str(o.get("arg", ""))) <= 400
+                and (o.get("op") == "clipboard" or bool(o.get("arg"))))
+    def mouse_ok(o):
+        if not isinstance(o, dict):
+            return False
+        if "wheel" in o:
+            return isinstance(o["wheel"], int)
+        if "move" in o:
+            return isinstance(o["move"], list) and len(o["move"]) == 2
+        return o.get("btn", "left") in ("left", "right", "middle", "back", "forward") and o.get("act", "click") in ("click", "double", "down", "up")
+    if t == "none":
+        return True
+    if t == "combo":
+        return isinstance(v, list) and 0 < len(v) <= 6 and all(isinstance(k, str) and (valid_key(k) or k.upper() in ("PRIMARY", "MOD", "CTRL", "SHIFT", "ALT", "GUI", "WIN", "CMD", "META", "OPT", "OPTION", "CONTROL", "SUPER")) for k in v)
+    if t == "media":
+        return v in ("PLAY_PAUSE", "NEXT", "PREV", "STOP", "MUTE", "VOL_UP", "VOL_DOWN", "FF", "REWIND")
+    if t == "text":
+        return isinstance(v, str)
+    if t == "layer":
+        return layer_ok(v)
+    if t == "host":
+        return host_ok(v)
+    if t == "mouse":
+        return mouse_ok(v)
+    if t == "macro":
+        if not isinstance(v, list) or len(v) > 64:
+            return False
+        for o in v:
+            if not isinstance(o, dict):
+                return False
+            if "combo" in o:
+                if not spec_ok({"type": "combo", "val": o["combo"]}):
+                    return False
+            elif "text" in o or "delay" in o:
+                pass
+            elif "media" in o:
+                if not spec_ok({"type": "media", "val": o["media"]}):
+                    return False
+            elif "host" in o:
+                if not host_ok(o["host"]):
+                    return False
+            elif "mouse" in o:
+                if not mouse_ok(o["mouse"]):
+                    return False
+            elif "layer" in o:
+                if not layer_ok(o["layer"]):
+                    return False
+            else:
+                return False
+        return True
+    return False
+
+
 class SimFirmware:
     """Implements the DeskCompanion wire protocol in pure Python, standing in for real hardware so the
     app's connect / remap / brightness / GIF-upload / Dev-tab code paths can be exercised with nothing plugged in."""
@@ -682,9 +754,14 @@ class SimFirmware:
         self.emit = emit                      # callable(bytes) -> pushes firmware->app bytes
         self._buf = b""
         self.mode, self.bright, self.osv, self.layout = 1, 200, "win", "en_US"
-        self.slots = {}
-        self.gif_present = True               # the built-in demo animation, like the real pad on first boot
-        self.gif_bytes_used = 60_000
+        self.slots = {}                       # layer 0 (kept under this name: tests and tools read it)
+        self.layers = [self.slots, {}, {}]
+        self.layer = 0
+        self.gifs = {0: 60_000}              # slot -> bytes; slot 0 starts as the built-in demo animation, like the real pad
+        self.gif_cur, self.gif_rot, self._up_slot = 0, 0, 0
+        self.cards, self.badges, self.card_rot = [], [], 6
+        self.nodisp, self.ota, self.crashes = False, False, 0
+        self.host_log = []                   # host actions the pad asked for (tests / Dev tab)
         self._up = None
         self.led = {"mode": 0, "r": 0, "g": 0, "b": 0}
         self.events = False
@@ -701,9 +778,36 @@ class SimFirmware:
     def _send(self, obj):
         self.emit((compact_json(obj) + "\n").encode())
 
+    @property
+    def gif_present(self):
+        return bool(self.gifs)
+
+    @property
+    def gif_bytes_used(self):
+        return sum(self.gifs.values())
+
     def _fs_free(self):
-        used = SIM_FS_RESERVED + (self.gif_bytes_used if self.gif_present else 0)
-        return max(0, SIM_FS_TOTAL - used)
+        return max(0, SIM_FS_TOTAL - SIM_FS_RESERVED - self.gif_bytes_used)
+
+    def _gif_list(self, reply):
+        reply({"ok": True, "evt": "gif_list", "slots": [{"s": k, "size": v} for k, v in sorted(self.gifs.items())],
+               "cur": self.gif_cur, "rot": self.gif_rot, "max": GIF_SLOTS, "fs_free": self._fs_free()})
+
+    def _spec_for(self, lay, i):
+        return self.layers[lay].get(i) or DEFAULT_LAYERS[lay][i - 1]
+
+    def _run_spec(self, spec):
+        """What pressing a key does on the real pad that is visible to the app: layer switches and host actions."""
+        t, v = spec.get("type"), spec.get("val")
+        steps = v if t == "macro" else [{t: v}]
+        for st in steps:
+            if "layer" in st:
+                x = st["layer"]
+                self.layer = (self.layer + 1) % LAYERS if x == "next" else (self.layer - 1) % LAYERS if x == "prev" else int(x)
+                self._send({"evt": "layer", "n": self.layer})
+            elif "host" in st:
+                self.host_log.append(st["host"])
+                self._send({"evt": "host", "op": st["host"]["op"], "arg": st["host"].get("arg", "")})
 
     def _up_ms(self):
         return int((time.monotonic() - self.t0) * 1000)
@@ -739,7 +843,9 @@ class SimFirmware:
         if cmd == "stats":
             return                             # 1 Hz telemetry, no reply - matches the real firmware
         if cmd == "hello":
-            reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": "SIM",
+            reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": FW_BUNDLED,
+                   "layer": self.layer, "layers": LAYERS, "modes": 6, "gifs": len(self.gifs), "gif_rot": self.gif_rot,
+                   "caps": ["layers", "mouse", "host", "info", "gifslots", "factory", "ota"],
                    "mode": self.mode, "bright": self.bright, "os": self.osv, "gif": self.gif_present,
                    "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "synced": False, "layout": self.layout,
                    "hid": True, "disp": True, "fs": True, "fs_state": "ready", "safe": False, "led_pin": 21})
@@ -751,10 +857,10 @@ class SimFirmware:
         elif cmd == "echo":
             reply({"ok": True, "evt": "echo", "data": msg.get("data")})
         elif cmd == "info":
-            reply({"ok": True, "evt": "info", "fw": "SIM", "build": "simulated", "chip": "ESP32-S3 (simulated)", "rev": 0,
+            reply({"ok": True, "evt": "info", "fw": FW_BUNDLED, "build": "simulated", "safe_why": "", "nodisp": self.nodisp, "ota": self.ota, "ip": "", "layer": self.layer, "chip": "ESP32-S3 (simulated)", "rev": 0,
                    "cores": 2, "cpu_mhz": 240, "flash": 4194304,
                    "heap": 210_000, "heap_min": 190_000, "heap_blk": 110_000, "psram": 0, "temp": 31.5, "up_ms": self._up_ms(),
-                   "reset": "power-on", "crashes": 0, "safe": False, "core": "sim", "usb_mode": 0, "cdc_boot": 1, "hid": True,
+                   "reset": "power-on", "crashes": self.crashes, "safe": False, "core": "sim", "usb_mode": 0, "cdc_boot": 1, "hid": True,
                    "tft": True, "sim": True, "ok_prefs": True, "ok_fs": True, "fs_state": "ready", "ok_sprite": True, "ok_disp": True,
                    "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "rx_ms_ago": 0, "events": self.events,
                    "gpio_touched": False, "led_pin": 21, "led_mode": self.led["mode"], "mode": self.mode, "bright": self.bright,
@@ -827,6 +933,7 @@ class SimFirmware:
                 if self.events:
                     self._send({"evt": "key", "k": k, "v": 1})
                     self._send({"evt": "key", "k": k, "v": 0})
+                self._run_spec(self._spec_for(self.layer, k))
             elif "turn" in msg:
                 t = msg["turn"]
                 if not isinstance(t, int) or t == 0 or abs(t) > 20:
@@ -834,38 +941,112 @@ class SimFirmware:
                     return
                 if self.events:
                     self._send({"evt": "enc", "d": 1 if t > 0 else -1, "pos": t})
+                self._run_spec(self._spec_for(self.layer, 6 if t > 0 else 7))
             elif not (msg.get("click") or msg.get("hold")):
                 reply({"ok": False, "err": "input"})
                 return
             reply({"ok": True, "evt": "input"})
         elif cmd == "getkeys":
+            lay = msg.get("layer", 0)
+            if not isinstance(lay, int) or not 0 <= lay < LAYERS:
+                reply({"ok": False, "err": "layer"})
+                return
+            base = {"ok": True, "evt": "keys", "layer": lay, "cur": self.layer, "layers": LAYERS}
+            if "slot" in msg:
+                sl = msg["slot"]
+                if not isinstance(sl, int) or not 1 <= sl <= 7:
+                    reply({"ok": False, "err": "key"})
+                    return
+                reply(dict(base, s=sl, spec=self._spec_for(lay, sl), **{"def": sl not in self.layers[lay]}))
+                return
             slots = []
             for i in range(1, 8):
-                s = self.slots.get(i)
+                s = self.layers[lay].get(i)
                 j = compact_json({"type": s["type"], "val": s["val"]}) if s else ""
                 slots.append({"s": i, "def": not s, "len": len(j.encode()), "crc": zlib.crc32(j.encode()) & 0xFFFFFFFF if s else 0})
-            reply({"ok": True, "evt": "keys", "slots": slots})
+            reply(dict(base, slots=slots))
+        elif cmd == "layer":
+            v = msg.get("val")
+            n = (self.layer + 1) % LAYERS if v == "next" else (self.layer - 1) % LAYERS if v == "prev" else v
+            if not isinstance(n, int) or isinstance(n, bool) or not 0 <= n < LAYERS:
+                reply({"ok": False, "err": "layer"})
+                return
+            if n != self.layer:
+                self.layer = n
+                self._send({"evt": "layer", "n": n})
+            reply({"ok": True, "evt": "layer", "n": n, "layers": LAYERS})
+        elif cmd == "info_cards":
+            self.cards = [c for c in (msg.get("cards") or []) if isinstance(c, dict)][:4]
+            self.badges = [b for b in (msg.get("badges") or []) if isinstance(b, dict)][:4]
+            self.card_rot = msg.get("rot", self.card_rot)
+            reply({"ok": True, "evt": "info_cards", "cards": len(self.cards), "badges": len(self.badges)})
+        elif cmd == "gif_list":
+            self._gif_list(reply)
+        elif cmd == "gif_cfg":
+            if "rot" in msg:
+                self.gif_rot = max(0, min(3600, int(msg["rot"])))
+            if "slot" in msg:
+                if msg["slot"] not in self.gifs:
+                    reply({"ok": False, "err": "slot"})
+                    return
+                self.gif_cur = msg["slot"]
+            self._gif_list(reply)
+        elif cmd == "factory":
+            if not msg.get("confirm"):
+                reply({"ok": False, "err": "confirm"})
+                return
+            what = msg.get("what", "settings")
+            if what == "keys":
+                for lay in self.layers:
+                    lay.clear()
+            elif what == "settings":
+                for lay in self.layers:
+                    lay.clear()
+                self.bright, self.mode, self.osv = 200, 1, "win"
+            elif what == "gifs":
+                self.gifs = {0: 60_000}
+            else:
+                reply({"ok": False, "err": "what"})
+                return
+            reply({"ok": True, "evt": "factory"})
+        elif cmd == "boot_opt":
+            if "nodisp" in msg:
+                self.nodisp = bool(msg["nodisp"])
+            reply({"ok": True, "evt": "boot_opt", "nodisp": self.nodisp, "safe": False})
+        elif cmd == "safe_retry":
+            self.crashes = 0
+            reply({"ok": True, "evt": "safe_retry"})
+        elif cmd == "ota":
+            self.ota = bool(msg.get("val"))
+            reply({"ok": True, "evt": "ota", "on": self.ota, "has_pw": bool(msg.get("pass"))})
         elif cmd == "selftest":
             reply({"ok": True, "evt": "selftest", "nvs": True, "fs": True, "heap_ok": True, "heap": 210_000, "led": "cycled",
                    "display": "drawn", "hid": True, "keys": [0, 0, 0, 0, 0]})
         elif cmd == "reboot":
             reply({"ok": True, "evt": "reboot"})
         elif cmd == "remap":
-            key = msg.get("key")
+            key, lay = msg.get("key"), msg.get("layer", 0)
             if not isinstance(key, int) or not 1 <= key <= 7:
                 reply({"ok": False, "err": "key"})
+            elif not isinstance(lay, int) or not 0 <= lay < LAYERS:
+                reply({"ok": False, "err": "layer"})
+            elif not spec_ok({"type": msg.get("type"), "val": msg.get("val")}):
+                reply({"ok": False, "err": "spec"})
             else:
-                self.slots[key] = {"type": msg.get("type"), "val": msg.get("val")}
+                self.layers[lay][key] = {"type": msg.get("type"), "val": msg.get("val")}
                 reply({"ok": True, "evt": "remap"})
         elif cmd == "reset_keys":
-            self.slots.clear()
+            only = msg.get("layer")
+            for n, lay in enumerate(self.layers):
+                if only is None or only == n:
+                    lay.clear()
             reply({"ok": True, "evt": "reset_keys"})
         elif cmd == "brightness":
             self.bright = max(5, min(255, int(msg.get("val", 200))))
             reply({"ok": True, "evt": "brightness"})
         elif cmd == "mode":
             v = int(msg.get("val", 1))
-            if 1 <= v <= 5:
+            if 1 <= v <= 6:
                 self.mode = v
             reply({"ok": True, "evt": "mode"})
         elif cmd == "os":
@@ -877,11 +1058,16 @@ class SimFirmware:
         elif cmd in ("time", "wifi", "media"):
             reply({"ok": True, "evt": cmd})
         elif cmd == "gif_begin":
-            size = int(msg.get("size", 0))
-            if size <= 0 or size + 8192 > SIM_FS_TOTAL - SIM_FS_RESERVED:
+            size, slot = int(msg.get("size", 0)), msg.get("slot", 0)
+            if not isinstance(slot, int) or not 0 <= slot < GIF_SLOTS:
+                reply({"ok": False, "err": "slot"})
+                return
+            room = SIM_FS_TOTAL - SIM_FS_RESERVED - sum(v for k, v in self.gifs.items() if k != slot)
+            if size <= 0 or size + 8192 > room:
                 reply({"ok": False, "err": "no_space"})
                 return
             self._up = {"size": size, "crc": msg.get("crc", 0), "rx": 0, "seq": 0, "buf": bytearray()}
+            self._up_slot = slot
             reply({"ok": True, "evt": "gif_ready", "chunk": 768})
         elif cmd == "gif_chunk":
             up = self._up
@@ -914,13 +1100,23 @@ class SimFirmware:
             if up["rx"] != up["size"] or (zlib.crc32(bytes(up["buf"])) & 0xFFFFFFFF) != up["crc"]:
                 reply({"ok": False, "err": "crc"})
                 return
-            self.gif_present, self.gif_bytes_used, self.mode = True, up["rx"], M_GIF
+            self.gifs[self._up_slot] = up["rx"]
+            self.gif_cur, self.mode = self._up_slot, M_GIF
             reply({"ok": True, "evt": "gif_done"})
         elif cmd == "gif_abort":
             self._up = None
             reply({"ok": True, "evt": "gif_abort"})
         elif cmd == "gif_delete":
-            self.gif_present, self.gif_bytes_used, self._up = False, 0, None
+            slot = msg.get("slot", 0)
+            if not isinstance(slot, int) or not 0 <= slot < GIF_SLOTS:
+                reply({"ok": False, "err": "slot"})
+                return
+            self._up = None
+            self.gifs.pop(slot, None)
+            if self.gif_cur == slot:
+                self.gif_cur = 0
+            if slot == 0 or not self.gifs:
+                self.gifs.setdefault(0, 60_000)          # the demo animation is regenerated, as on the real pad
             reply({"ok": True, "evt": "gif_delete"})
         else:
             reply({"ok": False, "err": "unknown_cmd"})

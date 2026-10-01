@@ -1,5 +1,5 @@
 /*
-  DeskCompanion.ino - ESP32-S3 macro pad firmware v1.1.0  (target: Waveshare ESP32-S3-Zero)
+  DeskCompanion.ino - ESP32-S3 macro pad firmware v1.2.0  (target: Waveshare ESP32-S3-Zero)
 
   Hardware : ESP32-S3-Zero, GC9A01 1.28" round TFT (SPI), 5 keys, EC11 encoder, onboard WS2812 LED (GPIO21)
   USB      : native USB -> CDC serial (JSON lines) + HID keyboard + HID consumer control
@@ -15,7 +15,9 @@
     USB CDC On Boot = "Enabled", Flash 4MB, Partition Scheme = "Default 4MB with spiffs", PSRAM = Disabled
   Libraries: TFT_eSPI, AnimatedGIF, Bounce2, ArduinoJson (7.x)
 
-  Key slots used by the "remap" command: 1..5 = K1..K5, 6 = encoder CW, 7 = encoder CCW
+  Key slots used by the "remap" command: 1..5 = K1..K5, 6 = encoder CW, 7 = encoder CCW (x3 layers, optional "layer":0..2)
+  v1.2: layers, mouse + host actions, info screen (mode 6), 4 GIF slots with rotation, factory / safe-mode recovery,
+        opt-in Wi-Fi OTA.  Protocol additions are listed in README.md; "hello" reports a "caps" list for feature detection.
 
   Build flags (optional):  -DDC_SIM       emulator test build: no USB, no real display (see tools/)
                            -DDC_RGB_PIN=n onboard RGB LED pin (default 21 = Waveshare ESP32-S3-Zero)
@@ -27,7 +29,11 @@
 #if defined(DC_SIM)
   #define DC_HAS_HID 0
   #define DC_HAS_TFT 0
+  #define DC_HAS_OTA 0
 #else
+  #ifndef DC_HAS_OTA
+  #define DC_HAS_OTA 1                 // -DDC_HAS_OTA=0 removes opt-in Wi-Fi OTA (saves ~60 KB flash)
+  #endif
   #define DC_HAS_TFT 1
   #if !defined(ARDUINO_USB_CDC_ON_BOOT) || !ARDUINO_USB_CDC_ON_BOOT
     #error "Arduino IDE: Tools > USB CDC On Boot must be 'Enabled'."
@@ -55,6 +61,10 @@
 #include <Preferences.h>
 #include <LittleFS.h>
 #include <WiFi.h>
+#if DC_HAS_OTA
+#include <ESPmDNS.h>
+#include <ArduinoOTA.h>
+#endif
 #include "esp_sntp.h"
 #include "esp_system.h"
 #include "esp_attr.h"
@@ -64,18 +74,24 @@
 #include "USB.h"
 #include "USBHIDKeyboard.h"
 #include "USBHIDConsumerControl.h"
+#include "USBHIDMouse.h"
 #define DC_KB_TYPE USBHIDKeyboard
 #define DC_CC_TYPE USBHIDConsumerControl
+#define DC_MS_TYPE USBHIDMouse
 #else
 struct HidStub {                               // keeps every call site valid when USB HID is not available
   void begin() {}
   size_t press(uint16_t) { return 0; }
   size_t write(uint8_t) { return 0; }
   void release() {}
+  size_t release(uint8_t) { return 0; }
   void releaseAll() {}
+  void click(uint8_t) {}                       // mouse calls (HID mouse is not available either)
+  void move(int8_t, int8_t, int8_t, int8_t) {}
 };
 #define DC_KB_TYPE HidStub
 #define DC_CC_TYPE HidStub
+#define DC_MS_TYPE HidStub
 #endif
 #ifdef DC_SIM
 #define DC_SIM_FLAG 1
@@ -89,12 +105,14 @@ struct HidStub {                               // keeps every call site valid wh
 #endif
 
 // ================================================================ types (kept above all functions)
-enum StepType : uint8_t { ST_KEYS, ST_MEDIA, ST_TEXT, ST_DELAY };
+enum StepType : uint8_t { ST_KEYS, ST_MEDIA, ST_TEXT, ST_DELAY, ST_LAYER, ST_HOST, ST_MOUSE };
 struct Step { uint8_t t = 0; uint8_t n = 0; uint8_t keys[6] = {0, 0, 0, 0, 0, 0}; uint16_t val = 0; String text; };
 struct KeyName { const char* name; uint8_t code; };
 struct MediaName { const char* name; uint16_t code; };
 struct FileOut { fs::File f; void put(const uint8_t* b, size_t n) { f.write(b, n); } void tick() { delay(1); } };
-enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF };
+enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF, M_INFO };
+struct InfoCard { char kind = 'c'; String label, t, a, b; };
+struct InfoBadge { String name; uint16_t n = 0; };
 enum PomoState : uint8_t { PS_IDLE, PS_RUN, PS_PAUSE, PS_DONE };
 
 // ================================================================ forward declarations
@@ -108,7 +126,6 @@ static uint32_t crc32u(uint32_t crc, const uint8_t* p, size_t n);
 static int b64dec(const char* in, size_t n, uint8_t* out);
 static void localTm(struct tm& t);
 static void uiTouch();
-static uint32_t gifFileSize();
 static uint32_t fsFreeBytes();
 static void sendDoc(JsonDocument& d);
 static void ack(const char* evt);
@@ -120,8 +137,31 @@ static bool parseKeys(JsonVariantConst arr, Step& s);
 static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out);
 static void macroStart(std::vector<Step>& steps);
 static void macroTick();
-static void slotKey(uint8_t i, char* out);
+static void slotKey(uint8_t lay, uint8_t i, char* out);
 static void runSlot(uint8_t i);
+static void setLayer(uint8_t n);
+static void ledFlash(uint8_t r, uint8_t g, uint8_t b, uint32_t ms);
+static void evtHost(const Step& s);
+static void mouseDo(const Step& s);
+static bool parseHost(JsonVariantConst o, Step& s);
+static bool parseMouse(JsonVariantConst o, Step& s);
+static String fitStr(const String& s, unsigned maxc);
+static void drawOverlays();
+static void sceneInfo();
+static void gifPath(uint8_t slot, char* out);
+static bool gifSlotExists(uint8_t slot);
+static int gifNextSlot(int from);
+static uint8_t gifSlotCount();
+static void cmdGifList();
+static void cmdLayer(JsonDocument& doc);
+static void cmdInfoCards(JsonDocument& doc);
+static void cmdFactory(JsonDocument& doc);
+static void cmdBootOpt(JsonDocument& doc);
+static void cmdOta(JsonDocument& doc);
+static void otaStart();
+static void otaStop();
+static void otaService();
+static void evtLayer();
 static void arcBand(int cx, int cy, float ro, float ri, float a0, float a1, uint16_t col);
 static void gauge(int cx, int cy, float ro, float ri, float frac, uint16_t col);
 static void thickLine(float x0, float y0, float x1, float y1, float w, uint16_t col);
@@ -187,7 +227,7 @@ static void b64enc(const uint8_t* in, size_t n, char* out);
 static void cmdSnapshot();
 static void cmdRun(JsonDocument& doc);
 static void cmdSelftest();
-static void cmdGetKeys();
+static void cmdGetKeys(JsonDocument& doc);
 static void cmdInput(JsonDocument& doc);
 static bool cmdDebug(const char* cmd);
 static void cmdReboot(JsonDocument& doc);
@@ -225,8 +265,12 @@ static const float    VCC_DIVIDER = 2.0f;
 static const size_t   RX_MAX = 6000;              // longest accepted JSON line
 static const bool     DC_IS_SIM = DC_SIM_FLAG;
 static const uint8_t  PIN_RGB = DC_RGB_PIN;       // onboard WS2812 (Waveshare ESP32-S3-Zero: GPIO21)
-static const char*    FW_VERSION = "1.1.0";
-static const char*    MODE_NAME[6] = {"", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF"};
+static const char*    FW_VERSION = "1.2.0";
+static const char*    MODE_NAME[7] = {"", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO"};
+static const uint8_t  NUM_MODES = 6;
+static const uint8_t  LAYERS = 3;                 // key layers (each has K1..K5 + dial right / left)
+static const uint8_t  GIF_SLOTS = 4;              // /anim.gif (slot 0, also the built-in demo) + /anim1.gif .. /anim3.gif
+static const uint32_t INFO_STALE_MS = 300000UL;   // info cards older than this are shown as "no data"
 
 static inline uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
 static const uint16_t C_BG = 0x0000, C_TXT = 0xFFFF;
@@ -241,10 +285,24 @@ AnimatedGIF gif;
 Preferences prefs;
 DC_KB_TYPE Keyboard;
 DC_CC_TYPE ConsumerControl;
+DC_MS_TYPE Mouse;
 Bounce keyBtn[5];
 Bounce encBtn;
 
 uint8_t  mode = M_CLOCK, brightness = 200, osMac = 0, pomoMinutes = 25;
+uint8_t  curLayer = 0, menuLayer = 0;
+uint32_t layerToastUntil = 0, flashAt = 0, ledFlashUntil = 0;
+uint8_t  ledFlashR = 0, ledFlashG = 0, ledFlashB = 0;
+InfoCard cards[4];
+InfoBadge badges[4];
+uint8_t  nCards = 0, cardIdx = 0, nBadges = 0;
+uint16_t cardRotSec = 6;
+uint32_t cardAt = 0, infoRxAt = 0;
+uint8_t  gifSlot = 0, upSlot = 0;
+uint16_t gifRot = 0;
+uint32_t gifSlotAt = 0;
+bool     dispOff = false, otaOn = false, otaStarted = false;
+String   otaPw;
 bool     needRedraw = true;
 uint32_t lastRender = 0;
 int      vol = 50;                       // local estimate (HID gives no read-back); host may correct it via {"cmd":"media"}
@@ -361,8 +419,7 @@ static int b64dec(const char* in, size_t n, uint8_t* out) {
 }
 static void localTm(struct tm& t) { time_t n = time(nullptr) + tzOff; gmtime_r(&n, &t); }
 static void uiTouch() { menuTouched = millis(); }
-static uint32_t gifFileSize() { fs::File f = LittleFS.open("/anim.gif", "r"); if (!f) return 0; uint32_t s = f.size(); f.close(); return s; }
-static uint32_t fsFreeBytes() { return (uint32_t)(LittleFS.totalBytes() - LittleFS.usedBytes()) + gifFileSize(); }
+static uint32_t fsFreeBytes() { return (uint32_t)(LittleFS.totalBytes() - LittleFS.usedBytes()); }   // raw free space (an upload replaces its own slot first)
 
 // ================================================================ serial TX (bounded: never stalls the firmware)
 static bool hostActive() { return lastRxMs != 0 && (uint32_t)(millis() - lastRxMs) < 8000; }
@@ -461,6 +518,9 @@ static void ledBoot(uint8_t r, uint8_t g, uint8_t b) {                // boot-st
   ledBootR = r; ledBootG = g; ledBootB = b;
   if (ledMode == LM_AUTO) ledRaw(r, g, b);
 }
+static void ledFlash(uint8_t r, uint8_t g, uint8_t b, uint32_t ms) {   // short coloured blink (layer change); only in LED "auto" mode
+  ledFlashR = r; ledFlashG = g; ledFlashB = b; ledFlashUntil = millis() + ms; ledNextAt = 0;
+}
 static void ledService() {
   uint32_t now = millis();
   if ((int32_t)(now - ledNextAt) < 0) return;
@@ -470,7 +530,8 @@ static void ledService() {
     case LM_BLINK: ledRaw(((now / 400) & 1) ? ledUserR : 0, ((now / 400) & 1) ? ledUserG : 0, ((now / 400) & 1) ? ledUserB : 0); ledNextAt = now + 40; break;
     case LM_RAINBOW: { uint8_t r, g, b; hsv2rgb((now / 8) % 360, &r, &g, &b); ledRaw(r / 4, g / 4, b / 4); ledNextAt = now + 20; break; }
     default:                                                          // LM_AUTO
-      if (!ledReady) { ledRaw(ledBootR, ledBootG, ledBootB); ledNextAt = now + 100; }
+      if ((int32_t)(ledFlashUntil - now) > 0) { ledRaw(ledFlashR, ledFlashG, ledFlashB); ledNextAt = now + 30; }
+      else if (!ledReady) { ledRaw(ledBootR, ledBootG, ledBootB); ledNextAt = now + 100; }
       else if (safeMode) { uint32_t t = now % 1500; ledRaw((t < 150 || (t > 300 && t < 450)) ? 40 : 0, 0, 0); ledNextAt = now + 30; }
       else {                                                          // heartbeat: green = all good, amber = a subsystem failed
         bool bad = !okFs || !okDisp;
@@ -553,6 +614,15 @@ static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out) {
     out.push_back(s); return true;
   }
   if (!strcmp(type, "text")) { Step s; s.t = ST_TEXT; s.text = val.as<const char*>() ? val.as<const char*>() : ""; out.push_back(s); return true; }
+  if (!strcmp(type, "layer")) {                                  // "next" | "prev" | 0..2
+    Step s; s.t = ST_LAYER;
+    if (val.is<const char*>()) { String v = val.as<const char*>(); if (v == "next") s.val = 100; else if (v == "prev") s.val = 101; else return false; }
+    else if (val.is<int>() && val.as<int>() >= 0 && val.as<int>() < LAYERS) s.val = (uint16_t)val.as<int>();
+    else return false;
+    out.push_back(s); return true;
+  }
+  if (!strcmp(type, "host")) { Step s; if (!parseHost(val, s)) return false; out.push_back(s); return true; }
+  if (!strcmp(type, "mouse")) { Step s; if (!parseMouse(val, s)) return false; out.push_back(s); return true; }
   if (!strcmp(type, "macro")) {
     if (!val.is<JsonArrayConst>()) return false;
     for (JsonVariantConst o : val.as<JsonArrayConst>()) {
@@ -562,6 +632,14 @@ static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out) {
       else if (!o["text"].isNull()) { s.t = ST_TEXT; s.text = o["text"].as<String>(); }
       else if (!o["delay"].isNull()) { s.t = ST_DELAY; s.val = (uint16_t)constrain(o["delay"].as<int>(), 0, 60000); }
       else if (!o["media"].isNull()) { s.t = ST_MEDIA; if (!resolveMedia(o["media"].as<const char*>(), s.val)) return false; }
+      else if (!o["host"].isNull()) { if (!parseHost(o["host"], s)) return false; }
+      else if (!o["mouse"].isNull()) { if (!parseMouse(o["mouse"], s)) return false; }
+      else if (!o["layer"].isNull()) {
+        s.t = ST_LAYER;
+        if (o["layer"].is<const char*>()) { String v = o["layer"].as<const char*>(); if (v == "next") s.val = 100; else if (v == "prev") s.val = 101; else return false; }
+        else if (o["layer"].is<int>() && o["layer"].as<int>() >= 0 && o["layer"].as<int>() < LAYERS) s.val = (uint16_t)o["layer"].as<int>();
+        else return false;
+      }
       else return false;
       out.push_back(s);
     }
@@ -569,6 +647,54 @@ static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out) {
   }
   return false;
 }
+// ---- host actions: the pad cannot launch programs, so it tells the companion app ({"evt":"host",...}) which does it
+static const char* const HOST_OPS[] = {"url", "app", "shell", "clipboard", "file", "notify"};
+static bool parseHost(JsonVariantConst o, Step& s) {
+  const char* op = o["op"] | "";
+  const char* arg = o["arg"] | "";
+  for (uint8_t i = 0; i < sizeof HOST_OPS / sizeof HOST_OPS[0]; i++) {
+    if (strcmp(op, HOST_OPS[i])) continue;
+    if (strcmp(op, "clipboard") && !*arg) return false;                 // everything but "type the clipboard" needs an argument
+    if (strlen(arg) > 400) return false;
+    s.t = ST_HOST; s.n = i + 1; s.text = arg;
+    return true;
+  }
+  return false;
+}
+static void evtHost(const Step& s) {
+  if (!hostActive()) return;                                             // nobody listening: the pad itself cannot run it
+  int32_t keep = reqId; reqId = -1;                                      // async event: never carries a request id
+  JsonDocument d; d["evt"] = "host"; d["op"] = HOST_OPS[s.n - 1]; d["arg"] = s.text;
+  sendDoc(d);
+  reqId = keep;
+}
+// ---- HID mouse: {"btn":"left|right|middle|back|forward","act":"click|double|down|up"} | {"wheel":n} | {"move":[dx,dy]}
+static bool parseMouse(JsonVariantConst o, Step& s) {
+  if (!o.is<JsonObjectConst>()) return false;
+  s.t = ST_MOUSE;
+  if (!o["wheel"].isNull()) { s.n = 3; s.val = (uint16_t)(int16_t)constrain(o["wheel"].as<int>(), -20, 20); return true; }
+  if (!o["move"].isNull()) {
+    if (!o["move"].is<JsonArrayConst>() || o["move"].size() != 2) return false;
+    s.n = 4; s.keys[1] = (uint8_t)(int8_t)constrain(o["move"][0].as<int>(), -100, 100); s.keys[2] = (uint8_t)(int8_t)constrain(o["move"][1].as<int>(), -100, 100);
+    return true;
+  }
+  String b = o["btn"] | "left", a = o["act"] | "click";
+  if (b == "left") s.keys[0] = 1; else if (b == "right") s.keys[0] = 2; else if (b == "middle") s.keys[0] = 4;
+  else if (b == "back") s.keys[0] = 8; else if (b == "forward") s.keys[0] = 16; else return false;
+  if (a == "click") s.n = 1; else if (a == "double") s.n = 2; else if (a == "down") s.n = 5; else if (a == "up") s.n = 6; else return false;
+  return true;
+}
+static void mouseDo(const Step& s) {
+  switch (s.n) {
+    case 1: Mouse.click(s.keys[0]); break;
+    case 2: Mouse.click(s.keys[0]); delay(40); Mouse.click(s.keys[0]); break;
+    case 3: Mouse.move(0, 0, (int8_t)(int16_t)s.val, 0); break;
+    case 4: Mouse.move((int8_t)s.keys[1], (int8_t)s.keys[2], 0, 0); break;
+    case 5: Mouse.press(s.keys[0]); break;
+    case 6: Mouse.release(s.keys[0]); break;
+  }
+}
+
 static void macroStart(std::vector<Step>& steps) {
   if (steps.empty()) return;
   if (macroRun) {                                    // queue behind the running macro so fast encoder turns keep every step
@@ -592,6 +718,9 @@ static void macroTick() {
         macroIdx++; macroWake = millis() + 8; break;
       case ST_MEDIA: sendMedia(s.val); macroIdx++; macroWake = millis() + 5; break;
       case ST_DELAY: macroIdx++; macroWake = millis() + s.val; break;
+      case ST_LAYER: setLayer(s.val == 100 ? (curLayer + 1) % LAYERS : s.val == 101 ? (curLayer + LAYERS - 1) % LAYERS : (uint8_t)s.val); macroIdx++; macroWake = millis() + 5; break;
+      case ST_HOST: evtHost(s); macroIdx++; macroWake = millis() + 5; break;
+      case ST_MOUSE: mouseDo(s); macroIdx++; macroWake = millis() + 8; break;
       case ST_TEXT:
         if (textPos < s.text.length()) {
           uint8_t c = (uint8_t)s.text[textPos++];
@@ -605,23 +734,53 @@ static void macroTick() {
   }
 }
 
-static const char* const DEFAULT_SLOT[7] = {
-  R"({"type":"combo","val":["PRIMARY","c"]})",       // K1 copy
-  R"({"type":"combo","val":["PRIMARY","v"]})",       // K2 paste
-  R"({"type":"combo","val":["PRIMARY","z"]})",       // K3 undo
-  R"({"type":"media","val":"PLAY_PAUSE"})",          // K4
-  R"({"type":"media","val":"MUTE"})",                // K5
-  R"({"type":"media","val":"VOL_UP"})",              // encoder CW
-  R"({"type":"media","val":"VOL_DOWN"})"};           // encoder CCW
+static const char* const DEFAULT_SLOT[LAYERS][7] = {
+  { R"({"type":"combo","val":["PRIMARY","c"]})",       // layer 1: K1 copy
+    R"({"type":"combo","val":["PRIMARY","v"]})",       //          K2 paste
+    R"({"type":"combo","val":["PRIMARY","z"]})",       //          K3 undo
+    R"({"type":"media","val":"PLAY_PAUSE"})",          //          K4
+    R"({"type":"media","val":"MUTE"})",                //          K5
+    R"({"type":"media","val":"VOL_UP"})",              //          encoder CW
+    R"({"type":"media","val":"VOL_DOWN"})" },          //          encoder CCW
+  { R"({"type":"media","val":"PREV"})",                // layer 2: media - previous / play / next / stop / mute, dial = volume
+    R"({"type":"media","val":"PLAY_PAUSE"})",
+    R"({"type":"media","val":"NEXT"})",
+    R"({"type":"media","val":"STOP"})",
+    R"({"type":"media","val":"MUTE"})",
+    R"({"type":"media","val":"VOL_UP"})",
+    R"({"type":"media","val":"VOL_DOWN"})" },
+  { R"({"type":"combo","val":["ALT","LEFT"]})",        // layer 3: browser - back / forward / reload / new tab / close tab, dial = page down / up
+    R"({"type":"combo","val":["ALT","RIGHT"]})",
+    R"({"type":"combo","val":["F5"]})",
+    R"({"type":"combo","val":["PRIMARY","t"]})",
+    R"({"type":"combo","val":["PRIMARY","w"]})",
+    R"({"type":"combo","val":["PGDN"]})",
+    R"({"type":"combo","val":["PGUP"]})" }};
 
-static void slotKey(uint8_t i, char* out) { snprintf(out, 4, "s%u", i); }
+static void slotKey(uint8_t lay, uint8_t i, char* out) {         // NVS key (max 15 chars): layer 0 keeps the v1.0/1.1 names "s0".."s6"
+  if (lay == 0) snprintf(out, 8, "s%u", i); else snprintf(out, 8, "L%us%u", lay, i);
+}
 static void runSlot(uint8_t i) {
-  char k[4]; slotKey(i, k);
-  String js = prefs.getString(k, String(DEFAULT_SLOT[i]));
+  char k[8]; slotKey(curLayer, i, k);
+  String js = prefs.getString(k, String(DEFAULT_SLOT[curLayer][i]));
   JsonDocument d;
-  if (deserializeJson(d, js)) deserializeJson(d, DEFAULT_SLOT[i]);
+  if (deserializeJson(d, js)) deserializeJson(d, DEFAULT_SLOT[curLayer][i]);
   std::vector<Step> steps;
   if (parseSpec(d.as<JsonVariantConst>(), steps)) macroStart(steps);
+}
+static void evtLayer() {
+  if (!hostActive()) return;
+  int32_t keep = reqId; reqId = -1;
+  JsonDocument d; d["evt"] = "layer"; d["n"] = curLayer; sendDoc(d);
+  reqId = keep;
+}
+static void setLayer(uint8_t n) {
+  if (n >= LAYERS) return;
+  bool changed = n != curLayer;
+  curLayer = n; layerToastUntil = millis() + 1600; needRedraw = true;
+  static const uint8_t LC[LAYERS][3] = {{0, 40, 40}, {40, 0, 40}, {40, 30, 0}};   // 1 cyan, 2 magenta, 3 amber
+  ledFlash(LC[n][0], LC[n][1], LC[n][2], 450);
+  if (changed) evtLayer();
 }
 
 // ================================================================ drawing helpers (all draw into the 240x240 sprite)
@@ -776,14 +935,14 @@ static void sceneUpload() {
   spr.setTextColor(C_GRAY); snprintf(b, sizeof b, "%lu KB", (unsigned long)(upRx / 1024)); spr.drawString(b, 120, 152, 2);
 }
 
-static void sceneMenu() {                              // radial overlay: BRIGHT (top) / VOL (right) / MODE (bottom) / EXIT (left)
-  static const char* const LBL[4] = {"BRIGHT", "VOL", "MODE", "EXIT"};
-  static const char* const FULL[4] = {"BRIGHTNESS", "VOLUME", "DISPLAY MODE", "EXIT"};
+static void sceneMenu() {                              // radial overlay: BRIGHT / VOL / MODE / LAYER / EXIT around the ring
+  static const char* const LBL[5] = {"BRIGHT", "VOL", "MODE", "LAYER", "EXIT"};
+  static const char* const FULL[5] = {"BRIGHTNESS", "VOLUME", "DISPLAY MODE", "KEY LAYER", "EXIT"};
   dimSprite();
   spr.setTextDatum(MC_DATUM);
-  for (int i = 0; i < 4; i++) {
-    float c = i * 90.0f; bool sel = (i == menuSel);
-    arcBand(120, 120, 118, 72, c - 42, c + 42, sel ? (menuEdit ? C_WARN : C_ACC) : C_DIM2);
+  for (int i = 0; i < 5; i++) {
+    float c = i * 72.0f; bool sel = (i == menuSel);
+    arcBand(120, 120, 118, 72, c - 34, c + 34, sel ? (menuEdit ? C_WARN : C_ACC) : C_DIM2);
     float a = c * DEG_TO_RAD;
     spr.setTextColor(sel ? C_BG : C_TXT);
     spr.drawString(LBL[i], 120 + lroundf(95 * sinf(a)), 120 - lroundf(95 * cosf(a)), 2);
@@ -798,14 +957,71 @@ static void sceneMenu() {                              // radial overlay: BRIGHT
     case 1: if (muted) snprintf(b, sizeof b, "MUTE"); else snprintf(b, sizeof b, "%d%%", vol); spr.drawString(b, 120, 118, 4); break;
     case 2: {
       uint8_t m = menuEdit ? menuMode : mode;
-      snprintf(b, sizeof b, "%d / 5", m); spr.drawString(b, 120, 112, 4);
+      snprintf(b, sizeof b, "%d / %d", m, NUM_MODES); spr.drawString(b, 120, 112, 4);
       spr.setTextColor(C_ACC); spr.drawString(MODE_NAME[m], 120, 136, 2);
       break;
     }
+    case 3: snprintf(b, sizeof b, "%d / %d", (menuEdit ? menuLayer : curLayer) + 1, LAYERS); spr.drawString(b, 120, 118, 4); break;
     default: spr.drawString("CLOSE", 120, 118, 4); break;
   }
   spr.setTextColor(C_GRAY);
   spr.drawString(menuEdit ? "CLICK = OK" : "CLICK = ENTER", 120, 158, 1);
+}
+
+// small status overlays drawn on top of every sprite scene: layer badge + key-press ring
+static void drawOverlays() {
+  uint32_t now = millis();
+  if (curLayer > 0 || (int32_t)(layerToastUntil - now) > 0) {
+    char b[8]; snprintf(b, sizeof b, "L%d", curLayer + 1);
+    uint16_t c = curLayer == 0 ? C_ACC : curLayer == 1 ? C_ACC2 : C_WARN;
+    spr.fillRoundRect(100, 214, 40, 20, 8, c);
+    spr.setTextDatum(MC_DATUM); spr.setTextColor(C_BG); spr.drawString(b, 120, 224, 2);
+  }
+  uint32_t age = now - flashAt;
+  if (flashAt && age < 260) {                                    // ring that fades while it shrinks - feedback for every key press
+    int th = 10 - (int)(age / 28);
+    if (th > 0) arcBand(120, 120, 119, 119 - th, 0, 360, curLayer == 0 ? C_ACC : curLayer == 1 ? C_ACC2 : C_WARN);
+  }
+}
+
+// ---- info screen (mode 6): cards pushed by the companion app - now playing, weather, next event, anything custom
+static String fitStr(const String& s, unsigned maxc) {
+  if (s.length() <= maxc) return s;
+  return s.substring(0, maxc > 2 ? maxc - 2 : maxc) + "..";
+}
+static void sceneInfo() {
+  uint32_t now = millis();
+  spr.fillSprite(C_BG);
+  spr.setTextDatum(MC_DATUM);
+  bool fresh = infoRxAt && (now - infoRxAt) < INFO_STALE_MS && nCards > 0;
+  if (!fresh) {
+    arcBand(120, 120, 116, 108, 0, 360, C_DIM);
+    spr.setTextColor(C_GRAY); spr.drawString("INFO", 120, 84, 2);
+    spr.setTextColor(C_TXT); spr.drawString("no data", 120, 118, 4);
+    spr.setTextColor(C_GRAY); spr.drawString("open the companion app", 120, 152, 2);
+    spr.drawString("(Info tab)", 120, 170, 2);
+  } else {
+    const InfoCard& c = cards[cardIdx % nCards];
+    uint16_t col = c.kind == 'm' ? C_ACC2 : c.kind == 'w' ? C_ACC : c.kind == 'e' ? C_WARN : C_OK;
+    arcBand(120, 120, 116, 108, 0, 360, C_DIM);
+    if (nCards > 1 && cardRotSec) {                                // ring fills over the rotation interval
+      float f = constrain((float)(now - cardAt) / (cardRotSec * 1000.0f), 0.0f, 1.0f);
+      arcBand(120, 120, 116, 108, 0, 360 * f, col);
+    } else arcBand(120, 120, 116, 108, 0, 360, col);
+    spr.setTextColor(C_GRAY); spr.drawString(fitStr(c.label, 18), 120, 52, 2);
+    spr.setTextColor(col);   spr.drawString(fitStr(c.t, 11), 120, 98, 4);
+    spr.setTextColor(C_TXT); spr.drawString(fitStr(c.a, 20), 120, 136, 2);
+    spr.setTextColor(C_GRAY); spr.drawString(fitStr(c.b, 20), 120, 156, 2);
+    for (uint8_t i = 0; nCards > 1 && i < nCards; i++) spr.fillCircle(120 + (int)(i - (nCards - 1) * 0.5f) * 12, 182, i == cardIdx % nCards ? 3 : 2, i == cardIdx % nCards ? col : C_DIM2);
+  }
+  for (uint8_t i = 0; i < nBadges && i < 4; i++) {                 // unread / notification counters along the bottom
+    if (!badges[i].n) continue;
+    int x = 120 + ((int)i - (nBadges - 1) * 0.5f) * 46;
+    char b[8]; snprintf(b, sizeof b, "%u", (unsigned)(badges[i].n > 99 ? 99 : badges[i].n));
+    spr.fillRoundRect(x - 20, 196, 40, 22, 8, C_ACC2);
+    spr.setTextColor(C_BG); spr.drawString(b, x, 207, 2);
+    spr.setTextColor(C_GRAY); spr.drawString(fitStr(badges[i].name, 6), x, 228, 1);
+  }
 }
 
 static void renderScene() {
@@ -814,6 +1030,7 @@ static void renderScene() {
     case M_POMO:  scenePomo(); break;
     case M_MEDIA: sceneMedia(); break;
     case M_TELEM: sceneTelemetry(); break;
+    case M_INFO:  sceneInfo(); break;
     default:      sceneGifMsg(); break;
   }
 }
@@ -828,16 +1045,19 @@ static void renderFrame() {
   else {
     if (menuOpen && mode == M_GIF) spr.fillSprite(C_BG); else renderScene();
     if (menuOpen) sceneMenu();
+    else if (mode != M_GIF) drawOverlays();
   }
   pushScreen();
 }
 static uint32_t renderInterval() {
   if (uploading || menuOpen) return 100;
+  if (flashAt && millis() - flashAt < 280 && mode != M_GIF) return 30;
   switch (mode) {
     case M_POMO:  return (pomoState == PS_RUN || pomoState == PS_DONE) ? 250 : 100000;
     case M_MEDIA: return playing ? 90 : 100000;
     case M_TELEM: return 500;
     case M_GIF:   return 1000;
+    case M_INFO:  return 500;
     default:      return 100000;                       // clock redraws on second change
   }
 }
@@ -918,7 +1138,7 @@ static void fsTask(void* arg) {
   (void)arg;
   bool ok = LittleFS.begin(false);
   if (!ok) { fsState = FS_FORMATTING; ok = LittleFS.begin(true); }
-  if (ok && !safeMode && !LittleFS.exists("/anim.gif")) { fsState = FS_PREPARING; if (!makeDemoGif()) demoFailed = true; }
+  if (ok && !safeMode && !LittleFS.exists("/anim.gif") && !LittleFS.exists("/anim1.gif") && !LittleFS.exists("/anim2.gif") && !LittleFS.exists("/anim3.gif")) { fsState = FS_PREPARING; if (!makeDemoGif()) demoFailed = true; }
   fsState = ok ? FS_READY : FS_FAILED;
   okFs = ok;
   gifRestart = true;
@@ -938,6 +1158,19 @@ static void fsStartAsync(TaskFunction_t fn, uint8_t state) {
     fsState = FS_FAILED;                                   // out of memory: leave okFs as it is
     if (fn == fsPrepTask) okFs = true;
   }
+}
+
+// ================================================================ GIF slots: /anim.gif (0) and /anim1.gif .. /anim3.gif, optional rotation
+static void gifPath(uint8_t slot, char* out) { if (slot == 0) strcpy(out, "/anim.gif"); else snprintf(out, 16, "/anim%u.gif", slot); }
+static bool gifSlotExists(uint8_t slot) {
+  if (!okFs || slot >= GIF_SLOTS) return false;
+  char p[16]; gifPath(slot, p);
+  return LittleFS.exists(p);
+}
+static uint8_t gifSlotCount() { uint8_t n = 0; for (uint8_t i = 0; i < GIF_SLOTS; i++) if (gifSlotExists(i)) n++; return n; }
+static int gifNextSlot(int from) {                       // next existing slot after `from` (wraps), -1 if none
+  for (int k = 1; k <= GIF_SLOTS; k++) { int i = (from + k) % GIF_SLOTS; if (gifSlotExists((uint8_t)i)) return i; }
+  return -1;
 }
 
 // ================================================================ GIF playback (AnimatedGIF + LittleFS, drawn straight to the panel)
@@ -999,7 +1232,8 @@ static void GIFDraw(GIFDRAW* pDraw) {
 static void gifClose() { if (gifOpen) { gif.close(); gifOpen = false; } }
 static void gifBegin() {
   gifFailed = false;
-  if (!LittleFS.exists("/anim.gif")) {
+  if (!gifSlotExists(gifSlot)) { int n = gifNextSlot(gifSlot); if (n >= 0) gifSlot = (uint8_t)n; }
+  if (!gifSlotExists(gifSlot)) {
     if (demoFailed) { gifFailed = true; needRedraw = true; return; }
     spr.fillSprite(C_BG); spr.setTextDatum(MC_DATUM); spr.setTextColor(C_TXT);
     spr.drawString("Preparing demo", 120, 110, 4); spr.drawString("animation...", 120, 140, 4);
@@ -1011,7 +1245,9 @@ static void gifBegin() {
 #if DC_HAS_TFT
   tft.fillScreen(TFT_BLACK);
 #endif
-  if (gif.open("/anim.gif", GIFOpenFile, GIFCloseFile, GIFReadFile, GIFSeekFile, GIFDraw)) {
+  char gp[16]; gifPath(gifSlot, gp);
+  gifSlotAt = millis();
+  if (gif.open(gp, GIFOpenFile, GIFCloseFile, GIFReadFile, GIFSeekFile, GIFDraw)) {
     gifOpen = true;
     gifOffX = (240 - gif.getCanvasWidth()) / 2; gifOffY = (240 - gif.getCanvasHeight()) / 2;
     if (gifOffX < 0) gifOffX = 0;
@@ -1021,6 +1257,11 @@ static void gifBegin() {
 }
 static void gifService() {
   if (!okFs) return;                                      // filesystem still starting / being rewritten
+  if (gifRot && gifOpen && (millis() - gifSlotAt) > (uint32_t)gifRot * 1000UL) {      // rotate to the next stored animation
+    int n = gifNextSlot(gifSlot);
+    gifSlotAt = millis();
+    if (n >= 0 && n != gifSlot) { gifSlot = (uint8_t)n; gifRestart = true; }
+  }
   if (gifRestart) { gifClose(); gifRestart = false; gifBegin(); }
   if (!gifOpen || (int32_t)(millis() - gifNextAt) < 0) return;
   int d = 0;
@@ -1038,7 +1279,7 @@ static void gifService() {
 
 // ================================================================ modes, menu, pomodoro
 static void setMode(uint8_t m) {
-  if (m < 1 || m > 5) return;
+  if (m < 1 || m > NUM_MODES) return;
   if (m != mode) prefs.putUChar("mode", m);
   mode = m; needRedraw = true;
   if (mode == M_GIF) gifRestart = true; else gifClose();
@@ -1066,20 +1307,23 @@ static void menuCloseNow() {
 static void menuTurn(int steps) {
   uiTouch();
   int n = steps < 0 ? -steps : steps, dir = steps > 0 ? 1 : -1;
-  if (!menuEdit) { for (int i = 0; i < n; i++) menuSel = (menuSel + (dir > 0 ? 1 : 3)) % 4; }
+  if (!menuEdit) { for (int i = 0; i < n; i++) menuSel = (menuSel + (dir > 0 ? 1 : 4)) % 5; }
   else if (menuEdit == 1) { int b = (int)brightness + steps * 8; brightness = (uint8_t)constrain(b, 5, 255); backlightSet(brightness); }
   else if (menuEdit == 2) { for (int i = 0; i < n; i++) sendMedia(dir > 0 ? 0xE9 : 0xEA); }
-  else if (menuEdit == 3) { menuMode = (uint8_t)((((int)menuMode - 1 + steps) % 5 + 5) % 5 + 1); }
+  else if (menuEdit == 3) { menuMode = (uint8_t)((((int)menuMode - 1 + steps) % NUM_MODES + NUM_MODES) % NUM_MODES + 1); }
+  else if (menuEdit == 4) { menuLayer = (uint8_t)((((int)menuLayer + steps) % LAYERS + LAYERS) % LAYERS); }
   needRedraw = true;
 }
 static void menuClick() {
   uiTouch();
   if (!menuEdit) {
-    if (menuSel == 3) { menuCloseNow(); return; }
+    if (menuSel == 4) { menuCloseNow(); return; }
     menuEdit = menuSel + 1;
     if (menuEdit == 3) menuMode = mode;
+    if (menuEdit == 4) menuLayer = curLayer;
   } else {
     if (menuEdit == 3 && menuMode != mode) setMode(menuMode);
+    if (menuEdit == 4 && menuLayer != curLayer) setLayer(menuLayer);
     menuEdit = 0;
   }
   needRedraw = true;
@@ -1087,6 +1331,7 @@ static void menuClick() {
 
 // ================================================================ input handling
 static void onKey(int i) {
+  flashAt = millis(); needRedraw = true;                  // key-press ring (sprite screens)
   if (menuOpen) uiTouch();
   if (mode == M_POMO && i < 2) { if (i == 0) pomoToggle(); else pomoReset(); return; }   // K1/K2 = timer controls in focus mode
   runSlot(i);
@@ -1110,7 +1355,7 @@ static void onEncClick() {
 }
 static void onEncLong() {
   if (menuOpen) { menuCloseNow(); return; }
-  setMode(mode % 5 + 1);
+  setMode(mode % NUM_MODES + 1);
 }
 static void IRAM_ATTR encISR() {
   uint32_t now = micros();
@@ -1154,8 +1399,12 @@ static void netService() {
     configTime(0, 0, "pool.ntp.org", "time.google.com");
     ntpStarted = true;
   }
-  if (ntpDone) { timeSynced = true; wifiBusy = false; WiFi.disconnect(true); WiFi.mode(WIFI_OFF); wifiNextAt = now + 6UL * 3600000UL; needRedraw = true; }
-  else if (now - wifiStart > 20000) { wifiBusy = false; WiFi.disconnect(true); WiFi.mode(WIFI_OFF); wifiNextAt = now + 600000UL; }
+  if (ntpDone) {
+    timeSynced = true; needRedraw = true;
+    if (otaOn) ntpDone = false;                                       // OTA needs the connection: stay online
+    else { wifiBusy = false; WiFi.disconnect(true); WiFi.mode(WIFI_OFF); wifiNextAt = now + 6UL * 3600000UL; }
+  }
+  else if (now - wifiStart > 20000 && !(otaOn && WiFi.status() == WL_CONNECTED)) { wifiBusy = false; WiFi.disconnect(true); WiFi.mode(WIFI_OFF); wifiNextAt = now + (otaOn ? 30000UL : 600000UL); }
 }
 
 // ================================================================ serial JSON protocol
@@ -1190,14 +1439,32 @@ static const uint8_t* layoutByName(const char* n) { return !strcmp(n, "en_US") ?
 #endif
 static String kbLayout = "en_US";
 
+static void cmdGifList() {
+  JsonDocument d; d["ok"] = true; d["evt"] = "gif_list";
+  JsonArray a = d["slots"].to<JsonArray>();
+  for (uint8_t i = 0; i < GIF_SLOTS; i++) {
+    if (!gifSlotExists(i)) continue;
+    char gp[16]; gifPath(i, gp);
+    fs::File f = LittleFS.open(gp, "r");
+    JsonObject o = a.add<JsonObject>(); o["s"] = i; o["size"] = f ? (uint32_t)f.size() : 0u;
+    if (f) f.close();
+  }
+  d["cur"] = gifSlot; d["rot"] = gifRot; d["max"] = GIF_SLOTS;
+  d["fs_free"] = okFs ? fsFreeBytes() : 0;
+  sendDoc(d);
+}
 static void cmdHello() {
   JsonDocument d;
   d["ok"] = true; d["evt"] = "hello"; d["dev"] = "desk-companion"; d["fw"] = FW_VERSION;
   d["mode"] = mode; d["bright"] = brightness; d["os"] = osMac ? "mac" : "win";
-  d["gif"] = okFs && LittleFS.exists("/anim.gif");
+  d["gif"] = okFs && gifSlotCount() > 0; d["gifs"] = okFs ? gifSlotCount() : 0; d["gif_rot"] = gifRot;
   d["fs_free"] = okFs ? fsFreeBytes() : 0; d["fs_total"] = okFs ? (uint32_t)LittleFS.totalBytes() : 0;
   d["synced"] = timeSynced; d["layout"] = kbLayout;
   d["hid"] = (bool)DC_HAS_HID; d["disp"] = okDisp; d["fs"] = okFs; d["fs_state"] = FS_STATE_NAME[fsState]; d["safe"] = safeMode; d["led_pin"] = PIN_RGB;
+  d["layer"] = curLayer; d["layers"] = LAYERS; d["modes"] = NUM_MODES;
+  JsonArray cp = d["caps"].to<JsonArray>();
+  cp.add("layers"); cp.add("mouse"); cp.add("host"); cp.add("info"); cp.add("gifslots"); cp.add("factory");
+  if (DC_HAS_OTA) cp.add("ota");
   sendDoc(d);
 }
 static String coreVersionStr() {
@@ -1223,6 +1490,8 @@ static void cmdInfo() {
   d["fs_free"] = okFs ? fsFreeBytes() : 0; d["fs_total"] = okFs ? (uint32_t)LittleFS.totalBytes() : 0;
   d["rx_ms_ago"] = lastRxMs ? (uint32_t)(millis() - lastRxMs) : 0; d["events"] = eventsOn; d["gpio_touched"] = gpioTouched;
   d["led_pin"] = PIN_RGB; d["led_mode"] = ledMode; d["mode"] = mode; d["bright"] = brightness;
+  d["safe_why"] = !safeMode ? "" : DC_FORCE_SAFE ? "forced" : "crash_loop"; d["nodisp"] = dispOff; d["ota"] = otaOn; d["layer"] = curLayer;
+  d["ip"] = (wifiBusy && WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("");
   d["boot"] = bootLog;
   sendDoc(d);
 }
@@ -1395,11 +1664,24 @@ static void cmdSelftest() {
   for (int i = 0; i < 5; i++) k.add(digitalRead(PIN_KEY[i]) == LOW ? 1 : 0);
   sendDoc(d);
 }
-static void cmdGetKeys() {                                // lets the app verify what is really stored on the pad
-  JsonDocument d; d["ok"] = true; d["evt"] = "keys";
+static void cmdGetKeys(JsonDocument& doc) {                // lets the app verify (or back up) what is really stored on the pad
+  int lay = doc["layer"] | 0;
+  if (lay < 0 || lay >= LAYERS) { nack("layer"); return; }
+  JsonDocument d; d["ok"] = true; d["evt"] = "keys"; d["layer"] = lay; d["cur"] = curLayer; d["layers"] = LAYERS;
+  if (!doc["slot"].isNull()) {                              // one slot with its full spec (stored or default)
+    int sl = doc["slot"].as<int>();
+    if (sl < 1 || sl > 7) { nack("key"); return; }
+    char k[8]; slotKey((uint8_t)lay, (uint8_t)(sl - 1), k);
+    String js = prefs.getString(k, "");
+    d["s"] = sl; d["def"] = js.length() == 0;
+    JsonDocument sp;
+    if (deserializeJson(sp, js.length() ? js : String(DEFAULT_SLOT[lay][sl - 1]))) deserializeJson(sp, DEFAULT_SLOT[lay][sl - 1]);
+    d["spec"] = sp;
+    sendDoc(d); return;
+  }
   JsonArray a = d["slots"].to<JsonArray>();
   for (uint8_t i = 0; i < 7; i++) {
-    char k[4]; slotKey(i, k);
+    char k[8]; slotKey((uint8_t)lay, i, k);
     String js = prefs.getString(k, "");
     JsonObject o = a.add<JsonObject>();
     o["s"] = i + 1; o["def"] = js.length() == 0; o["len"] = (uint32_t)js.length();
@@ -1407,6 +1689,95 @@ static void cmdGetKeys() {                                // lets the app verify
   }
   sendDoc(d);
 }
+static void cmdLayer(JsonDocument& doc) {
+  int n = curLayer;
+  if (doc["val"].is<const char*>()) {
+    String v = doc["val"].as<const char*>();
+    if (v == "next") n = (curLayer + 1) % LAYERS; else if (v == "prev") n = (curLayer + LAYERS - 1) % LAYERS; else { nack("layer"); return; }
+  } else if (!doc["val"].isNull()) n = doc["val"].as<int>();
+  if (n < 0 || n >= LAYERS) { nack("layer"); return; }
+  setLayer((uint8_t)n);
+  JsonDocument d; d["ok"] = true; d["evt"] = "layer"; d["n"] = curLayer; d["layers"] = LAYERS; sendDoc(d);
+}
+// {"cmd":"info_cards","cards":[{"k":"m|w|e|c","label":"..","t":"..","a":"..","b":".."}],"badges":[{"name":"mail","n":3}],"rot":6}
+static void cmdInfoCards(JsonDocument& doc) {
+  JsonArrayConst ca = doc["cards"].as<JsonArrayConst>();
+  uint8_t n = 0;
+  if (!ca.isNull()) for (JsonObjectConst o : ca) {
+    if (n >= 4) break;
+    const char* k = o["k"] | "c";
+    cards[n].kind = *k ? *k : 'c';
+    cards[n].label = o["label"] | ""; cards[n].t = o["t"] | ""; cards[n].a = o["a"] | ""; cards[n].b = o["b"] | "";
+    n++;
+  }
+  if (n != nCards || cardIdx >= (n ? n : 1)) cardIdx = 0;
+  nCards = n;
+  uint8_t nb = 0;
+  JsonArrayConst ba = doc["badges"].as<JsonArrayConst>();
+  if (!ba.isNull()) for (JsonObjectConst o : ba) {
+    if (nb >= 4) break;
+    badges[nb].name = o["name"] | ""; badges[nb].n = (uint16_t)constrain(o["n"].as<int>(), 0, 999);
+    nb++;
+  }
+  nBadges = nb;
+  if (!doc["rot"].isNull()) cardRotSec = (uint16_t)constrain(doc["rot"].as<int>(), 0, 120);
+  infoRxAt = millis(); cardAt = infoRxAt;
+  if (mode == M_INFO) needRedraw = true;
+  JsonDocument d; d["ok"] = true; d["evt"] = "info_cards"; d["cards"] = nCards; d["badges"] = nBadges; sendDoc(d);
+}
+// recovery helpers for the app's "safe mode" / "reset" buttons ("confirm":true is required, "reboot":false skips the restart)
+static void cmdFactory(JsonDocument& doc) {
+  if (!(doc["confirm"] | false)) { nack("confirm"); return; }
+  const char* what = doc["what"] | "settings";
+  bool reboot = doc["reboot"] | true;
+  if (!strcmp(what, "keys")) {
+    for (uint8_t l = 0; l < LAYERS; l++) for (uint8_t i = 0; i < 7; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); }
+    ack("factory");
+  } else if (!strcmp(what, "settings")) {
+    prefs.clear();
+    ack("factory");
+    if (reboot) { delay(150); esp_restart(); }
+  } else if (!strcmp(what, "gifs")) {
+    if (!okFs) { nack("fs_busy"); return; }
+    uploadAbort(); gifClose();
+    for (uint8_t i = 0; i < GIF_SLOTS; i++) { char gp[16]; gifPath(i, gp); LittleFS.remove(gp); }
+    gifSlot = 0; okFs = false; fsStartAsync(fsPrepTask, FS_PREPARING);
+    ack("factory");
+  } else nack("what");
+}
+static void cmdBootOpt(JsonDocument& doc) {
+  if (!doc["nodisp"].isNull()) { dispOff = doc["nodisp"].as<bool>(); prefs.putBool("nodisp", dispOff); }
+  JsonDocument d; d["ok"] = true; d["evt"] = "boot_opt"; d["nodisp"] = dispOff; d["safe"] = safeMode; sendDoc(d);
+}
+#if DC_HAS_OTA
+static void otaStart() {
+  if (otaStarted) return;
+  ArduinoOTA.setHostname("deskcompanion");
+  if (otaPw.length()) ArduinoOTA.setPassword(otaPw.c_str());
+  ArduinoOTA.begin();
+  otaStarted = true;
+}
+static void otaService() {
+  if (!otaOn) return;
+  if (WiFi.status() == WL_CONNECTED) { if (!otaStarted) otaStart(); ArduinoOTA.handle(); }
+}
+static void otaStop() { if (otaStarted) { ArduinoOTA.end(); otaStarted = false; } }
+#else
+static void otaStart() {}
+static void otaService() {}
+static void otaStop() {}
+#endif
+static void cmdOta(JsonDocument& doc) {                 // opt-in Wi-Fi OTA: needs Wi-Fi credentials first; password optional but recommended
+  if (!DC_HAS_OTA) { nack("ota_unsupported"); return; }
+  bool on = doc["val"] | false;
+  if (!doc["pass"].isNull()) { otaPw = doc["pass"] | ""; prefs.putString("otapw", otaPw); }
+  if (on && wifiSsid.isEmpty()) { nack("no_wifi"); return; }
+  otaOn = on; prefs.putBool("ota", otaOn);
+  if (!on) { otaStop(); if (wifiBusy) { WiFi.disconnect(true); WiFi.mode(WIFI_OFF); wifiBusy = false; wifiNextAt = millis() + 6UL * 3600000UL; } }
+  else { otaStop(); wifiNextAt = 0; }
+  JsonDocument d; d["ok"] = true; d["evt"] = "ota"; d["on"] = otaOn; d["has_pw"] = otaPw.length() > 0; sendDoc(d);
+}
+
 static void cmdInput(JsonDocument& doc) {               // virtual key presses: exercises the real action / UI code from the app
   if (!doc["k"].isNull()) {
     int k = doc["k"] | 0;
@@ -1463,7 +1834,16 @@ static void handleLine(const String& line) {
   else if (!strcmp(cmd, "snapshot")) cmdSnapshot();
   else if (!strcmp(cmd, "run")) cmdRun(doc);
   else if (!strcmp(cmd, "input")) cmdInput(doc);
-  else if (!strcmp(cmd, "getkeys")) cmdGetKeys();
+  else if (!strcmp(cmd, "getkeys")) cmdGetKeys(doc);
+  else if (!strcmp(cmd, "layer")) cmdLayer(doc);
+  else if (!strcmp(cmd, "info_cards")) cmdInfoCards(doc);
+  else if (!strcmp(cmd, "factory")) cmdFactory(doc);
+  else if (!strcmp(cmd, "boot_opt")) cmdBootOpt(doc);
+  else if (!strcmp(cmd, "ota")) cmdOta(doc);
+  else if (!strcmp(cmd, "safe_retry")) {                         // leave safe mode: clear the crash counter, then boot normally
+    rtcCrashCount = 0; crashCount = 0; bool rb = doc["reboot"] | true; ack("safe_retry");
+    if (rb) { delay(150); esp_restart(); }
+  }
   else if (cmdDebug(cmd)) { }
   else if (!strcmp(cmd, "selftest")) cmdSelftest();
   else if (!strcmp(cmd, "reboot")) cmdReboot(doc);
@@ -1477,11 +1857,17 @@ static void handleLine(const String& line) {
     if (!parseSpec(spec.as<JsonVariantConst>(), tmp)) { nack("spec"); return; }
     String s; serializeJson(spec, s);
     if (s.length() > 3800) { nack("too_long"); return; }
-    char k[4]; slotKey(key - 1, k);
+    int lay = doc["layer"] | 0;
+    if (lay < 0 || lay >= LAYERS) { nack("layer"); return; }
+    char k[8]; slotKey((uint8_t)lay, (uint8_t)(key - 1), k);
     if (prefs.putString(k, s) == 0) { nack("nvs_full"); return; }   // NVS (~20KB) can fill up with several large macros
     ack("remap");
   }
-  else if (!strcmp(cmd, "reset_keys")) { for (uint8_t i = 0; i < 7; i++) { char k[4]; slotKey(i, k); prefs.remove(k); } ack("reset_keys"); }
+  else if (!strcmp(cmd, "reset_keys")) {
+    int only = doc["layer"] | -1;                                    // omitted = every layer
+    for (uint8_t l = 0; l < LAYERS; l++) { if (only >= 0 && l != only) continue; for (uint8_t i = 0; i < 7; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); } }
+    ack("reset_keys");
+  }
   else if (!strcmp(cmd, "brightness")) {
     brightness = (uint8_t)constrain(doc["val"].as<int>(), 5, 255); backlightSet(brightness);
     if (brightness != savedBright) { prefs.putUChar("bright", brightness); savedBright = brightness; }
@@ -1528,9 +1914,12 @@ static void handleLine(const String& line) {
       while (!okFs && (uint32_t)(millis() - t0) < 12000) delay(5);
     }
     if (!okFs) { nack("fs_busy"); return; }                      // first boot: storage is still being formatted
+    int slot = doc["slot"] | 0;
+    if (slot < 0 || slot >= GIF_SLOTS) { nack("slot"); return; }
     uploadAbort();
     gifClose();                                                   // release the file handle before deleting the file
-    LittleFS.remove("/anim.gif");
+    { char gp[16]; gifPath((uint8_t)slot, gp); LittleFS.remove(gp); }
+    upSlot = (uint8_t)slot;
     uint32_t freeB = (uint32_t)(LittleFS.totalBytes() - LittleFS.usedBytes());
     if (size == 0 || size + 8192 > freeB) { gifRestart = true; nack("no_space"); return; }
     upFile = LittleFS.open("/anim.tmp", "w");
@@ -1556,18 +1945,32 @@ static void handleLine(const String& line) {
     if (!uploading) { nack("no_upload"); return; }
     upFile.close(); uploading = false; needRedraw = true;
     if (upRx != upSize || upCrc != upExpect) { LittleFS.remove("/anim.tmp"); gifRestart = true; nack("crc"); return; }
-    LittleFS.remove("/anim.gif");
-    LittleFS.rename("/anim.tmp", "/anim.gif");
-    setMode(M_GIF); gifRestart = true; ack("gif_done");
+    { char gp[16]; gifPath(upSlot, gp); LittleFS.remove(gp); LittleFS.rename("/anim.tmp", gp); }
+    gifSlot = upSlot; setMode(M_GIF); gifRestart = true; ack("gif_done");
   }
   else if (!strcmp(cmd, "gif_abort")) { uploadAbort(); ack("gif_abort"); }
   else if (!strcmp(cmd, "gif_delete")) {
     if (!okFs) { nack("fs_busy"); return; }
+    int slot = doc["slot"] | 0;
+    if (slot < 0 || slot >= GIF_SLOTS) { nack("slot"); return; }
     uploadAbort(); gifClose();
-    LittleFS.remove("/anim.gif");
-    okFs = false;                                                // the demo animation is regenerated in the background
-    fsStartAsync(fsPrepTask, FS_PREPARING);
+    { char gp[16]; gifPath((uint8_t)slot, gp); LittleFS.remove(gp); }
+    if (gifSlot == slot) gifSlot = 0;
+    if (slot == 0 || gifSlotCount() == 0) {
+      okFs = false;                                              // slot 0 is the default / demo animation: regenerated in the background
+      fsStartAsync(fsPrepTask, FS_PREPARING);
+    } else gifRestart = true;
     ack("gif_delete");
+  }
+  else if (!strcmp(cmd, "gif_list")) cmdGifList();
+  else if (!strcmp(cmd, "gif_cfg")) {
+    if (!doc["rot"].isNull()) { gifRot = (uint16_t)constrain(doc["rot"].as<int>(), 0, 3600); prefs.putUShort("grot", gifRot); gifSlotAt = millis(); }
+    if (!doc["slot"].isNull()) {
+      int sl = doc["slot"].as<int>();
+      if (sl < 0 || sl >= GIF_SLOTS || !gifSlotExists((uint8_t)sl)) { nack("slot"); return; }
+      gifSlot = (uint8_t)sl; gifRestart = true;
+    }
+    cmdGifList();
   }
   else nack("unknown_cmd");
   reqId = -1;
@@ -1586,12 +1989,15 @@ static void serialService() {
 static void loadSettings() {
   brightness = prefs.getUChar("bright", 200); if (brightness < 5) brightness = 5;
   savedBright = brightness;
-  mode = prefs.getUChar("mode", M_CLOCK); if (mode < 1 || mode > 5) mode = M_CLOCK;
+  mode = prefs.getUChar("mode", M_CLOCK); if (mode < 1 || mode > NUM_MODES) mode = M_CLOCK;
   osMac = prefs.getUChar("os", 0);
   kbLayout = prefs.getString("kbl", "en_US"); if (!layoutByName(kbLayout.c_str())) kbLayout = "en_US";
   pomoMinutes = prefs.getUChar("pomo", 25); if (pomoMinutes < 1 || pomoMinutes > 90) pomoMinutes = 25;
   pomoRemain = pomoMinutes * 60000UL;
   tzOff = prefs.getInt("tz", 0);
+  gifRot = prefs.getUShort("grot", 0); if (gifRot > 3600) gifRot = 0;
+  dispOff = prefs.getBool("nodisp", false);
+  otaOn = prefs.getBool("ota", false); otaPw = prefs.getString("otapw", "");
   ledMode = prefs.getUChar("ledm", 0) == 1 ? LM_OFF : LM_AUTO;
   wifiSsid = prefs.getString("ssid", ""); wifiPass = prefs.getString("wpass", "");
   uint32_t e = prefs.getULong("epoch", 0);                       // last known time: clock starts close even without host/NTP
@@ -1632,6 +2038,7 @@ void setup() {
   Keyboard.begin();
 #endif
   ConsumerControl.begin();
+  Mouse.begin();
   USB.begin();
 #endif
   rxLine.reserve(RX_MAX + 16);
@@ -1646,7 +2053,7 @@ void setup() {
   ledBoot(0, 30, 30);                // cyan: filesystem scheduled
 
   // ---- 5. display (skipped in safe mode; a failure here never takes the serial link down)
-  if (!safeMode) {
+  if (!safeMode && !dispOff) {
 #if DC_HAS_TFT
     tft.init();
     tft.fillScreen(TFT_BLACK);
@@ -1655,7 +2062,7 @@ void setup() {
     okSprite = spr.createSprite(240, 240) != nullptr;
     okDisp = okSprite;
     bootNote("display", okDisp);
-  } else bootNote("display-skipped(safe-mode)", false);
+  } else bootNote(safeMode ? "display-skipped(safe-mode)" : "display-skipped(boot_opt)", false);
   ledBoot(30, 24, 0);                // amber: display done
 
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), encISR, CHANGE);
@@ -1674,8 +2081,10 @@ void loop() {
   macroTick();
   pomoTick();
   netService();
+  otaService();
   ledService();
   uint32_t now = millis();
+  if (mode == M_INFO && nCards > 1 && cardRotSec && (uint32_t)(now - cardAt) >= (uint32_t)cardRotSec * 1000UL) { cardIdx = (cardIdx + 1) % nCards; cardAt = now; needRedraw = true; }
 
   if (fsStartAt && (int32_t)(now - fsStartAt) >= 0) { fsStartAt = 0; fsStartAsync(fsTask, FS_MOUNTING); }
   if (uploading && now - upLast > 6000) uploadAbort();           // host vanished mid-upload
