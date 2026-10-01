@@ -5,7 +5,8 @@ Flash a prebuilt DeskCompanion image onto an ESP32-S3 (Waveshare ESP32-S3-Zero) 
     pip install esptool pyserial
     python flash.py --list                      show serial ports
     python flash.py --image core                CoreBringup  (step 1: LED + USB serial + wiring tests)
-    python flash.py --image full                DeskCompanion (full firmware)
+    python flash.py --image full                DeskCompanion (full firmware, cable only - the default)
+    python flash.py --image wifi                DeskCompanion built with DC_ENABLE_WIFI=1 (NTP + Wi-Fi update)
     python flash.py --image path/to/file.bin    any merged image (written at 0x0)
     python flash.py --image core --port COM5    choose the port yourself
 
@@ -19,7 +20,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-IMAGES = {"core": os.path.join(HERE, "CoreBringup.bin"), "full": os.path.join(HERE, "DeskCompanion.bin")}
+IMAGES = {"core": os.path.join(HERE, "CoreBringup.bin"), "full": os.path.join(HERE, "DeskCompanion.bin"),
+          "wifi": os.path.join(HERE, "DeskCompanion-wifi.bin")}
 ESP_VID, ROM_PID = 0x303A, 0x1001
 
 
@@ -88,7 +90,7 @@ def run_esptool(args):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--image", default="", help="core | full | path to a merged .bin")
+    ap.add_argument("--image", default="", help="core | full | wifi | path to a merged .bin")
     ap.add_argument("--port", default="", help="serial port (default: auto-detect)")
     ap.add_argument("--baud", default="460800")
     ap.add_argument("--list", action="store_true", help="list serial ports and exit")

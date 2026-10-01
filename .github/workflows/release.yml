@@ -51,5 +51,6 @@ jobs:
             artifacts/*.zip
             firmware/CoreBringup.bin
             firmware/DeskCompanion.bin
+            firmware/DeskCompanion-wifi.bin
             firmware/SHA256SUMS
           generate_release_notes: true

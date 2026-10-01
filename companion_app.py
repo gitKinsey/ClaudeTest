@@ -5982,11 +5982,11 @@ class App(ctk.CTk):
     def ota_update(self):
         if not self.dev.connected:
             return self.set_status("Connect the pad first", error=True)
-        image = APP_DIR / "firmware" / "DeskCompanion.bin"
+        image = APP_DIR / "firmware" / "DeskCompanion-wifi.bin"
         if not image.is_file():
-            return self.set_status("firmware/DeskCompanion.bin not found", error=True)
+            return self.set_status("firmware/DeskCompanion-wifi.bin not found", error=True)
         pw = self.ota_pw.get()
-        if not messagebox.askyesno("Update over Wi-Fi", "Send the bundled firmware to the pad over Wi-Fi?\n\nExperimental: if it fails the pad keeps its old firmware, "
+        if not messagebox.askyesno("Update over Wi-Fi", "Send the bundled Wi-Fi-enabled firmware to the pad over Wi-Fi?\n\nExperimental: if it fails the pad keeps its old firmware, "
                                    "but keep a USB cable at hand."):
             return
         self.ota_btn.configure(state="disabled")
@@ -6214,6 +6214,7 @@ class App(ctk.CTk):
         self.fw_btn = ctk.CTkButton(row, text=f"Update the pad to {FW_BUNDLED}", command=lambda: self.flash_firmware("full"))
         self.fw_btn.pack(side="left", padx=6)
         ui.secondary_button(row, "Flash CoreBringup (diagnostic)", lambda: self.flash_firmware("core")).pack(side="left", padx=6)
+        ui.secondary_button(row, "Flash the Wi-Fi build", lambda: self.flash_firmware("wifi")).pack(side="left", padx=6)
         ui.secondary_button(row, "Flash another .bin...", self.flash_other).pack(side="left", padx=6)
         ui.muted(box, "Needs:  pip install esptool.  The pad is put into download mode automatically when it runs DeskCompanion; otherwise hold BOOT while plugging in USB.",
                  wraplength=860).grid(row=3, column=0, columnspan=4, sticky="w", padx=6)

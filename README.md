@@ -59,14 +59,15 @@ The idea: prove each layer on its own, so when something is wrong you know *whic
 
 ### Step 0a (alternative) - flash prebuilt images, no Arduino IDE at all
 
-`firmware/` contains prebuilt images, built from this repo's current sources with arduino-esp32 core **3.3.6** for the
+`firmware/` contains prebuilt images (`CoreBringup.bin`, `DeskCompanion.bin` = cable-only, 42 % of the app slot, `DeskCompanion-wifi.bin` = with Wi-Fi, 90 %), built from this repo's current sources with arduino-esp32 core **3.3.6** for the
 *Waveshare ESP32-S3-Zero* board profile (USB-OTG/TinyUSB, USB CDC On Boot enabled, 4 MB flash, DIO 80 MHz bootloader,
 default partition scheme, PSRAM off), and a flasher:
 
 ```
 pip install esptool pyserial
 python firmware/flash.py --image core     # CoreBringup (step 1)
-python firmware/flash.py --image full     # DeskCompanion (step 2)
+python firmware/flash.py --image full     # DeskCompanion (step 2) - cable-only build, the default
+python firmware/flash.py --image wifi     # same firmware built with DC_ENABLE_WIFI=1 (NTP + Wi-Fi update); only if you want those
 ```
 Put the board in download mode first (hold BOOT while plugging in USB). If the pad already runs one of these firmwares the
 script reboots it into download mode by itself. The same thing is a button in the app: **Dev tab -> 0. Flash firmware**.
