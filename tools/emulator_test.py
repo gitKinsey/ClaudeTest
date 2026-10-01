@@ -172,10 +172,11 @@ def t_first_boot_responsive(c):
     expect(h["fs_state"] in ("mounting", "formatting", "preparing", "ready"), f"fs_state {h['fs_state']}")
     print(f"        first hello after {c.first_hello_s:.1f}s with fs_state={h['fs_state']} fs={h['fs']}")
     expect(c.first_hello_s < 20, "link should answer within seconds even on a blank flash")
-    for cmd in ("gif_begin", "gif_delete"):
-        if not h["fs"]:
-            expect(c.e.request({"cmd": cmd, "size": 100, "crc": 0}).get("err") == "fs_busy", f"{cmd} must refuse while the filesystem is busy")
-            break
+    if not h["fs"]:
+        # the storage job may finish between hello and this request, so both outcomes are legal - but never a hang or a crash
+        r = c.e.request({"cmd": "gif_begin", "size": 100, "crc": 0}, timeout=30)
+        expect(r.get("err") in ("fs_busy", None) and (r["ok"] or r["err"] == "fs_busy"), f"gif_begin during storage start-up: {r}")
+        c.e.request({"cmd": "gif_abort"})
 
 
 def t_hello(c):
