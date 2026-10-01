@@ -46,6 +46,9 @@
 #include <sys/time.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
+#if !defined(GC9A01_DRIVER) && !defined(DC_SIM)
+#error "TFT_eSPI is not configured for the GC9A01 round display. Copy User_Setup.h from this project over <Arduino sketchbook>/libraries/TFT_eSPI/User_Setup.h (README, Step 2) and compile again."
+#endif
 #include <Bounce2.h>
 #include <ArduinoJson.h>
 #include <AnimatedGIF.h>
@@ -90,7 +93,7 @@ enum StepType : uint8_t { ST_KEYS, ST_MEDIA, ST_TEXT, ST_DELAY };
 struct Step { uint8_t t = 0; uint8_t n = 0; uint8_t keys[6] = {0, 0, 0, 0, 0, 0}; uint16_t val = 0; String text; };
 struct KeyName { const char* name; uint8_t code; };
 struct MediaName { const char* name; uint16_t code; };
-struct FileOut { File f; void put(const uint8_t* b, size_t n) { f.write(b, n); } void tick() { delay(1); } };
+struct FileOut { fs::File f; void put(const uint8_t* b, size_t n) { f.write(b, n); } void tick() { delay(1); } };
 enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF };
 enum PomoState : uint8_t { PS_IDLE, PS_RUN, PS_PAUSE, PS_DONE };
 
@@ -265,10 +268,10 @@ uint32_t pomoRemain = 25UL * 60000UL, pomoLast = 0, pomoDoneAt = 0;
 bool     gifOpen = false, gifRestart = true, gifFailed = false;
 uint32_t gifNextAt = 0;
 int      gifOffX = 0, gifOffY = 0;
-File     gifFile;
+fs::File     gifFile;
 
 bool     uploading = false;
-File     upFile;
+fs::File     upFile;
 uint32_t upSize = 0, upRx = 0, upCrc = 0, upExpect = 0, upLast = 0;
 int      upSeq = 0;
 uint8_t  chunkBuf[1100];
@@ -358,7 +361,7 @@ static int b64dec(const char* in, size_t n, uint8_t* out) {
 }
 static void localTm(struct tm& t) { time_t n = time(nullptr) + tzOff; gmtime_r(&n, &t); }
 static void uiTouch() { menuTouched = millis(); }
-static uint32_t gifFileSize() { File f = LittleFS.open("/anim.gif", "r"); if (!f) return 0; uint32_t s = f.size(); f.close(); return s; }
+static uint32_t gifFileSize() { fs::File f = LittleFS.open("/anim.gif", "r"); if (!f) return 0; uint32_t s = f.size(); f.close(); return s; }
 static uint32_t fsFreeBytes() { return (uint32_t)(LittleFS.totalBytes() - LittleFS.usedBytes()) + gifFileSize(); }
 
 // ================================================================ serial TX (bounded: never stalls the firmware)
@@ -943,10 +946,10 @@ static void* GIFOpenFile(const char* fname, int32_t* pSize) {
   if (gifFile) { *pSize = gifFile.size(); return (void*)&gifFile; }
   return NULL;
 }
-static void GIFCloseFile(void* pHandle) { File* f = static_cast<File*>(pHandle); if (f) f->close(); }
+static void GIFCloseFile(void* pHandle) { fs::File* f = static_cast<fs::File*>(pHandle); if (f) f->close(); }
 static int32_t GIFReadFile(GIFFILE* pFile, uint8_t* pBuf, int32_t iLen) {
   int32_t n = iLen;
-  File* f = static_cast<File*>(pFile->fHandle);
+  fs::File* f = static_cast<fs::File*>(pFile->fHandle);
   if ((pFile->iSize - pFile->iPos) < iLen) n = pFile->iSize - pFile->iPos - 1;
   if (n <= 0) return 0;
   n = (int32_t)f->read(pBuf, n);
@@ -954,7 +957,7 @@ static int32_t GIFReadFile(GIFFILE* pFile, uint8_t* pBuf, int32_t iLen) {
   return n;
 }
 static int32_t GIFSeekFile(GIFFILE* pFile, int32_t iPosition) {
-  File* f = static_cast<File*>(pFile->fHandle);
+  fs::File* f = static_cast<fs::File*>(pFile->fHandle);
   f->seek(iPosition);
   pFile->iPos = (int32_t)f->position();
   return pFile->iPos;
@@ -1365,11 +1368,11 @@ static void cmdSelftest() {
   d["nvs"] = nvs;
   bool fs = false;
   if (okFs) {
-    File f = LittleFS.open("/selftest.tmp", "w");
+    fs::File f = LittleFS.open("/selftest.tmp", "w");
     if (f) {
       uint8_t buf[256]; for (int i = 0; i < 256; i++) buf[i] = (uint8_t)(i * 7 + 3);
       bool w = f.write(buf, sizeof buf) == sizeof buf; f.close();
-      File r = LittleFS.open("/selftest.tmp", "r");
+      fs::File r = LittleFS.open("/selftest.tmp", "r");
       if (r) { uint8_t rb[256]; bool rd = r.read(rb, sizeof rb) == sizeof rb && !memcmp(buf, rb, sizeof buf); r.close(); fs = w && rd; }
     }
     LittleFS.remove("/selftest.tmp");

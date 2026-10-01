@@ -131,6 +131,7 @@ dial = minutes), media dashboard, system telemetry, GIF.
 | Screen colours inverted / red-blue swapped | panel variant | uncomment `TFT_INVERSION_ON/OFF` or `TFT_RGB_ORDER TFT_BGR` in `User_Setup.h` |
 | Keys do nothing | wiring, or HID not enumerated | Dev tab -> Keys: indicators must light up; Keyboard test must type. HID needs *USB Mode = TinyUSB* |
 | Red double-blink | safe mode (3 crashes in a row) | Dev tab -> *Device info*: look at `reset`, `boot`; usually a bad display / wiring or wrong board settings |
+| `'File' does not name a type`, or "TFT_eSPI is not configured for the GC9A01" while compiling | the TFT_eSPI library still has its default `User_Setup.h` (it enables `SMOOTH_FONT`, which hides the global `File` type) | copy this project's `User_Setup.h` over `<sketchbook>/libraries/TFT_eSPI/User_Setup.h` (Step 2). The firmware also uses `fs::File` explicitly, so it compiles either way - but without our `User_Setup.h` the display is configured for the wrong panel |
 | `KeyboardLayout_xx not declared` while compiling | very old/new core mismatch | use core 3.1.0+; or 2.0.x (layout feature is compiled out automatically) |
 
 Windows check: Device Manager should list, under *Ports*, a **USB Serial Device (COMn)** and, under *Keyboards*,
