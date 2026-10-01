@@ -6,7 +6,11 @@ key upload + read-back verification and the diagnostic report.   Needs a display
 
     HOME=/tmp/dc DESK_COMPANION_CONFIG=/tmp/dc/.cfg xvfb-run -a python3 tools/app_selftest.py
 """
-import os, sys, time
+import os, sys, tempfile, time
+_home = tempfile.mkdtemp(prefix="dcself_")                      # isolated HOME: config, GIF library and the diagnostic report
+os.environ["HOME"] = _home
+os.environ["DESK_COMPANION_CONFIG"] = os.path.join(_home, "cfg.json")
+os.environ["DESK_COMPANION_GIFS"] = os.path.join(_home, "gifs")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import companion_app as m
 
@@ -58,7 +62,8 @@ print("status:", app.status.cget("text"))
 app.verify_pad_keys(); pump(30); print("status2:", app.status.cget("text"))
 assert "Key check OK" in app.status.cget("text")
 dt.report(); pump(5)
-print("report saved:", (m.Path.home()/"deskcompanion_diag.txt").exists())
+assert (m.Path.home() / "deskcompanion_diag.txt").exists(), "diagnostic report was not written"
+print("report saved: True")
 dt.refresh_ports(); dt.probe_ports(); pump(20)
 print("DEV TAB OK")
 app._on_close()

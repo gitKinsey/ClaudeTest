@@ -40,7 +40,21 @@ import serial
 from serial.tools import list_ports
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageTk
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))     # desk_lib/ sits next to this file
+from desk_lib import ui                                              # noqa: E402
+from desk_lib import activewin, backup, espota, feeds, hostactions     # noqa: E402
+from desk_lib.ui import (ACCENT, CARD, CARD2, CARD3, ERR, FAINT, LINE, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
+
 APP_NAME = "Desk Companion"
+APP_VERSION = "1.3.0"
+PAGES = [("Control", [("Dashboard", "Home", "Connection, health and quick actions"),
+                      ("Virtual Pad", "Pad", "Your keys on three layers, with a live twin of the device"),
+                      ("Macro Creator", "Macros", "Key combinations, text, delays, mouse, computer actions"),
+                      ("Profiles", "Profiles", "Switch the pad's layer automatically for each program")]),
+         ("Display", [("GIF Upload", "GIFs", "Pick or upload animations for the round screen"),
+                      ("Info Screen", "Info", "Now playing, weather, calendar and notification badges")]),
+         ("System", [("Device", "Device", "Settings, firmware, backup and recovery"),
+                     ("Dev", "Diagnostics", "Bring-up tests, terminal and reports")])]
 BAUD = 115200
 ESPRESSIF_VID = 0x303A
 CONFIG_PATH = Path(os.environ.get("DESK_COMPANION_CONFIG") or Path.home() / ".desk_companion.json")
@@ -112,6 +126,21 @@ ACTIONS = {
         ("Command Palette", C("PRIMARY", "SHIFT", "p")),
         ("Toggle Sidebar (VS Code)", C("PRIMARY", "b")),
     ],
+    "Layers & Pad": [
+        ("Next Layer", ("layer", "next")), ("Previous Layer", ("layer", "prev")),
+        ("Layer 1", ("layer", 0)), ("Layer 2", ("layer", 1)), ("Layer 3", ("layer", 2)),
+    ],
+    "Mouse": [
+        ("Left Click", ("mouse", {"btn": "left"})), ("Right Click", ("mouse", {"btn": "right"})),
+        ("Middle Click", ("mouse", {"btn": "middle"})), ("Double Click", ("mouse", {"btn": "left", "act": "double"})),
+        ("Scroll Up", ("mouse", {"wheel": 3})), ("Scroll Down", ("mouse", {"wheel": -3})),
+        ("Mouse Back Button", ("mouse", {"btn": "back"})), ("Mouse Forward Button", ("mouse", {"btn": "forward"})),
+    ],
+    "Navigation": [
+        ("Page Down", C("PGDN")), ("Page Up", C("PGUP")), ("Home", C("HOME")), ("End", C("END")),
+        ("Arrow Up", C("UP")), ("Arrow Down", C("DOWN")), ("Arrow Left", C("LEFT")), ("Arrow Right", C("RIGHT")),
+    ],
+    "Computer": [("Type Clipboard", ("host", {"op": "clipboard"})), ("Show Notification (test)", ("host", {"op": "notify", "arg": "Hello from your pad"}))],
     "Other": [("Unassigned", ("none", None))],
 }
 ACTION_INDEX = {(cat, a[0]): (a[1], a[2] if len(a) > 2 else None) for cat, lst in ACTIONS.items() for a in lst}
@@ -120,13 +149,21 @@ assert len(ACTION_INDEX) >= 50
 SLOT_LABELS = {1: "K1", 2: "K2", 3: "K3", 4: "K4", 5: "K5", 6: "Encoder turn right", 7: "Encoder turn left"}
 DEFAULT_MAP = {1: ("Editing", "Copy"), 2: ("Editing", "Paste"), 3: ("Editing", "Undo"), 4: ("Media", "Play/Pause"),
                5: ("Media", "Mute"), 6: ("Media", "Volume Up"), 7: ("Media", "Volume Down")}
+DEFAULT_LAYER_MAPS = [
+    DEFAULT_MAP,
+    {1: ("Media", "Previous Track"), 2: ("Media", "Play/Pause"), 3: ("Media", "Next Track"), 4: ("Media", "Stop"),
+     5: ("Media", "Mute"), 6: ("Media", "Volume Up"), 7: ("Media", "Volume Down")},
+    {1: ("Browser", "Back"), 2: ("Browser", "Forward"), 3: ("Browser", "Refresh"), 4: ("Browser", "New Tab"),
+     5: ("Browser", "Close Tab"), 6: ("Navigation", "Page Down"), 7: ("Navigation", "Page Up")},
+]
+LAYER_NAMES = ["Layer 1  General", "Layer 2  Media", "Layer 3  Browser"]
 MODIFIERS = ["-", "CTRL", "SHIFT", "ALT", "GUI", "PRIMARY"]
 NAMED_KEYS = ["ENTER", "TAB", "ESC", "SPACE", "BACKSPACE", "DELETE", "INSERT", "HOME", "END", "PGUP", "PGDN",
               "UP", "DOWN", "LEFT", "RIGHT", "PRTSC", "MENU", "CAPSLOCK"]
 KEY_CHOICES = (list("abcdefghijklmnopqrstuvwxyz0123456789") + [f"F{i}" for i in range(1, 13)] + NAMED_KEYS
                + list("-=[];',./`\\"))
 MEDIA_CHOICES = ["PLAY_PAUSE", "NEXT", "PREV", "STOP", "MUTE", "VOL_UP", "VOL_DOWN", "FF", "REWIND"]
-MODE_CHOICES = ["1 Clock", "2 Focus timer", "3 Media", "4 System", "5 GIF"]
+MODE_CHOICES = ["1 Clock", "2 Focus timer", "3 Media", "4 System", "5 GIF", "6 Info"]
 
 
 def valid_key(k):
@@ -145,9 +182,15 @@ def load_config():
         cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
     except (OSError, ValueError):
         pass
-    for s, (cat, name) in DEFAULT_MAP.items():
-        cfg["map"].setdefault(str(s), {"cat": cat, "action": name})
-    cfg.setdefault("pushed", {})              # what was last uploaded to the pad, per slot (JSON of the spec)
+    if not isinstance(cfg.get("layers"), list) or len(cfg["layers"]) != LAYERS or not all(isinstance(x, dict) for x in cfg["layers"]):
+        cfg["layers"] = [cfg.get("map") if isinstance(cfg.get("map"), dict) else {}, {}, {}]      # configs from before layers existed: "map" = layer 1
+    if not isinstance(cfg.get("pushed_layers"), list) or len(cfg["pushed_layers"]) != LAYERS:
+        cfg["pushed_layers"] = [cfg.get("pushed") if isinstance(cfg.get("pushed"), dict) else {}, {}, {}]
+    for n in range(LAYERS):
+        for s, (cat, name) in DEFAULT_LAYER_MAPS[n].items():
+            cfg["layers"][n].setdefault(str(s), {"cat": cat, "action": name})
+    cfg["edit_layer"] = 0
+    cfg["map"], cfg["pushed"] = cfg["layers"][0], cfg["pushed_layers"][0]     # the app edits cfg["map"] = the selected layer (see App.set_edit_layer)
     cfg.setdefault("twin_mode", 1)
     cfg.setdefault("twin_bright", 200)
     cfg.setdefault("pushed_mode", None)
@@ -157,12 +200,24 @@ def load_config():
     cfg.setdefault("layout", "auto")
     cfg.setdefault("online_keys", {})
     cfg.setdefault("host_media_sync", True)
+    cfg.setdefault("appearance", "dark")
+    cfg.setdefault("profiles", [])               # per-program layer rules: {"name","match","kind","layer","enabled"}
+    cfg.setdefault("profiles_on", False)
+    cfg.setdefault("profile_default", 0)
+    cfg.setdefault("allow_shell", False)         # may the pad run shell commands on this PC?  (off unless you switch it on)
+    cfg.setdefault("info", {})                   # info-screen feed settings
+    cfg.setdefault("usage", {})                  # key press counters
+    cfg.setdefault("wizard_done", False)
     return cfg
 
 
 def save_config(cfg):
+    out = dict(cfg)
+    if isinstance(out.get("layers"), list):          # "map" / "pushed" are aliases of the selected layer: store layer 1 there
+        out["map"], out["pushed"] = out["layers"][0], out["pushed_layers"][0]
+    out.pop("edit_layer", None)
     try:
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+        CONFIG_PATH.write_text(json.dumps(out, indent=1), encoding="utf-8")
     except OSError:
         pass
 
@@ -1419,12 +1474,32 @@ def describe_spec(spec):
         return 'type "' + (s if len(s) <= 28 else s[:25] + "...") + '"'
     if t == "macro":
         return f"macro, {len(v)} steps"
+    if t == "layer":
+        return "switch to the next layer" if v == "next" else "switch to the previous layer" if v == "prev" else f"switch to layer {int(v) + 1}"
+    if t == "mouse":
+        if "wheel" in v:
+            return f"scroll {'up' if v['wheel'] > 0 else 'down'} {abs(v['wheel'])}"
+        if "move" in v:
+            return f"move the pointer by {v['move'][0]}, {v['move'][1]}"
+        return f"mouse {v.get('act', 'click')} ({v.get('btn', 'left')} button)"
+    if t == "host":
+        return {"url": "open ", "app": "start ", "shell": "run ", "file": "open file ", "clipboard": "type the clipboard", "notify": "notify: "}.get(v.get("op"), "") \
+            + (v.get("arg", "") if v.get("op") != "clipboard" else "")
     return "nothing"
 
 
 # ============================================================================ live test: real keystrokes on this PC
 class KeySender:
     """Common macro runner; backends implement combo(), text() and media()."""
+
+    host_cb = None                                    # set by the app: runs {"op","arg"} host actions (whitelisted)
+
+    def mouse(self, spec):
+        raise ValueError("mouse actions are not available on this system")
+
+    def host(self, spec):
+        if self.host_cb:
+            self.host_cb(spec)
 
     def run(self, spec, stop=None):
         t, v = spec
@@ -1434,6 +1509,12 @@ class KeySender:
             self.media(v)
         elif t == "text":
             self.text(v)
+        elif t == "mouse":
+            self.mouse(v)
+        elif t == "host":
+            self.host(v)
+        elif t == "layer":
+            pass                                      # layer changes belong to the pad / virtual pad, not to the PC
         elif t == "macro":
             for s in v:
                 if stop is not None and stop.is_set():
@@ -1444,6 +1525,10 @@ class KeySender:
                     self.text(s["text"])
                 elif "media" in s:
                     self.media(s["media"])
+                elif "mouse" in s:
+                    self.mouse(s["mouse"])
+                elif "host" in s:
+                    self.host(s["host"])
                 elif "delay" in s:
                     (stop.wait if stop is not None else time.sleep)(s["delay"] / 1000.0)
                 time.sleep(0.01)
@@ -1545,6 +1630,30 @@ class WinKeys(KeySender):
                     self._send([(0, u, KEYEVENTF_UNICODE), (0, u, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)])
             time.sleep(0.004)
 
+    MOUSE_FLAGS = {"left": (0x2, 0x4, 0), "right": (0x8, 0x10, 0), "middle": (0x20, 0x40, 0), "back": (0x80, 0x100, 1), "forward": (0x80, 0x100, 2)}
+
+    def _mouse_event(self, flags, data=0, dx=0, dy=0):
+        arr = (INPUT * 1)()
+        arr[0].type = 0
+        arr[0].mi = MOUSEINPUT(dx, dy, data & 0xFFFFFFFF, flags, 0, 0)
+        if self.u.SendInput(1, arr, ctypes.sizeof(INPUT)) != 1:
+            raise OSError("Windows refused the mouse input")
+
+    def mouse(self, spec):
+        if "wheel" in spec:
+            self._mouse_event(0x800, int(spec["wheel"]) * 120)
+        elif "move" in spec:
+            self._mouse_event(0x1, 0, int(spec["move"][0]), int(spec["move"][1]))
+        else:
+            down, up, data = self.MOUSE_FLAGS[spec.get("btn", "left")]
+            act = spec.get("act", "click")
+            for _ in range(2 if act == "double" else 1):
+                if act != "up":
+                    self._mouse_event(down, data)
+                if act in ("click", "double", "up"):
+                    self._mouse_event(up, data)
+                time.sleep(0.03)
+
     def media(self, name):
         n = name.upper()
         if n in self.MEDIA:
@@ -1572,8 +1681,30 @@ class PynputKeys(KeySender):
 
     def __init__(self):
         from pynput.keyboard import Controller, Key           # raises when missing / no X server
+        from pynput import mouse as _mouse
         self.kb, self.Key = Controller(), Key
+        self.ms, self.Button = _mouse.Controller(), _mouse.Button
         self.mac = platform.system() == "Darwin"
+
+    def mouse(self, spec):
+        if "wheel" in spec:
+            self.ms.scroll(0, int(spec["wheel"]))
+        elif "move" in spec:
+            self.ms.move(int(spec["move"][0]), int(spec["move"][1]))
+        else:
+            name = {"left": "left", "right": "right", "middle": "middle", "back": "button8", "forward": "button9"}[spec.get("btn", "left")]
+            btn = getattr(self.Button, name, None)
+            if btn is None:
+                raise ValueError(f"the {spec.get('btn')} mouse button is not supported by pynput here")
+            act = spec.get("act", "click")
+            if act == "double":
+                self.ms.click(btn, 2)
+            elif act == "down":
+                self.ms.press(btn)
+            elif act == "up":
+                self.ms.release(btn)
+            else:
+                self.ms.click(btn)
 
     def _key(self, name):
         if len(name) == 1:
@@ -1858,8 +1989,9 @@ def detect_layout():
 # ============================================================================ virtual pad: state machine + renderer
 SS = 2                      # supersampling of the virtual 240x240 screen
 DISP = 240                  # on-screen size of the virtual display
-M_CLOCK, M_POMO, M_MEDIA, M_TELEM, M_GIF = 1, 2, 3, 4, 5
-MODE_NAMES = ["", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF"]
+M_CLOCK, M_POMO, M_MEDIA, M_TELEM, M_GIF, M_INFO = 1, 2, 3, 4, 5, 6
+NUM_MODES = 6
+MODE_NAMES = ["", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO"]
 PS_IDLE, PS_RUN, PS_PAUSE, PS_DONE = range(4)
 DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
@@ -1965,6 +2097,8 @@ class VirtualPad:
         self.gif_frames = self.gif_durs = self._demo_cache = None
         self.upload_frac = None
         self.overlay = None
+        self.layer, self.menu_layer, self.flash_at = 0, 0, 0.0
+        self.cards, self.badges, self.card_idx, self.card_at, self.card_rot, self.info_at = [], [], 0, 0.0, 6, 0.0
         self.dirty, self._last = True, 0.0
 
     # ---- model updates
@@ -1988,13 +2122,30 @@ class VirtualPad:
         t, v = spec
         if t == "media":
             self.apply_media(v)
+        elif t == "layer":
+            self.set_layer((self.layer + 1) % LAYERS if v == "next" else (self.layer - 1) % LAYERS if v == "prev" else int(v))
         elif t == "macro":
             for s in v:
                 if "media" in s:
                     self.apply_media(s["media"])
+                elif "layer" in s:
+                    x = s["layer"]
+                    self.set_layer((self.layer + 1) % LAYERS if x == "next" else (self.layer - 1) % LAYERS if x == "prev" else int(x))
+
+    def set_layer(self, n, notify=True):
+        if 0 <= n < LAYERS:
+            changed = n != self.layer
+            self.layer, self.dirty = n, True
+            self.toast(f"Layer {n + 1}", 1.4)
+            if changed and notify:
+                self.on_change("layer")
+
+    def set_info(self, cards, badges, rot=6):
+        self.cards, self.badges, self.card_rot = list(cards)[:4], list(badges)[:4], rot
+        self.card_idx, self.card_at, self.info_at, self.dirty = 0, time.monotonic(), time.monotonic(), True
 
     def set_mode(self, m, notify=True):
-        if 1 <= m <= 5:
+        if 1 <= m <= NUM_MODES:
             changed = m != self.mode
             self.mode, self.dirty = m, True
             if changed and notify:
@@ -2045,33 +2196,40 @@ class VirtualPad:
         self._touch()
         n, d = abs(steps), (1 if steps > 0 else -1)
         if not self.menu_edit:
-            self.menu_sel = (self.menu_sel + d * n) % 4
+            self.menu_sel = (self.menu_sel + d * n) % 5
         elif self.menu_edit == 1:
             self.set_brightness(self.brightness + steps * 8)
         elif self.menu_edit == 2:
             for _ in range(n):
                 self.exec_media("VOL_UP" if d > 0 else "VOL_DOWN")
         elif self.menu_edit == 3:
-            self.menu_mode = (self.menu_mode - 1 + steps) % 5 + 1
+            self.menu_mode = (self.menu_mode - 1 + steps) % NUM_MODES + 1
+        elif self.menu_edit == 4:
+            self.menu_layer = (self.menu_layer + steps) % LAYERS
         self.dirty = True
 
     def _menu_click(self):
         self._touch()
         if not self.menu_edit:
-            if self.menu_sel == 3:
+            if self.menu_sel == 4:
                 self._menu_close()
                 return
             self.menu_edit = self.menu_sel + 1
             if self.menu_edit == 3:
                 self.menu_mode = self.mode
+            if self.menu_edit == 4:
+                self.menu_layer = self.layer
         else:
             if self.menu_edit == 3 and self.menu_mode != self.mode:
                 self.set_mode(self.menu_mode)
+            if self.menu_edit == 4 and self.menu_layer != self.layer:
+                self.set_layer(self.menu_layer)
             self.menu_edit = 0
         self.dirty = True
 
     # ---- inputs (identical behaviour to the firmware)
     def key(self, i):                           # i = 0..4
+        self.flash_at, self.dirty = time.monotonic(), True
         if self.menu_open:
             self._touch()
         if self.mode == M_POMO and i < 2:
@@ -2103,7 +2261,7 @@ class VirtualPad:
         if self.menu_open:
             self._menu_close()
         else:
-            self.set_mode(self.mode % 5 + 1)
+            self.set_mode(self.mode % NUM_MODES + 1)
 
     # ---- timing
     def tick(self):
@@ -2114,9 +2272,13 @@ class VirtualPad:
             self._menu_close()
         if self.overlay and now >= self.overlay[1]:
             self.overlay, self.dirty = None, True
+        if self.mode == M_INFO and len(self.cards) > 1 and self.card_rot and now - self.card_at >= self.card_rot:
+            self.card_idx, self.card_at, self.dirty = (self.card_idx + 1) % len(self.cards), now, True
         if self.dirty:
             return True
-        if self.upload_frac is not None or self.menu_open or self.overlay:
+        if now - self.flash_at < 0.28:
+            iv = 0.03
+        elif self.upload_frac is not None or self.menu_open or self.overlay:
             iv = 0.1
         elif self.mode == M_CLOCK:
             iv = 0.2
@@ -2124,7 +2286,7 @@ class VirtualPad:
             iv = 0.25 if self.pomo_state in (PS_RUN, PS_DONE) else 5.0
         elif self.mode == M_MEDIA:
             iv = 0.09 if self.playing else 5.0
-        elif self.mode == M_TELEM:
+        elif self.mode in (M_TELEM, M_INFO):
             iv = 0.5
         else:
             iv = 0.04
@@ -2190,6 +2352,38 @@ class VirtualPad:
         g.text(f"RAM {self.ram:.0f}%", 120, 134, 26, C_ACC2, bold=True)
         g.text(f"app up {up // 3600:02d}:{(up // 60) % 60:02d}:{up % 60:02d}", 120, 170, 15, C_GRAY)
 
+    def _scene_info(self, g, now):
+        fresh = bool(self.cards) and self.info_at and now - self.info_at < 300
+        g.band(120, 120, 116, 108, 0, 360, C_DIM)
+        if not fresh:
+            g.text("INFO", 120, 84, 15, C_GRAY)
+            g.text("no data", 120, 118, 26, C_TXT, bold=True)
+            g.text("open the companion app", 120, 152, 13, C_GRAY)
+            g.text("(Info tab)", 120, 170, 13, C_GRAY)
+        else:
+            c = self.cards[self.card_idx % len(self.cards)]
+            col = {"m": C_ACC2, "w": C_ACC, "e": C_WARN}.get(c.get("k", "c"), C_OK)
+            if len(self.cards) > 1 and self.card_rot:
+                g.band(120, 120, 116, 108, 0, 360 * max(0.0, min(1.0, (now - self.card_at) / self.card_rot)), col)
+            else:
+                g.band(120, 120, 116, 108, 0, 360, col)
+            fit = lambda t, n: t if len(t) <= n else t[:n - 2] + ".."     # noqa: E731 - same truncation as the firmware
+            g.text(fit(c.get("label", ""), 18), 120, 52, 13, C_GRAY)
+            g.text(fit(c.get("t", ""), 11), 120, 98, 26, col, bold=True)
+            g.text(fit(c.get("a", ""), 20), 120, 136, 13, C_TXT)
+            g.text(fit(c.get("b", ""), 20), 120, 156, 13, C_GRAY)
+            n = len(self.cards)
+            for i in range(n if n > 1 else 0):
+                x = 120 + (i - (n - 1) / 2.0) * 12
+                g.circle(x, 182, 3 if i == self.card_idx % n else 2, fill=col if i == self.card_idx % n else C_DIM2)
+        for i, b in enumerate(self.badges[:4]):
+            if not b.get("n"):
+                continue
+            x = 120 + (i - (len(self.badges[:4]) - 1) / 2.0) * 46
+            g.d.rounded_rectangle([(x - 20) * SS, 196 * SS, (x + 20) * SS, 218 * SS], radius=8 * SS, fill=C_ACC2)
+            g.text(str(min(99, int(b["n"]))), x, 207, 13, C_BG, bold=True)
+            g.text(str(b.get("name", ""))[:6], x, 228, 11, C_GRAY)
+
     def _scene_upload(self, g):
         f = self.upload_frac or 0.0
         g.gauge(120, 120, 116, 102, f, C_ACC2)
@@ -2234,10 +2428,10 @@ class VirtualPad:
     def _scene_menu(self, g):
         g.img = ImageEnhance.Brightness(g.img).enhance(0.5)
         g.d = ImageDraw.Draw(g.img)
-        labels, full = ["BRIGHT", "VOL", "MODE", "EXIT"], ["BRIGHTNESS", "VOLUME", "DISPLAY MODE", "EXIT"]
-        for i in range(4):
-            c, sel = i * 90.0, i == self.menu_sel
-            g.band(120, 120, 118, 72, c - 42, c + 42, (C_WARN if self.menu_edit else C_ACC) if sel else C_DIM2)
+        labels, full = ["BRIGHT", "VOL", "MODE", "LAYER", "EXIT"], ["BRIGHTNESS", "VOLUME", "DISPLAY MODE", "KEY LAYER", "EXIT"]
+        for i in range(5):
+            c, sel = i * 72.0, i == self.menu_sel
+            g.band(120, 120, 118, 72, c - 34, c + 34, (C_WARN if self.menu_edit else C_ACC) if sel else C_DIM2)
             x, y = _pt(c, 95)
             g.text(labels[i], x, y, 15, C_BG if sel else C_TXT)
         g.circle(120, 120, 66, fill=C_BG, outline=C_DIM2)
@@ -2249,11 +2443,25 @@ class VirtualPad:
             g.text("MUTE" if self.muted else f"{self.vol}%", 120, 118, 26, vc, bold=True)
         elif self.menu_sel == 2:
             m = self.menu_mode if self.menu_edit else self.mode
-            g.text(f"{m} / 5", 120, 112, 26, vc, bold=True)
+            g.text(f"{m} / {NUM_MODES}", 120, 112, 26, vc, bold=True)
             g.text(MODE_NAMES[m], 120, 136, 15, C_ACC)
+        elif self.menu_sel == 3:
+            g.text(f"{(self.menu_layer if self.menu_edit else self.layer) + 1} / {LAYERS}", 120, 118, 26, vc, bold=True)
         else:
             g.text("CLOSE", 120, 118, 26, vc, bold=True)
         g.text("CLICK = OK" if self.menu_edit else "CLICK = ENTER", 120, 158, 11, C_GRAY)
+
+    def _draw_status(self, g, now):
+        """Layer badge + key-press ring, drawn over every screen except GIF mode (same as the firmware)."""
+        col = (C_ACC, C_ACC2, C_WARN)[self.layer % 3]
+        if self.layer > 0:
+            g.d.rounded_rectangle([100 * SS, 214 * SS, 140 * SS, 234 * SS], radius=8 * SS, fill=col)
+            g.text(f"L{self.layer + 1}", 120, 224, 13, C_BG, bold=True)
+        age = now - self.flash_at
+        if self.flash_at and age < 0.26:
+            th = 10 - int(age * 1000 / 28)
+            if th > 0:
+                g.band(120, 120, 119, 119 - th, 0, 360, col)
 
     def _draw_overlay(self, g, text):
         f = _font(int(13 * SS), True)
@@ -2279,10 +2487,15 @@ class VirtualPad:
                 self._scene_media(g, now)
             elif self.mode == M_TELEM:
                 self._scene_telem(g)
+            elif self.mode == M_INFO:
+                g.fill(C_BG)
+                self._scene_info(g, now)
             else:
                 self._scene_gif(g, now)
             if self.menu_open:
                 self._scene_menu(g)
+            elif self.mode != M_GIF:
+                self._draw_status(g, now)
         if self.overlay and now < self.overlay[1]:
             self._draw_overlay(g, self.overlay[0])
         img = g.img.resize((DISP, DISP), RESAMPLE)
@@ -2581,7 +2794,7 @@ class Toast:
     LIVE = []
 
     def __init__(self, app, title, text, kind="ok", secs=5.0):
-        accent = {"ok": "#4cd97b", "warn": "#ffb454", "off": "#8a93a5"}.get(kind, "#4cd97b")
+        accent = {"ok": "#34d399", "warn": "#fbbf24", "off": "#8e8e9b"}.get(kind, "#34d399")
         self.win = w = tk.Toplevel(app)
         w.overrideredirect(True)
         try:
@@ -2590,12 +2803,12 @@ class Toast:
             pass
         outer = tk.Frame(w, bg=accent)
         outer.pack(fill="both", expand=True)
-        inner = tk.Frame(outer, bg="#1d2026")
+        inner = tk.Frame(outer, bg="#121215")
         inner.pack(fill="both", expand=True, padx=(5, 1), pady=1)
-        tk.Label(inner, text="\u25CF", fg=accent, bg="#1d2026", font=("TkDefaultFont", 20)).grid(row=0, column=0, rowspan=2, padx=(12, 6), pady=10)
-        tk.Label(inner, text=title, fg="#ffffff", bg="#1d2026", font=("TkDefaultFont", 12, "bold"), anchor="w").grid(
+        tk.Label(inner, text="\u25CF", fg=accent, bg="#121215", font=("TkDefaultFont", 20)).grid(row=0, column=0, rowspan=2, padx=(12, 6), pady=10)
+        tk.Label(inner, text=title, fg="#ffffff", bg="#121215", font=("TkDefaultFont", 12, "bold"), anchor="w").grid(
             row=0, column=1, sticky="w", padx=(0, 16), pady=(10, 0))
-        tk.Label(inner, text=text, fg="#aab2c0", bg="#1d2026", font=("TkDefaultFont", 9), anchor="w", justify="left",
+        tk.Label(inner, text=text, fg="#aab2c0", bg="#121215", font=("TkDefaultFont", 9), anchor="w", justify="left",
                  wraplength=250).grid(row=1, column=1, sticky="w", padx=(0, 16), pady=(0, 10))
         w.update_idletasks()
         width, height = max(330, w.winfo_reqwidth()), w.winfo_reqheight()
@@ -2654,7 +2867,7 @@ class DevTab:
 
         top = ctk.CTkFrame(tab)
         top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 4))
-        self.state_lbl = ctk.CTkLabel(top, text="Not connected", text_color="#ffb454", anchor="w")
+        self.state_lbl = ctk.CTkLabel(top, text="Not connected", text_color=WARN, anchor="w")
         self.state_lbl.pack(side="left", padx=12, pady=8)
         for text, cmd in (("Ping x5", self.ping), ("Device info", self.show_info), ("Full self-test", self.full_selftest),
                           ("Copy diagnostic report", self.report)):
@@ -2665,7 +2878,7 @@ class DevTab:
         right = ctk.CTkFrame(tab)
         right.grid(row=1, column=1, sticky="nsew", padx=(3, 6), pady=4)
 
-        ctk.CTkLabel(left, text=self.HELP, text_color="#9aa0a6", wraplength=560, justify="left").pack(anchor="w", padx=10, pady=(4, 6))
+        ctk.CTkLabel(left, text=self.HELP, text_color=MUTED, wraplength=560, justify="left").pack(anchor="w", padx=10, pady=(4, 6))
         self._build_flash(left)
         self._build_ports(left)
         self._build_led(left)
@@ -2708,9 +2921,9 @@ class DevTab:
                 bits.append("files ok" if d.info["fs"] else f"files {st}...")
             if d.info.get("safe"):
                 bits.append("SAFE MODE (crash loop!)")
-            self.state_lbl.configure(text="Connected: " + "  |  ".join(bits), text_color="#4cd97b" if not d.info.get("safe") else "#ff6b6b")
+            self.state_lbl.configure(text="Connected: " + "  |  ".join(bits), text_color=OK if not d.info.get("safe") else ERR)
         else:
-            self.state_lbl.configure(text="Not connected", text_color="#ffb454")
+            self.state_lbl.configure(text="Not connected", text_color=WARN)
 
     # ---------------------------------------------------------------- terminal
     def _build_terminal(self, parent):
@@ -2718,11 +2931,11 @@ class DevTab:
         self.term = ctk.CTkTextbox(parent, font=ctk.CTkFont(family="Courier", size=11), wrap="none")
         self.term.pack(fill="both", expand=True, padx=8, pady=4)
         tb = self.term._textbox
-        tb.tag_config("tx", foreground="#6ea8fe")
-        tb.tag_config("rx", foreground="#7ee787")
-        tb.tag_config("raw", foreground="#ffb454")
-        tb.tag_config("sys", foreground="#9aa0a6")
-        tb.tag_config("err", foreground="#ff6b6b")
+        tb.tag_config("tx", foreground="#3b82f6")
+        tb.tag_config("rx", foreground="#10b981")
+        tb.tag_config("raw", foreground="#f59e0b")
+        tb.tag_config("sys", foreground="#8e8e9b")
+        tb.tag_config("err", foreground="#ef4444")
         self.term.configure(state="disabled")
         r = self.row(parent)
         self.raw_var = tk.StringVar()
@@ -2733,7 +2946,7 @@ class DevTab:
         r2 = self.row(parent)
         ctk.CTkButton(r2, text="Clear", width=70, fg_color="#555", command=self.clear).pack(side="left", padx=(0, 4))
         ctk.CTkButton(r2, text="Copy", width=70, fg_color="#555", command=self.copy_log).pack(side="left", padx=(0, 4))
-        self.rxinfo = ctk.CTkLabel(r2, text="rx 0 B / tx 0 B", text_color="#9aa0a6")
+        self.rxinfo = ctk.CTkLabel(r2, text="rx 0 B / tx 0 B", text_color=MUTED)
         self.rxinfo.pack(side="right", padx=6)
 
     def log(self, direction, text):
@@ -2785,12 +2998,12 @@ class DevTab:
         r = self.row(c)
         self.flash_img = tk.StringVar(value="core")
         ctk.CTkOptionMenu(r, values=["core", "full"], variable=self.flash_img, width=90).pack(side="left", padx=(0, 6))
-        ctk.CTkLabel(r, text="core = CoreBringup (step 1)   full = DeskCompanion (step 2)", text_color="#9aa0a6").pack(side="left")
+        ctk.CTkLabel(r, text="core = CoreBringup (step 1)   full = DeskCompanion (step 2)", text_color=MUTED).pack(side="left")
         r = self.row(c)
         self.flash_btn = ctk.CTkButton(r, text="Flash to the board", width=150, fg_color="#7a4a1f", command=self.flash)
         self.flash_btn.pack(side="left", padx=(0, 6))
         ctk.CTkLabel(c, text="Hold BOOT while plugging in the USB cable (download mode), then press the button. If the pad already runs "
-                     "DeskCompanion it is put into download mode automatically. Needs:  pip install esptool", text_color="#9aa0a6",
+                     "DeskCompanion it is put into download mode automatically. Needs:  pip install esptool", text_color=MUTED,
                      wraplength=540, justify="left").pack(anchor="w", padx=10, pady=(0, 6))
 
     def flash(self):
@@ -2838,7 +3051,7 @@ class DevTab:
             self.port_tree.heading(col, text=txt)
             self.port_tree.column(col, width=w, anchor="w")
         self.port_tree.pack(fill="x", padx=8, pady=4)
-        self.port_hint = ctk.CTkLabel(c, text="", text_color="#9aa0a6", wraplength=540, justify="left")
+        self.port_hint = ctk.CTkLabel(c, text="", text_color=MUTED, wraplength=540, justify="left")
         self.port_hint.pack(anchor="w", padx=10)
         r = self.row(c)
         ctk.CTkButton(r, text="Refresh", width=90, command=self.refresh_ports).pack(side="left", padx=(0, 4))
@@ -2953,17 +3166,17 @@ class DevTab:
         r = self.row(c)
         self.key_labels = []
         for i in range(5):
-            l = ctk.CTkLabel(r, text=f"K{i + 1}", width=48, height=34, fg_color="#2b2f36", corner_radius=6)
+            l = ctk.CTkLabel(r, text=f"K{i + 1}", width=48, height=34, fg_color=CARD2, corner_radius=6)
             l.pack(side="left", padx=3)
             self.key_labels.append(l)
-        self.enc_lbl = ctk.CTkLabel(r, text="ENC  pos 0", width=110, height=34, fg_color="#2b2f36", corner_radius=6)
+        self.enc_lbl = ctk.CTkLabel(r, text="ENC  pos 0", width=110, height=34, fg_color=CARD2, corner_radius=6)
         self.enc_lbl.pack(side="left", padx=(10, 3))
         r = self.row(c)
         self.events_var = tk.BooleanVar(value=False)
         ctk.CTkSwitch(r, text="Live events", variable=self.events_var, command=self.toggle_events).pack(side="left", padx=4)
         ctk.CTkButton(r, text="Read now", width=90, command=self.read_inputs).pack(side="left", padx=4)
         ctk.CTkLabel(c, text="Virtual presses run the key's real action (copy / paste / media ...) on THIS computer via the pad:",
-                     text_color="#9aa0a6", wraplength=540, justify="left").pack(anchor="w", padx=10)
+                     text_color=MUTED, wraplength=540, justify="left").pack(anchor="w", padx=10)
         r = self.row(c)
         for i in range(5):
             ctk.CTkButton(r, text=f"Press K{i + 1}", width=70, fg_color="#555",
@@ -2983,21 +3196,21 @@ class DevTab:
 
     def _show_keys(self, keys, enc_sw, pos):
         for l, v in zip(self.key_labels, keys):
-            l.configure(fg_color="#2e7d4f" if v else "#2b2f36")
-        self.enc_lbl.configure(text=f"ENC  pos {pos}", fg_color="#2e7d4f" if enc_sw else "#2b2f36")
+            l.configure(fg_color=ui.OK_FILL if v else CARD2)
+        self.enc_lbl.configure(text=f"ENC  pos {pos}", fg_color=ui.OK_FILL if enc_sw else CARD2)
 
     def on_event(self, m):
         """Device -> app messages without a reply slot (key / encoder events). Called from the reader thread."""
         evt = m.get("evt")
         if evt == "key" and 1 <= m.get("k", 0) <= 5:
             k, v = m["k"], m.get("v", 0)
-            self.app.post(lambda: self.key_labels[k - 1].configure(fg_color="#2e7d4f" if v else "#2b2f36"))
+            self.app.post(lambda: self.key_labels[k - 1].configure(fg_color=ui.OK_FILL if v else CARD2))
         elif evt == "enc":
             pos = m.get("pos", 0)
             self.app.post(lambda: self.enc_lbl.configure(text=f"ENC  pos {pos}  ({'+' if m.get('d', 0) > 0 else '-'})"))
         elif evt == "encsw":
             v = m.get("v", 0)
-            self.app.post(lambda: self.enc_lbl.configure(fg_color="#2e7d4f" if v else "#2b2f36"))
+            self.app.post(lambda: self.enc_lbl.configure(fg_color=ui.OK_FILL if v else CARD2))
 
     # ---------------------------------------------------------------- display
     def _build_display(self, parent):
@@ -3013,7 +3226,7 @@ class DevTab:
         ctk.CTkButton(r, text="Screenshot of the pad's screen", width=220, command=self.snapshot).pack(side="left", padx=2)
         self.snap_canvas = tk.Canvas(c, width=240, height=240, bg="#111", highlightthickness=1, highlightbackground="#333")
         self.snap_canvas.pack(pady=6)
-        ctk.CTkLabel(c, text="Test patterns stay for 8 s. A screenshot shows the firmware's frame buffer (not GIF mode).", text_color="#9aa0a6").pack(anchor="w", padx=10, pady=(0, 6))
+        ctk.CTkLabel(c, text="Test patterns stay for 8 s. A screenshot shows the firmware's frame buffer (not GIF mode).", text_color=MUTED).pack(anchor="w", padx=10, pady=(0, 6))
 
     def snapshot(self):
         if not self.app.dev.connected:
@@ -3063,7 +3276,7 @@ class DevTab:
             ctk.CTkButton(r, text=text, width=82, fg_color="#555", command=lambda o=op: self.gpio(o)).pack(side="left", padx=2)
         ctk.CTkButton(r, text="Scan all", width=80, command=self.gpio_scan).pack(side="left", padx=(8, 2))
         self.gpio_out = ctk.CTkLabel(c, text="Pins used by the pad: K1-K5 = 1,2,4,5,6  ENC A/B/SW = 13,14,15  TFT SDA/SCL/RES/DC/CS/BLK = 11,12,10,9,8,7",
-                                     text_color="#9aa0a6", wraplength=540, justify="left")
+                                     text_color=MUTED, wraplength=540, justify="left")
         self.gpio_out.pack(anchor="w", padx=10, pady=(2, 6))
 
     def gpio(self, op):
@@ -3096,7 +3309,7 @@ class DevTab:
                       command=self.reboot_download).pack(side="left", padx=2)
         ctk.CTkButton(r, text="Verify keys on pad", width=150, fg_color="#555", command=self.app.verify_pad_keys).pack(side="left", padx=2)
         ctk.CTkLabel(c, text="Download mode = the ROM flasher, same as holding BOOT while plugging in; no button needed for the next upload. "
-                     "The port will change - flash from the Arduino IDE, then unplug / re-plug.", text_color="#9aa0a6", wraplength=540, justify="left").pack(anchor="w", padx=10, pady=(2, 6))
+                     "The port will change - flash from the Arduino IDE, then unplug / re-plug.", text_color=MUTED, wraplength=540, justify="left").pack(anchor="w", padx=10, pady=(2, 6))
 
     def reboot_download(self):
         if messagebox.askyesno("Download mode", "Reboot the pad into the ROM download (flashing) mode?\nIt will disappear from the app until you re-flash or re-plug it."):
@@ -3239,13 +3452,13 @@ class DevTab:
 
 class App(ctk.CTk):
     def __init__(self):
+        ui.install_theme()
         super().__init__()
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-        self.title(APP_NAME)
-        self.geometry("1240x820")
-        self.minsize(1160, 760)
         self.cfg = load_config()
+        ctk.set_appearance_mode(self.cfg.get("appearance", "dark"))
+        self.title(APP_NAME)
+        self.geometry("1400x880")
+        self.minsize(1300, 780)
         self.ui_q, self.closing, self.auto_flag = queue.Queue(), False, True
         self.connect_lock = threading.Lock()
         self.dev = Device(lambda: self.post(self._on_disconnected))
@@ -3262,6 +3475,12 @@ class App(ctk.CTk):
             except Exception:
                 self.focus = None
         self.dnd = DnD(self)
+        self.edit_layer, self.pad_layer = 0, None             # layer shown / edited in the app; layer the physical pad is on
+        self.hostact = hostactions.HostActions(self._allowed_host, lambda: bool(self.cfg.get("allow_shell")),
+                                               type_clipboard=self._type_clipboard,
+                                               notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok")))
+        if self.host.impl is not None:
+            self.host.impl.host_cb = self._host_cb
         self.pad = VirtualPad(self.exec_slot, self.exec_media, self.on_pad_change)
         self.pad.mode, self.pad.brightness = int(self.cfg["twin_mode"]), int(self.cfg["twin_bright"])
         self._build()
@@ -3309,7 +3528,7 @@ class App(ctk.CTk):
         threading.Thread(target=run, daemon=True).start()
 
     def set_status(self, text, error=False):
-        self.status.configure(text=text, text_color="#ff6b6b" if error else "#9aa0a6")
+        self.status.configure(text=text, text_color=ERR if error else MUTED)
         self._log(text)
 
     def _log(self, text):
@@ -3441,24 +3660,53 @@ class App(ctk.CTk):
 
     # ---------------------------------------------------------------- UI construction
     def _build(self):
-        self.tabs = ctk.CTkTabview(self)
-        self.tabs.pack(fill="both", expand=True, padx=10, pady=(10, 0))
-        for name in ("Virtual Pad", "Dashboard", "Macro Creator", "GIF Upload", "Device", "Dev"):
-            self.tabs.add(name)
-        self.status = ctk.CTkLabel(self, text="Searching for the pad...", anchor="w", text_color="#9aa0a6")
-        self.status.pack(fill="x", padx=14, pady=(4, 8))
+        bar = ctk.CTkFrame(self, height=32, corner_radius=0, fg_color=ui.SIDE, border_width=0)
+        bar.pack(side="bottom", fill="x")
+        self.status = ctk.CTkLabel(bar, text="Searching for the pad...", anchor="w", text_color=MUTED, font=ui.font(12))
+        self.status.pack(side="left", fill="x", expand=True, padx=16, pady=5)
+        self.tabs = SideTabs(self, on_change=self._page_changed, version=f"v{APP_VERSION}")
+        self.tabs.pack(side="top", fill="both", expand=True)
+        for group, pages in PAGES:
+            self.tabs.group(group)
+            for name, label, subtitle in pages:
+                self.tabs.add(name, label, label, subtitle)
+        foot = self.tabs.foot
+        self.conn_pill = Pill(foot, "Searching...", WARN)
+        self.conn_pill.pack(fill="x", pady=(0, 8))
+        self.theme_var = tk.BooleanVar(value=self.cfg.get("appearance", "dark") == "light")
+        ctk.CTkSwitch(foot, text="Light theme", variable=self.theme_var, command=self._theme_toggled, font=ui.font(12)).pack(anchor="w", padx=4)
         self._build_device_tab(self.tabs.tab("Device"))     # first: creates log_box
         self._build_virtual(self.tabs.tab("Virtual Pad"))
         self._build_dashboard(self.tabs.tab("Dashboard"))
         self._build_macro(self.tabs.tab("Macro Creator"))
         self._build_gif(self.tabs.tab("GIF Upload"))
         self.devtab = DevTab(self, self.tabs.tab("Dev"))
-        self.dev.on_line, self.dev.on_event = self.devtab.log, self.devtab.on_event
+        self.dev.on_line, self.dev.on_event = self.devtab.log, self._on_pad_event
         self.refresh_ports()
+        self._restyle_plain_widgets()
+
+    def _page_changed(self, name):
+        pass
+
+    def _theme_toggled(self):
+        mode = "light" if self.theme_var.get() else "dark"
+        self.cfg["appearance"] = mode
+        save_config(self.cfg)
+        ctk.set_appearance_mode(mode)
+        self._restyle_plain_widgets()
+
+    def _restyle_plain_widgets(self):
+        """Widgets that are not customtkinter's (Treeview, Listbox, Canvas) do not follow the theme by themselves."""
+        d = ctk.get_appearance_mode() == "Dark"
+        style = ttk.Style(self)
+        bg, fg = ("#121215", "#f4f4f6") if d else ("#ffffff", "#0b0b0d")
+        style.configure("Pad.Treeview", background=bg, fieldbackground=bg, foreground=fg)
+        style.map("Pad.Treeview", background=[("selected", "#0e7490")], foreground=[("selected", "#ffffff")])
+        if hasattr(self, "seq_list"):
+            self.seq_list.configure(bg="#1a1a1f" if d else "#f0f0f3", fg=fg, selectbackground="#0e7490")
 
     def _title(self, parent, text, row=0):
-        ctk.CTkLabel(parent, text=text, font=ctk.CTkFont(size=15, weight="bold")).grid(
-            row=row, column=0, columnspan=6, sticky="w", padx=12, pady=(10, 4))
+        ui.heading(parent, text).grid(row=row, column=0, columnspan=6, sticky="w", padx=14, pady=(12, 4))
 
     # ---- virtual pad tab
     def _build_virtual(self, tab):
@@ -3477,7 +3725,7 @@ class App(ctk.CTk):
         # -- action library: drag from here onto the pad
         ctk.CTkLabel(left, text="Action library", font=bold).pack(anchor="w", padx=12, pady=(10, 2))
         ctk.CTkLabel(left, text="Drag an action onto a key or an encoder arrow. Double-click for a menu.",
-                     text_color="#9aa0a6", wraplength=240, justify="left").pack(anchor="w", padx=12)
+                     text_color=MUTED, wraplength=240, justify="left").pack(anchor="w", padx=12)
         self.search_entry = ctk.CTkEntry(left, placeholder_text="Search actions...")
         self.search_entry.pack(fill="x", padx=12, pady=8)
         self.search_entry.bind("<KeyRelease>", lambda e: self.refresh_library())
@@ -3503,6 +3751,16 @@ class App(ctk.CTk):
         self.tree.bind("<ButtonRelease-1>", self._tree_release)
         self.tree.bind("<Double-1>", self._tree_double)
 
+        # -- layer selector
+        lbar = ctk.CTkFrame(center, fg_color="transparent")
+        lbar.pack(pady=(0, 6))
+        self.layer_seg = ctk.CTkSegmentedButton(lbar, values=["Layer 1", "Layer 2", "Layer 3"], command=self._layer_seg, width=250)
+        self.layer_seg.set("Layer 1")
+        self.layer_seg.pack(side="left")
+        self.pad_layer_pill = Pill(lbar, "pad layer: ?", FAINT)
+        self.pad_layer_pill.pack(side="left", padx=10)
+        ui.secondary_button(lbar, "Show on pad", self.show_layer_on_pad, width=100).pack(side="left")
+
         # -- the virtual device
         self.padview = PadView(center, self)
         self.padview.c.pack(padx=6)
@@ -3514,7 +3772,7 @@ class App(ctk.CTk):
         self.autoup_var = tk.BooleanVar(value=False)
         ctk.CTkSwitch(right, text="Upload every change immediately", variable=self.autoup_var).pack(anchor="w", padx=12, pady=2)
         ctk.CTkLabel(right, text="Orange dots on the pad mark changes the physical device does not have yet.",
-                     text_color="#9aa0a6", wraplength=280, justify="left").pack(anchor="w", padx=12)
+                     text_color=MUTED, wraplength=280, justify="left").pack(anchor="w", padx=12)
         ctk.CTkButton(right, text="Reset all keys to defaults", fg_color="#555", command=self.reset_defaults).pack(
             fill="x", padx=12, pady=(6, 2))
 
@@ -3536,11 +3794,11 @@ class App(ctk.CTk):
         self.top_var = tk.BooleanVar(value=False)
         ctk.CTkSwitch(right, text="Keep this window on top", variable=self.top_var,
                       command=lambda: self.attributes("-topmost", self.top_var.get())).pack(anchor="w", padx=12, pady=2)
-        ctk.CTkLabel(right, text="Sandbox: click inside, then press virtual keys", text_color="#9aa0a6").pack(
+        ctk.CTkLabel(right, text="Sandbox: click inside, then press virtual keys", text_color=MUTED).pack(
             anchor="w", padx=12, pady=(6, 0))
         self.sandbox = ctk.CTkTextbox(right, height=64)
         self.sandbox.pack(fill="x", padx=12, pady=(2, 4))
-        ctk.CTkLabel(right, text="Test log", text_color="#9aa0a6").pack(anchor="w", padx=12)
+        ctk.CTkLabel(right, text="Test log", text_color=MUTED).pack(anchor="w", padx=12)
         self.vp_log_box = ctk.CTkTextbox(right, height=96, state="disabled")
         self.vp_log_box.pack(fill="x", padx=12, pady=(0, 4))
 
@@ -3642,22 +3900,31 @@ class App(ctk.CTk):
         if self.autoup_var.get() and self.dev.connected:
             self.upload_slots(list(slots))
 
+    def _layers_supported(self):
+        return int(self.dev.info.get("layers", 1) or 1) >= LAYERS if self.dev.connected else True
+
+    def _pending_for(self, layer):
+        lm, pushed = self.cfg["layers"][layer], self.cfg["pushed_layers"][layer]
+        out = set()
+        for sl in range(1, 8):
+            m = lm[str(sl)]
+            if spec_json(resolve_spec(self.cfg, m["cat"], m["action"])) != pushed.get(str(sl)):
+                out.add(sl)
+        return out
+
     def recompute_pending(self):
-        slots = set()
-        for s in range(1, 8):
-            m = self.cfg["map"][str(s)]
-            if spec_json(resolve_spec(self.cfg, m["cat"], m["action"])) != self.cfg["pushed"].get(str(s)):
-                slots.add(s)
-        self.pending_slots = slots
+        self.pending_by_layer = [self._pending_for(n) for n in range(LAYERS)]
+        self.pending_slots = self.pending_by_layer[self.edit_layer]
         extra = int(self.cfg.get("pushed_mode") != self.pad.mode) + int(self.cfg.get("pushed_bright") != self.pad.brightness)
-        n = len(slots) + extra
+        n = sum(len(x) for x in self.pending_by_layer) + extra
         if hasattr(self, "upload_btn2"):
             self.upload_btn2.configure(text="Upload to pad" if not n else f"Upload to pad  ({n} unsent)",
-                                       fg_color="#d9822b" if n else "#1f6aa5")
+                                       fg_color=ui.WARN_FILL if n else ui.ACCENT_FILL)
             self.padview.refresh_pending()
 
-    def _mark_pushed(self, slot, j):
-        self.cfg["pushed"][str(slot)] = j
+    def _mark_pushed(self, slot, j, layer=None):
+        layer = self.edit_layer if layer is None else layer
+        self.cfg["pushed_layers"][layer][str(slot)] = j
         save_config(self.cfg)
         self.recompute_pending()
 
@@ -3666,12 +3933,21 @@ class App(ctk.CTk):
         save_config(self.cfg)
         self.recompute_pending()
 
-    def upload_slots(self, slots):
+    def _remap_msg(self, layer, slot, spec):
+        msg = {"cmd": "remap", "key": slot, "type": spec[0], "val": spec[1]}
+        if layer:
+            msg["layer"] = layer
+        return msg
+
+    def upload_slots(self, slots, layer=None):
         if not self.dev.connected:
             return
+        layer = self.edit_layer if layer is None else layer
+        if layer and not self._layers_supported():
+            return self.set_status("This pad's firmware has no layers - update it (Device tab -> Firmware)", error=True)
         jobs = []
         for s in slots:
-            m = self.cfg["map"][str(s)]
+            m = self.cfg["layers"][layer][str(s)]
             spec = resolve_spec(self.cfg, m["cat"], m["action"])
             if spec:
                 jobs.append((s, spec))
@@ -3680,32 +3956,36 @@ class App(ctk.CTk):
         def work():
             self.dev.request({"cmd": "os", "val": osv})
             for s, spec in jobs:
-                self.dev.request({"cmd": "remap", "key": s, "type": spec[0], "val": spec[1]})
-                self.post(lambda s=s, j=spec_json(spec): self._mark_pushed(s, j))
-        self.bg(work, lambda _: self.set_status("Sent to pad: " + ", ".join(SLOT_LABELS[x[0]] for x in jobs)),
+                self.dev.request(self._remap_msg(layer, s, spec))
+                self.post(lambda s=s, j=spec_json(spec): self._mark_pushed(s, j, layer))
+        self.bg(work, lambda _: self.set_status(("Layer %d: " % (layer + 1) if layer else "Sent to pad: ") + ", ".join(SLOT_LABELS[x[0]] for x in jobs)),
                 "Upload failed")
 
     def _verify_keys_sync(self):
         """Compare what the pad stored (getkeys: length + CRC of each slot's JSON) with what the app believes it uploaded.
         Returns a list of problems, or None when the firmware is too old to answer."""
-        try:
-            r = self.dev.request({"cmd": "getkeys"}, timeout=4)
-        except DeviceError:
-            return None
-        bad = []
-        for slot in r.get("slots", []):
-            s = slot["s"]
-            m = self.cfg["map"][str(s)]
-            spec = resolve_spec(self.cfg, m["cat"], m["action"])
-            if slot["def"]:
-                if (m["cat"], m["action"]) != DEFAULT_MAP[s]:
-                    bad.append(f"{SLOT_LABELS[s]}: still factory default on the pad")
-                continue
-            if not spec:
-                continue
-            j = compact_json({"type": spec[0], "val": spec[1]}).encode("utf-8")
-            if slot["len"] != len(j) or slot["crc"] != (zlib.crc32(j) & 0xFFFFFFFF):
-                bad.append(f"{SLOT_LABELS[s]}: pad has different data than the app sent")
+        bad, layers = [], range(LAYERS)
+        for lay in layers:
+            try:
+                r = self.dev.request({"cmd": "getkeys", **({"layer": lay} if lay else {})}, timeout=4)
+            except DeviceError:
+                return None if lay == 0 else bad
+            if lay and "layers" not in r:                       # firmware without layers: nothing more to compare
+                break
+            tag = f"L{lay + 1} " if lay else ""
+            for slot in r.get("slots", []):
+                s = slot["s"]
+                m = self.cfg["layers"][lay][str(s)]
+                spec = resolve_spec(self.cfg, m["cat"], m["action"])
+                if slot["def"]:
+                    if (m["cat"], m["action"]) != DEFAULT_LAYER_MAPS[lay][s]:
+                        bad.append(f"{tag}{SLOT_LABELS[s]}: still factory default on the pad")
+                    continue
+                if not spec:
+                    continue
+                j = compact_json({"type": spec[0], "val": spec[1]}).encode("utf-8")
+                if slot["len"] != len(j) or slot["crc"] != (zlib.crc32(j) & 0xFFFFFFFF):
+                    bad.append(f"{tag}{SLOT_LABELS[s]}: pad has different data than the app sent")
         return bad
 
     def verify_pad_keys(self):
@@ -3726,12 +4006,14 @@ class App(ctk.CTk):
     def upload_all(self):
         if not self.dev.connected:
             return self.set_status("Connect the pad first (Device tab / USB cable)", error=True)
+        layers = range(LAYERS) if self._layers_supported() else range(1)
         jobs = []
-        for s in range(1, 8):
-            m = self.cfg["map"][str(s)]
-            spec = resolve_spec(self.cfg, m["cat"], m["action"])
-            if spec:
-                jobs.append((s, spec))
+        for lay in layers:
+            for sl in range(1, 8):
+                m = self.cfg["layers"][lay][str(sl)]
+                spec = resolve_spec(self.cfg, m["cat"], m["action"])
+                if spec:
+                    jobs.append((lay, sl, spec))
         mode, bright, osv = self.pad.mode, self.pad.brightness, self.cfg["os"]
         self.upload_btn2.configure(state="disabled")
 
@@ -3739,9 +4021,9 @@ class App(ctk.CTk):
             self.dev.request({"cmd": "os", "val": osv})
             self.dev.request(time_msg())
             self._push_layout()
-            for s, spec in jobs:
-                self.dev.request({"cmd": "remap", "key": s, "type": spec[0], "val": spec[1]})
-                self.post(lambda s=s, j=spec_json(spec): self._mark_pushed(s, j))
+            for lay, sl, spec in jobs:
+                self.dev.request(self._remap_msg(lay, sl, spec))
+                self.post(lambda lay=lay, sl=sl, j=spec_json(spec): self._mark_pushed(sl, j, lay))
             self.dev.request({"cmd": "brightness", "val": bright})
             self.dev.request({"cmd": "mode", "val": mode})
             self.post(lambda: self._mark_display_pushed(mode, bright))
@@ -3749,10 +4031,11 @@ class App(ctk.CTk):
 
         def done(bad):
             self.upload_btn2.configure(state="normal")
+            n = len(set(j[0] for j in jobs))
             if bad:
                 self.set_status("Uploaded, but the read-back check found problems: " + "; ".join(bad), error=True)
             else:
-                self.set_status("Uploaded to the pad: all 7 key slots, brightness and mode" +
+                self.set_status(f"Uploaded to the pad: {n} layer{'s' if n > 1 else ''} x 7 key slots, brightness and mode" +
                                 ("" if bad is None else " (read back and verified)"))
             self.vp_log("uploaded everything to the physical pad")
         self.bg(work, done, "Upload failed", fail=lambda: self.upload_btn2.configure(state="normal"))
@@ -3764,6 +4047,9 @@ class App(ctk.CTk):
             if hasattr(self, "vp_mode_var"):
                 self.vp_mode_var.set(v)
             self.cfg["twin_mode"] = self.pad.mode
+        elif kind == "layer":
+            self.set_edit_layer(self.pad.layer)
+            return
         elif kind == "bright":
             self.bright.set(self.pad.brightness)
             if hasattr(self, "vp_bright"):
@@ -3800,15 +4086,15 @@ class App(ctk.CTk):
     def _update_live_hint(self):
         if not self.host.available:
             txt, col = "Live test is not available here: " + (self.host.error or "no key injection backend") + \
-                       ("  (pip install pynput)" if platform.system() != "Windows" else ""), "#ff6b6b"
+                       ("  (pip install pynput)" if platform.system() != "Windows" else ""), ERR
         elif self.live_var.get():
             txt = ("LIVE: virtual keys press real keys on this PC. They go to the last program you used - focus is handed "
                    "back automatically. Click into the sandbox to test inside this app."
                    if self.focus else
                    "LIVE: virtual keys press real keys on the window that has the focus. Use the delay below or the sandbox.")
-            col = "#4cd97b"
+            col = OK
         else:
-            txt, col = "DRY RUN: only the virtual screen reacts. Switch on to press real keys on this PC.", "#ffb454"
+            txt, col = "DRY RUN: only the virtual screen reacts. Switch on to press real keys on this PC.", WARN
         self.vp_hint.configure(text=txt, text_color=col)
 
     def run_spec(self, spec, name, desc, label=""):
@@ -3873,7 +4159,10 @@ class App(ctk.CTk):
                     target = self.focus.refocus()
                     if not target:
                         raise RuntimeError("no other program to send to - switch to one first, or click into the sandbox")
-                self.host.run(spec, self.host_stop)
+                if spec[0] == "host":                          # opening a URL / starting a program needs no key injection
+                    self._host_cb(spec[1])
+                else:
+                    self.host.run(spec, self.host_stop)
             except Exception as e:
                 self.post(lambda e=e, n=name: self.vp_log(f"!! {n} failed: {e}"))
             else:
@@ -3942,11 +4231,11 @@ class App(ctk.CTk):
         self.sim_btn = ctk.CTkButton(box, text="Simulate pad (no hardware)", width=200, fg_color="#555",
                                      command=self.toggle_simulate)
         self.sim_btn.grid(row=1, column=4, padx=(4, 12))
-        self.conn_lbl = ctk.CTkLabel(box, text="Not connected", text_color="#ffb454")
+        self.conn_lbl = ctk.CTkLabel(box, text="Not connected", text_color=WARN)
         self.conn_lbl.grid(row=2, column=0, columnspan=6, sticky="w", padx=12, pady=(2, 10))
         ctk.CTkLabel(box, text="No pad handy? 'Simulate' connects the app to an in-process stand-in that speaks the "
                      "same protocol, so you can try remapping, macros and GIF upload end-to-end without hardware.",
-                     text_color="#9aa0a6", wraplength=900, justify="left").grid(
+                     text_color=MUTED, wraplength=900, justify="left").grid(
             row=3, column=0, columnspan=6, sticky="w", padx=12, pady=(0, 8))
 
         met = ctk.CTkFrame(tab)
@@ -4014,20 +4303,95 @@ class App(ctk.CTk):
         self.upload_all()
 
     def reset_defaults(self):
-        self.cfg["map"] = {str(s): {"cat": c, "action": n} for s, (c, n) in DEFAULT_MAP.items()}
+        lay = self.edit_layer
+        lm = self.cfg["layers"][lay]
+        lm.clear()
+        lm.update({str(sl): {"cat": c, "action": n} for sl, (c, n) in DEFAULT_LAYER_MAPS[lay].items()})
         save_config(self.cfg)
         self.refresh_action_lists()
         self.padview.refresh()
         self.recompute_pending()
-        if self.dev.connected:
+        if self.dev.connected and (lay == 0 or self._layers_supported()):
             def done(_):
-                for s in range(1, 8):
-                    m = self.cfg["map"][str(s)]
-                    self._mark_pushed(s, spec_json(resolve_spec(self.cfg, m["cat"], m["action"])))
-                self.set_status("Pad key mappings reset to factory defaults")
-            self.bg(lambda: self.dev.request({"cmd": "reset_keys"}), done, "Reset failed")
+                for sl in range(1, 8):
+                    m = lm[str(sl)]
+                    self._mark_pushed(sl, spec_json(resolve_spec(self.cfg, m["cat"], m["action"])), lay)
+                self.set_status(f"Layer {lay + 1} on the pad reset to factory defaults")
+            self.bg(lambda: self.dev.request({"cmd": "reset_keys", **({"layer": lay} if self._layers_supported() else {})}), done, "Reset failed")
         else:
-            self.set_status("Keys reset in the app - they reach the pad with the next upload")
+            self.set_status(f"Layer {lay + 1} reset in the app - it reaches the pad with the next upload")
+
+    # ---- layers: which one the editor shows, which one the physical pad is on
+    def set_edit_layer(self, n):
+        if not 0 <= n < LAYERS:
+            return
+        self.edit_layer = n
+        self.cfg["edit_layer"] = n
+        self.cfg["map"], self.cfg["pushed"] = self.cfg["layers"][n], self.cfg["pushed_layers"][n]       # the editors work on cfg["map"]
+        if self.pad.layer != n:
+            self.pad.set_layer(n, notify=False)
+        if hasattr(self, "layer_seg"):
+            self.layer_seg.set(f"Layer {n + 1}")
+            self.refresh_action_lists()
+            self.padview.refresh()
+            self.recompute_pending()
+
+    def _layer_seg(self, label):
+        self.set_edit_layer(int(label.split()[-1]) - 1)
+
+    def show_layer_on_pad(self):
+        if not self.dev.connected:
+            return self.set_status("Not connected", error=True)
+        self.bg(lambda: self.dev.request({"cmd": "layer", "val": self.edit_layer}), None, "Layer switch failed")
+
+    def _pad_layer_changed(self, n):
+        self.pad_layer = n
+        if hasattr(self, "pad_layer_pill"):
+            self.pad_layer_pill.set(f"pad is on layer {n + 1}", (ACCENT, PINK, WARN)[n % 3])
+
+    # ---- events coming from the pad (reader thread): layer changes, host actions, usage counters
+    def _on_pad_event(self, m):
+        self.devtab.on_event(m)
+        evt = m.get("evt")
+        if evt == "layer" and isinstance(m.get("n"), int):
+            self.post(lambda n=m["n"]: self._pad_layer_changed(n))
+        elif evt == "host":
+            self.host_q.put((("host", {"op": m.get("op"), "arg": m.get("arg", "")}), "pad action", f"{m.get('op')}", False))
+        elif evt == "key" and m.get("v") == 1 and 1 <= m.get("k", 0) <= 5:
+            self.post(lambda k=m["k"]: self._count_use(f"K{k}"))
+        elif evt == "enc" and m.get("d"):
+            self.post(lambda d=m["d"]: self._count_use("dial+" if d > 0 else "dial-"))
+
+    def _count_use(self, key):
+        u = self.cfg["usage"]
+        u[key] = int(u.get(key, 0)) + 1
+        self._usage_dirty = True
+
+    # ---- host actions (open URL / app / command / type clipboard) - only ones that are part of YOUR configuration
+    def _allowed_host(self):
+        return hostactions.collect_allowed(self.cfg["layers"], self.cfg["custom"], lambda c, a: resolve_spec(self.host_cfg(), c, a))
+
+    def _host_cb(self, spec):
+        ok, msg = self.hostact.run(spec.get("op"), spec.get("arg", ""))
+        if not ok:
+            raise RuntimeError(msg)
+
+    def _type_clipboard(self):
+        ev, box = threading.Event(), {}
+
+        def grab():
+            try:
+                box["t"] = self.clipboard_get()
+            except tk.TclError:
+                box["t"] = ""
+            ev.set()
+        self.post(grab)
+        ev.wait(2.0)
+        txt = (box.get("t") or "")[:2000]
+        if txt:
+            if self.host.impl is None:
+                raise RuntimeError("typing needs the key sender (pip install pynput)")
+            self.host.impl.text(txt)
 
     def refresh_ports(self):
         self.port_map = {f"{p.device} - {p.description}": p.device for p in list_ports.comports()}
@@ -4069,7 +4433,7 @@ class App(ctk.CTk):
         simulated = self.dev.port == SIM_PORT
         label = "Simulated pad (no hardware)" if simulated else self.dev.port
         self.conn_lbl.configure(text=f"Connected on {label} - firmware {info.get('fw', '?')}, "
-                                     f"free flash {info.get('fs_free', 0) // 1024} KB", text_color="#4cd97b")
+                                     f"free flash {info.get('fs_free', 0) // 1024} KB", text_color=OK)
         self.conn_btn.configure(text="Disconnect")
         self.sim_btn.configure(text="Stop simulating" if simulated else "Simulate pad (no hardware)")
         self.set_status("Simulated pad connected - try remapping keys, macros or a GIF upload" if simulated
@@ -4096,7 +4460,7 @@ class App(ctk.CTk):
         self.bg(work, None, "Initial sync failed")
 
     def _on_disconnected(self):
-        self.conn_lbl.configure(text="Not connected", text_color="#ffb454")
+        self.conn_lbl.configure(text="Not connected", text_color=WARN)
         self.conn_btn.configure(text="Connect")
         self.sim_btn.configure(text="Simulate pad (no hardware)")
         self.set_status("Pad disconnected - waiting for it to reappear" if self.auto_flag else "Disconnected")
@@ -4122,7 +4486,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(top, text="Target:").pack(side="left", padx=(12, 6), pady=10)
         self.target_var = tk.StringVar(value=SLOT_LABELS[1])
         ctk.CTkOptionMenu(top, values=list(SLOT_LABELS.values()), variable=self.target_var, width=180).pack(side="left")
-        ctk.CTkLabel(top, text="Text is typed as US-layout ASCII (see README).", text_color="#9aa0a6").pack(side="left", padx=14)
+        ctk.CTkLabel(top, text="Text is typed as US-layout ASCII (see README).", text_color=MUTED).pack(side="left", padx=14)
 
         cb = ctk.CTkFrame(tab)
         cb.pack(fill="x", padx=6, pady=4)
@@ -4311,7 +4675,7 @@ class App(ctk.CTk):
         self.gif_canvas.create_oval(0, 0, LCD - 1, LCD - 1, outline="#3b82f6", width=2)
         self._pv_item = self.gif_canvas.create_image(0, 0, anchor="nw")
         self.gif_canvas.tag_lower(self._pv_item)
-        ctk.CTkLabel(left, text="Round display preview", text_color="#9aa0a6").pack(pady=(0, 10))
+        ctk.CTkLabel(left, text="Round display preview", text_color=MUTED).pack(pady=(0, 10))
 
         right = ctk.CTkFrame(tab, fg_color="transparent")
         right.pack(side="left", fill="both", expand=True, padx=6, pady=6)
@@ -4366,7 +4730,7 @@ class App(ctk.CTk):
             cimg = ctk.CTkImage(light_image=pil, dark_image=pil, size=(self.GIF_TILE, self.GIF_TILE))
             self._gif_thumbs.append(cimg)
         b = ctk.CTkButton(parent, text=(label or "")[:14], image=cimg, compound="top", width=100, height=92,
-                          fg_color="#2b2f36", hover_color="#3a3f48", command=command)
+                          fg_color=CARD2, hover_color=CARD3, text_color=TEXT, command=command)
         b.grid(row=idx // self.GIF_COLS, column=idx % self.GIF_COLS, padx=4, pady=4)
         if popup:
             for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
@@ -4387,7 +4751,7 @@ class App(ctk.CTk):
     # -- Built-in
     def _build_gif_builtin(self, f):
         ctk.CTkLabel(f, text="Generated animations - nothing to download. Click one to preview it; then 'Upload to pad'.",
-                     text_color="#9aa0a6", anchor="w").grid(row=0, column=0, sticky="w", padx=8, pady=(6, 0))
+                     text_color=MUTED, anchor="w").grid(row=0, column=0, sticky="w", padx=8, pady=(6, 0))
         sc = ctk.CTkScrollableFrame(f)
         sc.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
         f.grid_rowconfigure(1, weight=1)
@@ -4400,7 +4764,7 @@ class App(ctk.CTk):
         bar.grid(row=0, column=0, sticky="ew", padx=4, pady=(6, 0))
         ctk.CTkButton(bar, text="Add GIF...", width=100, command=self.add_my_gif).pack(side="left", padx=4)
         ctk.CTkButton(bar, text="Open folder", width=100, fg_color="#555", command=self.open_gif_folder).pack(side="left", padx=4)
-        self.mine_info = ctk.CTkLabel(bar, text="", text_color="#9aa0a6", anchor="w")
+        self.mine_info = ctk.CTkLabel(bar, text="", text_color=MUTED, anchor="w")
         self.mine_info.pack(side="left", padx=10)
         self.mine_sc = ctk.CTkScrollableFrame(f)
         self.mine_sc.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
@@ -4417,7 +4781,7 @@ class App(ctk.CTk):
         self.mine_info.configure(text=f"{len(paths)} GIF(s) in {gif_lib_dir()}  -  right-click a tile to delete it")
         if not paths:
             ctk.CTkLabel(self.mine_sc, text="Empty. Use 'Add GIF...', 'Select GIF file...' or save something from Online.",
-                         text_color="#9aa0a6").grid(row=0, column=0, padx=10, pady=20)
+                         text_color=MUTED).grid(row=0, column=0, padx=10, pady=20)
             return
 
         def work():
@@ -4502,14 +4866,14 @@ class App(ctk.CTk):
         self.on_query.bind("<Return>", lambda _e: self.online_run(self.on_query.get()))
         ctk.CTkButton(row2, text="Search", width=80, command=lambda: self.online_run(self.on_query.get())).pack(side="left", padx=4)
         ctk.CTkButton(row2, text="Trending", width=80, fg_color="#555", command=lambda: self.online_run("")).pack(side="left", padx=4)
-        self.on_status = ctk.CTkLabel(row2, text="", text_color="#9aa0a6", anchor="w")
+        self.on_status = ctk.CTkLabel(row2, text="", text_color=MUTED, anchor="w")
         self.on_status.pack(side="left", padx=10)
         self.on_sc = ctk.CTkScrollableFrame(f)
         self.on_sc.grid(row=2, column=0, sticky="nsew", padx=4, pady=4)
         f.grid_rowconfigure(2, weight=1)
         ctk.CTkLabel(self.on_sc, text="Paste a free Tenor or GIPHY API key above (needed once - it is stored in your config file),\n"
                      "then search. This is how you get the WhatsApp / GIPHY style GIFs without any file hunting.",
-                     text_color="#9aa0a6", justify="left").grid(row=0, column=0, padx=10, pady=20)
+                     text_color=MUTED, justify="left").grid(row=0, column=0, padx=10, pady=20)
 
     def _online_provider_changed(self, prov):
         self.on_key.delete(0, "end")
@@ -4527,11 +4891,11 @@ class App(ctk.CTk):
         save_config(self.cfg)
         self._on_gen += 1
         gen = self._on_gen
-        self.on_status.configure(text="searching...", text_color="#9aa0a6")
+        self.on_status.configure(text="searching...", text_color=MUTED)
 
         def fail():
             if gen == self._on_gen:
-                self.on_status.configure(text="search failed - see the log below", text_color="#ff6b6b")
+                self.on_status.configure(text="search failed - see the log below", text_color=ERR)
         self.bg(lambda: online_search(prov, key, query), lambda res: self._online_show(res, gen, query),
                 "Online search failed", fail=fail)
 
@@ -4541,7 +4905,7 @@ class App(ctk.CTk):
         self._on_loaded = True
         for w in self.on_sc.winfo_children():
             w.destroy()
-        self.on_status.configure(text=f"{len(results)} result(s)" if results else "nothing found", text_color="#9aa0a6")
+        self.on_status.configure(text=f"{len(results)} result(s)" if results else "nothing found", text_color=MUTED)
         tiles = []
         for idx, r in enumerate(results):
             tiles.append(self._gif_tile(self.on_sc, idx, r["title"] or "GIF", None, lambda r=r: self.use_online(r)))
@@ -4701,7 +5065,7 @@ class App(ctk.CTk):
         ctk.CTkOptionMenu(box, values=["auto"] + LAYOUTS, variable=self.layout_var, width=180,
                           command=self._layout_changed).grid(row=6, column=1, padx=6, sticky="w")
         ctk.CTkLabel(box, text="The pad presses keys for this layout (QWERTZ swaps Z/Y). 'auto' follows this PC.",
-                     text_color="#9aa0a6").grid(row=7, column=1, padx=6, sticky="w")
+                     text_color=MUTED).grid(row=7, column=1, padx=6, sticky="w")
         ctk.CTkButton(box, text="Sync time now", command=lambda: self.bg(lambda: self.dev.request(time_msg()),
                       lambda _: self.set_status("Clock synchronised"), "Time sync failed")).grid(row=4, column=1, padx=6, pady=8, sticky="w")
 
