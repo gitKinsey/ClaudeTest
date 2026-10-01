@@ -264,9 +264,9 @@ persistence, a fuzz run and safe mode. See `tools/README.md`. The app's *Simulat
 App tests (run headless with `xvfb-run -a python3 tools/<name>.py`): `lib_test.py` (the `desk_lib` modules: OTA client against a fake
 device, backups incl. hostile zips, feeds, active-window rules, host-action safety, recorder), `app_selftest.py` (connection, Dev tab, key
 upload + read-back), `macro_test.py` (macro creator + the 50-action library + the "virtual key waits 200 s" regression), `giflib_test.py` (GIF
-library, GIF slots, PC-volume mirroring), `layers_test.py`, `profiles_test.py`, `info_test.py`, `features_test.py` (computer / mouse actions,
+library, GIF slots, PC-volume mirroring), `layers_test.py`, `profiles_test.py`, `info_test.py`, `compat_test.py` (the new app against a pad that still runs firmware 1.1), `features_test.py` (computer / mouse actions,
 recorder, firmware status, recovery, backup / restore, hardware-test and setup wizards, command palette). The same suites run on every push in
-`.github/workflows/ci.yml`, together with a firmware compile matrix and the QEMU suite (`tools/run_emulator_suite.sh`). `docs/FEATURES.md` maps every requirement to the code and the test that covers it,
+`.github/workflows/ci.yml`, together with a firmware compile matrix and the QEMU suite (`tools/run_emulator_suite.sh`); `tools/run_app_tests.sh` runs everything but the QEMU suite. `docs/FEATURES.md` maps every requirement to the code and the test that covers it,
 and lists what only real hardware can prove.
 
 ## Wiring (from the project spec)

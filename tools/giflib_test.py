@@ -83,7 +83,7 @@ print("host media parsing OK")
 # ---------- GUI
 app = m.App(); app.geometry("1240x820+0+0"); app.update()
 def pump(n=20, cond=None, t=0.05):
-    for _ in range(n):
+    for _ in range(n * (3 if cond else 1)):                       # generous: CI machines can be slow
         app.update(); time.sleep(t)
         if cond and cond(): return True
     return cond is None

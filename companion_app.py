@@ -827,12 +827,16 @@ def spec_ok(spec):
     return False
 
 
+LEGACY_CMDS = {"layer", "info_cards", "gif_list", "gif_cfg", "factory", "boot_opt", "safe_retry", "ota"}   # unknown to firmware 1.1
+
+
 class SimFirmware:
     """Implements the DeskCompanion wire protocol in pure Python, standing in for real hardware so the
     app's connect / remap / brightness / GIF-upload / Dev-tab code paths can be exercised with nothing plugged in."""
 
-    def __init__(self, emit):
+    def __init__(self, emit, legacy=None):
         self.emit = emit                      # callable(bytes) -> pushes firmware->app bytes
+        self.legacy = bool(os.environ.get("DESK_COMPANION_SIM_LEGACY")) if legacy is None else legacy   # behave like firmware 1.1.0 (single layer, 5 modes)
         self._buf = b""
         self.mode, self.bright, self.osv, self.layout = 1, 200, "win", "en_US"
         self.slots = {}                       # layer 0 (kept under this name: tests and tools read it)
@@ -919,7 +923,27 @@ class SimFirmware:
         def reply(obj):
             if isinstance(rid, int):
                 obj["id"] = rid
+            if self.legacy:
+                if obj.get("evt") in ("hello", "info"):
+                    for k in ("layer", "layers", "modes", "gifs", "gif_rot", "caps", "safe_why", "nodisp", "ota", "ip"):
+                        obj.pop(k, None)
+                    obj["fw"] = "1.1.0"
+                if obj.get("evt") == "keys":
+                    for k in ("layer", "cur", "layers"):
+                        obj.pop(k, None)
             self._send(obj)
+
+        if self.legacy:
+            if cmd in LEGACY_CMDS:
+                reply({"ok": False, "err": "unknown_cmd"})
+                return
+            if cmd == "mode" and not 1 <= int(msg.get("val", 1)) <= 5:
+                reply({"ok": True, "evt": "mode"})
+                return
+            if cmd in ("remap", "getkeys", "reset_keys"):
+                msg.pop("layer", None)              # the old firmware has one key table and ignores the field
+                if cmd == "getkeys":
+                    msg.pop("slot", None)
 
         if cmd == "stats":
             return                             # 1 Hz telemetry, no reply - matches the real firmware
@@ -1482,7 +1506,8 @@ class Device:
 
 # ============================================================================ virtual pad helpers
 CAT_COLORS = {"Editing": "#4aa3ff", "Media": "#ff5db1", "OS Controls": "#ffb03b", "Browser": "#4cd97b",
-              "Productivity & Dev": "#a98bff", "Custom": "#2dd4d4", "Other": "#6b7280"}
+              "Productivity & Dev": "#a98bff", "Custom": "#2dd4d4", "Other": "#6b7280",
+              "Layers & Pad": "#8b5cf6", "Mouse": "#f97316", "Navigation": "#22d3ee", "Computer": "#84cc16"}
 RISKY = {"Lock Workstation", "Close Window"}      # ask before really running these in live-test mode
 HOST_OS = {"Windows": "win", "Darwin": "mac"}.get(platform.system(), "linux")
 
@@ -5351,6 +5376,12 @@ class App(ctk.CTk):
         if not self.dev.connected:
             self.pad_gifs = {}
             return self._draw_pad_gifs({"slots": [], "cur": 0, "rot": 0, "max": 1})
+        if "gifslots" not in (self.dev.info.get("caps") or []):         # firmware 1.1: one GIF, no listing command
+            self.pad_gifs, self.pad_gif_free = {}, None
+            for w in self.pad_gif_box.winfo_children():
+                w.destroy()
+            return ui.muted(self.pad_gif_box, "This firmware has a single GIF slot. Update it (Device -> Firmware) for 4 slots and rotation.",
+                            wraplength=250).pack(anchor="w")
         self.bg(lambda: self.dev.request({"cmd": "gif_list"}), self._draw_pad_gifs, "Could not list the pad's GIFs")
 
     def _draw_pad_gifs(self, r):
@@ -5529,6 +5560,11 @@ class App(ctk.CTk):
             if not self.cfg.get("profiles_on") or not self.dev.connected or self.dev.busy:
                 if st["text"] != "profiles are off" and not self.cfg.get("profiles_on"):
                     st["text"] = "profiles are off"
+                    self.post(self._profile_label)
+                continue
+            if not self._layers_supported():
+                if st["text"] != "the pad's firmware has no layers - update it (Device -> Firmware)":
+                    st["text"] = "the pad's firmware has no layers - update it (Device -> Firmware)"
                     self.post(self._profile_label)
                 continue
             proc, title = self.active_win.get()

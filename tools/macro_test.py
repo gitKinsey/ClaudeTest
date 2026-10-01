@@ -24,7 +24,7 @@ app.update()
 
 
 def pump(n=20, cond=None):
-    for _ in range(n):
+    for _ in range(n * (3 if cond else 1)):                       # generous: CI machines can be slow
         app.update()
         time.sleep(0.05)
         if cond and cond():

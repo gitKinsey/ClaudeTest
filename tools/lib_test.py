@@ -183,6 +183,8 @@ class FakeDevice(threading.Thread):
             s.close()
         except Exception as e:                           # noqa: BLE001
             self.error = e
+        finally:
+            self.udp.close()
 
 image = tmp / "app.bin"; image.write_bytes(bytes(range(256)) * 40 + b"tail")
 for pw_dev, pw_cli, should in (("", "", True), ("hunter2", "hunter2", True), ("hunter2", "wrong", False), ("hunter2", "", False)):

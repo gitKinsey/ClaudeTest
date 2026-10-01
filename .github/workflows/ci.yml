@@ -20,17 +20,8 @@ jobs:
         run: |
           python3 -m venv .venv
           .venv/bin/pip install customtkinter pyserial psutil pillow pyflakes esptool
-      - name: Lint
-        run: .venv/bin/python -m pyflakes companion_app.py desk_lib tools firmware/flash.py
-      - name: Unit tests (no GUI)
-        run: .venv/bin/python -W error tools/lib_test.py
-      - name: GUI tests (headless)
-        run: |
-          for t in app_selftest macro_test giflib_test layers_test profiles_test info_test features_test; do
-            echo "::group::$t"
-            xvfb-run -a .venv/bin/python tools/$t.py
-            echo "::endgroup::"
-          done
+      - name: Lint, unit tests, headless GUI tests
+        run: PYTHON=.venv/bin/python tools/run_app_tests.sh
 
   firmware-compile:
     name: Firmware compiles (core ${{ matrix.core }})
