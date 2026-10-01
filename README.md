@@ -189,11 +189,21 @@ anything), only `http(s)` and `mailto` links open, and shell commands additional
 (off by default). While the guided hardware test runs, such actions are ignored. These actions need the app to be running; plain key and
 mouse actions work without it.
 
-### Wi-Fi update (experimental)
+### Wi-Fi: optional, OFF by default (the pad is a cable device)
 
-Device -> Firmware: save your Wi-Fi, set an OTA password, *Enable OTA*, wait ~30 s, *Update over Wi-Fi*. The firmware side is the standard
-`ArduinoOTA` and the app contains a small client for its protocol, **tested against a fake device only - not on real hardware**. Keep the USB
-way as the fallback. Build with `-DDC_HAS_OTA=0` to leave it out.
+The ESP32-S3 (and the ESP32-S3-Zero) does have Wi-Fi and Bluetooth LE, but everything in this project works over the USB cable, and the pad keeps
+its clock through the app. The two Wi-Fi extras - **NTP time sync** and the **Wi-Fi firmware update (OTA)** - therefore sit behind one switch at the
+top of `DeskCompanion.ino`:
+
+```cpp
+#define DC_ENABLE_WIFI 0     // 0 = no Wi-Fi code at all (default)    1 = include NTP time sync + Wi-Fi OTA
+```
+
+(or build with `-DDC_ENABLE_WIFI=1`; `-DDC_HAS_OTA=0` keeps time sync but drops the update). With 0 the firmware contains no Wi-Fi code, the
+`wifi` / `ota` commands answer `wifi_disabled`, `hello` does not list the `wifi` capability, and the app greys out those settings with an
+explanation. Bluetooth is not used at all. With 1: Device -> Firmware: save your Wi-Fi, set an OTA password, *Enable OTA*, wait ~30 s,
+*Update over Wi-Fi*. The firmware side is the standard `ArduinoOTA` and the app contains a small client for its protocol, **tested against a fake
+device only - not on real hardware**; keep the USB way as the fallback.
 
 ### Installers
 
@@ -251,7 +261,7 @@ replies). Replies have `"ok": true|false` (`"err"` on failure). Messages **witho
 | spec types `layer`, `mouse`, `host` | `{"type":"layer","val":"next"}`, `{"type":"mouse","val":{"btn":"left","act":"click"}}` / `{"wheel":3}` / `{"move":[dx,dy]}`, `{"type":"host","val":{"op":"url\|app\|shell\|file\|clipboard\|notify","arg":"..."}}`; `host` makes the pad send `{"evt":"host","op":...,"arg":...}` to the app |
 | `info_cards` (`cards`, `badges`, `rot`) | content of the Info screen (mode 6) |
 | `factory` (`what`: keys / settings / gifs, `confirm`: true), `boot_opt` (`nodisp`), `safe_retry` | recovery from safe mode / bad settings |
-| `ota` (`val`, `pass`) | opt-in Wi-Fi OTA |
+| `wifi` (`ssid`, `pass`) / `ota` (`val`, `pass`) | only in a build with `DC_ENABLE_WIFI 1`; otherwise `wifi_disabled` |
 
 Error codes include `json`, `unknown_cmd`, `key`, `spec`, `too_long`, `nvs_full`, `pin`, `pin_protected`, `no_display`,
 `no_hid`, `no_space`, `crc`, `seq`, `b64`.

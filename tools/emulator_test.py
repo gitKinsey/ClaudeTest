@@ -443,7 +443,7 @@ def t_selftest_misc(c):
         shots.append(list(rgb565be_to_image(snapshot(e)).getdata()))
     expect(shots[0] != shots[1], "system screen did not change with the telemetry values")
     e.request({"cmd": "mode", "val": 1})
-    expect(e.request({"cmd": "wifi", "ssid": "", "pass": ""})["ok"], "wifi clear")
+    expect(e.request({"cmd": "wifi", "ssid": "", "pass": ""}).get("err") == "wifi_disabled", "wifi clear is refused by the cable-only build")
     expect(e.request({"cmd": "os", "val": "linux"})["ok"], "os")
     r = e.request({"cmd": "layout", "val": "en_US"})
     expect(r.get("ok") or r.get("err") == "layout_unsupported_core", f"layout en_US: {r}")
@@ -528,6 +528,7 @@ def t_layers(c):
     expect(h["layers"] == 3 and h["layer"] == 0 and h["modes"] == 6, f"hello layers/modes: {h}")
     for cap in ("layers", "mouse", "host", "info", "gifslots", "factory"):
         expect(cap in h["caps"], f"capability {cap} missing: {h['caps']}")
+    expect("wifi" not in h["caps"] and "ota" not in h["caps"], f"the default build is cable-only: {h['caps']}")
     # layers are separate key tables; layer 0 keeps the old NVS names
     expect(e.request({"cmd": "remap", "key": 1, "layer": 1, "type": "text", "val": "L2K1"})["ok"], "remap layer 2")
     expect(e.request({"cmd": "remap", "key": 1, "layer": 2, "type": "text", "val": "L3K1"})["ok"], "remap layer 3")
@@ -714,7 +715,8 @@ def t_recovery(c):
     expect(e.request({"cmd": "boot_opt", "nodisp": False})["nodisp"] is False, "nodisp off again")
     expect(e.request({"cmd": "safe_retry", "reboot": False})["ok"], "safe_retry")
     expect(e.request({"cmd": "info"})["crashes"] == 0, "crash counter cleared")
-    expect(e.request({"cmd": "ota", "val": True})["err"] in ("no_wifi", "ota_unsupported"), "OTA needs Wi-Fi credentials first")
+    expect(e.request({"cmd": "ota", "val": True})["err"] in ("wifi_disabled", "no_wifi"), "OTA is off in the default (cable-only) build")
+    expect(e.request({"cmd": "wifi", "ssid": "x", "pass": "y"}).get("err") == "wifi_disabled", "wifi command refused in the default build")
     expect(e.request({"cmd": "info"})["ip"] == "", "no IP without Wi-Fi")
     e.request({"cmd": "brightness", "val": 200})
 

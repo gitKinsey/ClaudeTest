@@ -26,13 +26,22 @@
 #define DC_RGB_PIN 21
 #endif
 
+// ---------------------------------------------------------------------------------------------
+//  WI-FI SWITCH.  The pad is a cable device: everything works over USB. The ESP32-S3 does have Wi-Fi (and BLE), so two
+//  OPTIONAL extras exist - NTP time sync and a Wi-Fi firmware update (OTA) - but they are compiled OUT by default.
+//     0 = no Wi-Fi code at all (smaller, nothing can connect to a network)      1 = include them
+//  Change it here, or build with -DDC_ENABLE_WIFI=1.  The app greys out its Wi-Fi settings when the pad reports no "wifi" capability.
+#ifndef DC_ENABLE_WIFI
+#define DC_ENABLE_WIFI 0
+#endif
+// ---------------------------------------------------------------------------------------------
 #if defined(DC_SIM)
   #define DC_HAS_HID 0
   #define DC_HAS_TFT 0
-  #define DC_HAS_OTA 0
+  #define DC_HAS_OTA 0                 // the emulator has no network
 #else
-  #ifndef DC_HAS_OTA
-  #define DC_HAS_OTA 1                 // -DDC_HAS_OTA=0 removes opt-in Wi-Fi OTA (saves ~60 KB flash)
+  #if DC_ENABLE_WIFI && !defined(DC_HAS_OTA)
+  #define DC_HAS_OTA 1                 // -DDC_HAS_OTA=0 keeps Wi-Fi time sync but removes the Wi-Fi update (saves ~60 KB flash)
   #endif
   #define DC_HAS_TFT 1
   #if !defined(ARDUINO_USB_CDC_ON_BOOT) || !ARDUINO_USB_CDC_ON_BOOT
@@ -46,6 +55,9 @@
   #endif
 #endif
 
+#ifndef DC_HAS_OTA
+#define DC_HAS_OTA 0
+#endif
 #include <Arduino.h>
 #include <vector>
 #include <time.h>
@@ -60,12 +72,14 @@
 #include <AnimatedGIF.h>
 #include <Preferences.h>
 #include <LittleFS.h>
+#if DC_ENABLE_WIFI
 #include <WiFi.h>
+#include "esp_sntp.h"
+#endif
 #if DC_HAS_OTA
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
 #endif
-#include "esp_sntp.h"
 #include "esp_system.h"
 #include "esp_attr.h"
 #include "driver/gpio.h"
@@ -210,6 +224,8 @@ static void encTurned(int steps);
 static void encISR();
 static void inputsService();
 static void onNtp(struct timeval*);
+static String wifiIp();
+static void cmdWifi(JsonDocument& doc);
 static void netService();
 static void uploadAbort();
 static const uint8_t* layoutByName(const char* n);
@@ -1383,7 +1399,8 @@ static void inputsService() {
   if (steps) { encTurned(steps); onEncSteps(steps); }
 }
 
-// ================================================================ Wi-Fi / NTP (only if credentials were sent via {"cmd":"wifi"})
+// ================================================================ Wi-Fi / NTP (compiled in only with DC_ENABLE_WIFI=1; needs credentials from {"cmd":"wifi"})
+#if DC_ENABLE_WIFI
 static void onNtp(struct timeval*) { ntpDone = true; }
 static void netService() {
   if (wifiSsid.isEmpty()) return;
@@ -1406,6 +1423,12 @@ static void netService() {
   }
   else if (now - wifiStart > 20000 && !(otaOn && WiFi.status() == WL_CONNECTED)) { wifiBusy = false; WiFi.disconnect(true); WiFi.mode(WIFI_OFF); wifiNextAt = now + (otaOn ? 30000UL : 600000UL); }
 }
+static String wifiIp() { return (wifiBusy && WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String(""); }
+#else
+static void onNtp(struct timeval*) {}
+static void netService() {}
+static String wifiIp() { return String(""); }
+#endif
 
 // ================================================================ serial JSON protocol
 static void uploadAbort() {
@@ -1464,6 +1487,7 @@ static void cmdHello() {
   d["layer"] = curLayer; d["layers"] = LAYERS; d["modes"] = NUM_MODES;
   JsonArray cp = d["caps"].to<JsonArray>();
   cp.add("layers"); cp.add("mouse"); cp.add("host"); cp.add("info"); cp.add("gifslots"); cp.add("factory");
+  if (DC_ENABLE_WIFI) cp.add("wifi");
   if (DC_HAS_OTA) cp.add("ota");
   sendDoc(d);
 }
@@ -1491,7 +1515,7 @@ static void cmdInfo() {
   d["rx_ms_ago"] = lastRxMs ? (uint32_t)(millis() - lastRxMs) : 0; d["events"] = eventsOn; d["gpio_touched"] = gpioTouched;
   d["led_pin"] = PIN_RGB; d["led_mode"] = ledMode; d["mode"] = mode; d["bright"] = brightness;
   d["safe_why"] = !safeMode ? "" : DC_FORCE_SAFE ? "forced" : "crash_loop"; d["nodisp"] = dispOff; d["ota"] = otaOn; d["layer"] = curLayer;
-  d["ip"] = (wifiBusy && WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("");
+  d["ip"] = wifiIp(); d["wifi_build"] = (bool)DC_ENABLE_WIFI;
   d["boot"] = bootLog;
   sendDoc(d);
 }
@@ -1767,6 +1791,7 @@ static void otaStart() {}
 static void otaService() {}
 static void otaStop() {}
 #endif
+#if DC_ENABLE_WIFI
 static void cmdOta(JsonDocument& doc) {                 // opt-in Wi-Fi OTA: needs Wi-Fi credentials first; password optional but recommended
   if (!DC_HAS_OTA) { nack("ota_unsupported"); return; }
   bool on = doc["val"] | false;
@@ -1777,6 +1802,15 @@ static void cmdOta(JsonDocument& doc) {                 // opt-in Wi-Fi OTA: nee
   else { otaStop(); wifiNextAt = 0; }
   JsonDocument d; d["ok"] = true; d["evt"] = "ota"; d["on"] = otaOn; d["has_pw"] = otaPw.length() > 0; sendDoc(d);
 }
+static void cmdWifi(JsonDocument& doc) {
+  wifiSsid = doc["ssid"] | ""; wifiPass = doc["pass"] | "";
+  prefs.putString("ssid", wifiSsid); prefs.putString("wpass", wifiPass);
+  wifiNextAt = 0; ack("wifi");
+}
+#else
+static void cmdOta(JsonDocument& doc) { (void)doc; nack("wifi_disabled"); }          // built without Wi-Fi (DC_ENABLE_WIFI = 0)
+static void cmdWifi(JsonDocument& doc) { (void)doc; nack("wifi_disabled"); }
+#endif
 
 static void cmdInput(JsonDocument& doc) {               // virtual key presses: exercises the real action / UI code from the app
   if (!doc["k"].isNull()) {
@@ -1896,11 +1930,7 @@ static void handleLine(const String& line) {
     if (tz != tzOff) { tzOff = tz; prefs.putInt("tz", tzOff); }
     timeSynced = true; needRedraw = true; ack("time");
   }
-  else if (!strcmp(cmd, "wifi")) {
-    wifiSsid = doc["ssid"] | ""; wifiPass = doc["pass"] | "";
-    prefs.putString("ssid", wifiSsid); prefs.putString("wpass", wifiPass);
-    wifiNextAt = 0; ack("wifi");
-  }
+  else if (!strcmp(cmd, "wifi")) cmdWifi(doc);
   else if (!strcmp(cmd, "media")) {                             // optional: host corrects the local volume/play model
     if (!doc["vol"].isNull()) vol = constrain(doc["vol"].as<int>(), 0, 100);
     if (!doc["playing"].isNull()) playing = doc["playing"].as<bool>();

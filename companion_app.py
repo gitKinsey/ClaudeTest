@@ -730,6 +730,7 @@ ERR_TEXT = {
     "pin": "that GPIO number is not available", "pin_protected": "that GPIO is protected (USB / flash / boot / LED pin)",
     "unknown_cmd": "the firmware does not know this command (older firmware?)", "json": "the pad could not parse the message",
     "layout_unsupported_core": "keyboard layouts need arduino-esp32 core 3.0+ when the firmware is built",
+    "wifi_disabled": "this firmware is cable-only: its Wi-Fi code is switched off (DC_ENABLE_WIFI = 0 in the sketch)",
     "no_wifi": "save your Wi-Fi name and password on the pad first (Device -> Optional Wi-Fi)",
     "ota_unsupported": "this firmware build has no Wi-Fi update",
     "layer": "this layer number does not exist", "slot": "that GIF slot does not exist", "confirm": "the pad wants an explicit confirmation",
@@ -837,6 +838,7 @@ class SimFirmware:
     def __init__(self, emit, legacy=None):
         self.emit = emit                      # callable(bytes) -> pushes firmware->app bytes
         self.legacy = bool(os.environ.get("DESK_COMPANION_SIM_LEGACY")) if legacy is None else legacy   # behave like firmware 1.1.0 (single layer, 5 modes)
+        self.wifi = bool(os.environ.get("DESK_COMPANION_SIM_WIFI"))        # firmware built with DC_ENABLE_WIFI=1 (default build: cable only)
         self._buf = b""
         self.mode, self.bright, self.osv, self.layout = 1, 200, "win", "en_US"
         self.slots = {}                       # layer 0 (kept under this name: tests and tools read it)
@@ -950,7 +952,7 @@ class SimFirmware:
         if cmd == "hello":
             reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": FW_BUNDLED,
                    "layer": self.layer, "layers": LAYERS, "modes": 6, "gifs": len(self.gifs), "gif_rot": self.gif_rot,
-                   "caps": ["layers", "mouse", "host", "info", "gifslots", "factory", "ota"],
+                   "caps": ["layers", "mouse", "host", "info", "gifslots", "factory"] + (["wifi", "ota"] if self.wifi else []),
                    "mode": self.mode, "bright": self.bright, "os": self.osv, "gif": self.gif_present,
                    "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "synced": False, "layout": self.layout,
                    "hid": True, "disp": True, "fs": True, "fs_state": "ready", "safe": False, "led_pin": 21})
@@ -1126,6 +1128,9 @@ class SimFirmware:
             self.crashes = 0
             reply({"ok": True, "evt": "safe_retry"})
         elif cmd == "ota":
+            if not self.wifi:
+                reply({"ok": False, "err": "wifi_disabled"})
+                return
             self.ota = bool(msg.get("val"))
             reply({"ok": True, "evt": "ota", "on": self.ota, "has_pw": bool(msg.get("pass"))})
         elif cmd == "selftest":
@@ -1164,6 +1169,8 @@ class SimFirmware:
         elif cmd == "layout":
             self.layout = msg.get("val", "en_US")
             reply({"ok": True, "evt": "layout"})
+        elif cmd == "wifi" and not self.wifi and not self.legacy:
+            reply({"ok": False, "err": "wifi_disabled"})
         elif cmd in ("time", "wifi", "media"):
             reply({"ok": True, "evt": cmd})
         elif cmd == "gif_begin":
@@ -5882,7 +5889,26 @@ class App(ctk.CTk):
             return "newer", f"firmware {cur} - newer than this app expects ({FW_BUNDLED}); update the app"
         return "ok", f"firmware {cur} - up to date"
 
+    def wifi_supported(self):
+        """Does the connected firmware contain the (optional) Wi-Fi code?  Firmware 1.1 predates the switch and always had it."""
+        if not self.dev.connected:
+            return True
+        caps = self.dev.info.get("caps")
+        return True if caps is None else "wifi" in caps
+
+    def refresh_wifi_ui(self):
+        if not hasattr(self, "_wifi_widgets"):
+            return
+        ok = self.wifi_supported()
+        for w in self._wifi_widgets:
+            w.configure(state="normal" if ok else "disabled")
+        self.wifi_note.configure(text="Save your Wi-Fi in the card below, enable OTA with a password, then update without a cable. Not tested on real hardware by the author - "
+                                 "keep the USB way as a fallback." if ok else
+                                 "This pad's firmware is cable-only (its Wi-Fi code is switched off - DC_ENABLE_WIFI is 0 in the sketch, the default). "
+                                 "Use the USB buttons above. To get Wi-Fi: set DC_ENABLE_WIFI to 1, build and flash.")
+
     def refresh_fw_status(self):
+        self.refresh_wifi_ui()
         kind, text = self.fw_status()
         color = {"ok": OK, "old": WARN, "newer": WARN, "unknown": WARN, "off": MUTED}[kind]
         if hasattr(self, "fw_lbl"):
@@ -6191,9 +6217,9 @@ class App(ctk.CTk):
         ui.secondary_button(row, "Flash another .bin...", self.flash_other).pack(side="left", padx=6)
         ui.muted(box, "Needs:  pip install esptool.  The pad is put into download mode automatically when it runs DeskCompanion; otherwise hold BOOT while plugging in USB.",
                  wraplength=860).grid(row=3, column=0, columnspan=4, sticky="w", padx=6)
-        ctk.CTkLabel(box, text="Wi-Fi update (experimental)", font=ui.font(13, "bold")).grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(14, 2))
-        ui.muted(box, "Save your Wi-Fi below, enable OTA with a password, then update without a cable. Not tested on real hardware by the author - keep the USB way as a fallback.",
-                 wraplength=860).grid(row=5, column=0, columnspan=4, sticky="w", padx=6)
+        ctk.CTkLabel(box, text="Wi-Fi update (optional, experimental)", font=ui.font(13, "bold")).grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(14, 2))
+        self.wifi_note = ui.muted(box, "", wraplength=860)
+        self.wifi_note.grid(row=5, column=0, columnspan=4, sticky="w", padx=6)
         row = ctk.CTkFrame(box, fg_color="transparent")
         row.grid(row=6, column=0, columnspan=4, sticky="w", pady=6)
         self.ota_pw = ctk.CTkEntry(row, width=170, show="*", placeholder_text="OTA password")
@@ -6205,6 +6231,7 @@ class App(ctk.CTk):
         self.ota_bar = ctk.CTkProgressBar(box, width=420)
         self.ota_bar.set(0)
         self.ota_bar.grid(row=7, column=0, columnspan=3, sticky="w", padx=6, pady=(2, 4))
+        self._wifi_widgets = [self.ota_pw, self.ota_btn] + [w for w in row.winfo_children() if isinstance(w, ctk.CTkButton)]
 
         # ---- backup
         box = self._card(sc, "Backup and restore", "Key maps of all layers, macros, profiles, info settings, app settings and your GIF library in one .zip.")
@@ -6235,13 +6262,18 @@ class App(ctk.CTk):
                       command=self._shell_toggled).pack(anchor="w", padx=6, pady=(12, 0))
 
         # ---- Wi-Fi
-        wf = self._card(sc, "Optional Wi-Fi / NTP time sync", "Stored on the pad. Leave empty to disable. Needed for the Wi-Fi update.")
+        wf = self._card(sc, "Optional Wi-Fi / NTP time sync", "The pad is a cable device and keeps its time through this app. Wi-Fi is an optional extra that "
+                        "is compiled into the firmware only when DC_ENABLE_WIFI is 1 (top of DeskCompanion.ino).")
         self.ssid_var, self.pass_var = tk.StringVar(), tk.StringVar()
-        ctk.CTkEntry(wf, textvariable=self.ssid_var, placeholder_text="SSID", width=200).grid(row=0, column=0, padx=6, pady=6)
-        ctk.CTkEntry(wf, textvariable=self.pass_var, placeholder_text="Password", show="*", width=200).grid(row=0, column=1, padx=4)
-        ctk.CTkButton(wf, text="Save Wi-Fi", command=lambda: self.bg(
+        e1 = ctk.CTkEntry(wf, textvariable=self.ssid_var, placeholder_text="SSID", width=200)
+        e1.grid(row=0, column=0, padx=6, pady=6)
+        e2 = ctk.CTkEntry(wf, textvariable=self.pass_var, placeholder_text="Password", show="*", width=200)
+        e2.grid(row=0, column=1, padx=4)
+        b1 = ctk.CTkButton(wf, text="Save Wi-Fi", command=lambda: self.bg(
             lambda: self.dev.request({"cmd": "wifi", "ssid": self.ssid_var.get(), "pass": self.pass_var.get()}),
-            lambda _: self.set_status("Wi-Fi saved on the pad"), "Wi-Fi save failed")).grid(row=0, column=2, padx=8)
+            lambda _: self.set_status("Wi-Fi saved on the pad"), "Wi-Fi save failed"))
+        b1.grid(row=0, column=2, padx=8)
+        self._wifi_widgets += [e1, e2, b1]
 
         c = ctk.CTkFrame(sc)
         c.pack(fill="both", expand=True, pady=6, padx=2)

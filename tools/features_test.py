@@ -113,6 +113,21 @@ app.dev.info["fw"] = m.FW_BUNDLED; app.refresh_fw_status()
 assert app.fw_status()[0] == "ok" and app.fw_banner.winfo_manager() == ""
 print("firmware status OK")
 
+# ---------------------------------------------------------------- Wi-Fi is an optional build extra: the UI follows the firmware's capabilities
+assert "wifi" not in app.dev.info["caps"] and not app.wifi_supported()
+app.refresh_fw_status()
+assert all(w.cget("state") == "disabled" for w in app._wifi_widgets) and "cable-only" in app.wifi_note.cget("text")
+try:
+    app.dev.request({"cmd": "ota", "val": True}); raise SystemExit("OTA accepted by a cable-only pad")
+except m.DeviceError as e:
+    assert "wifi_disabled" in str(e) or "cable-only" in str(e), e
+app.dev.info["caps"] = app.dev.info["caps"] + ["wifi", "ota"]; app.refresh_fw_status()
+assert app.wifi_supported() and all(w.cget("state") == "normal" for w in app._wifi_widgets)
+app.dev.info["caps"] = [c for c in app.dev.info["caps"] if c not in ("wifi", "ota")]; app.refresh_fw_status()
+del app.dev.info["caps"]; assert app.wifi_supported(), "firmware 1.1 (no caps) always had Wi-Fi"
+app.dev.info["caps"] = ["layers", "mouse", "host", "info", "gifslots", "factory"]; app.refresh_fw_status()
+print("wifi gating OK")
+
 # ---------------------------------------------------------------- recovery
 sim.crashes = 3
 app.recovery("safe_retry"); assert pump(40, lambda: sim.crashes == 0)
