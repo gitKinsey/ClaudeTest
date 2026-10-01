@@ -13,7 +13,6 @@ The board must be in download mode: hold BOOT, plug in USB (or tap RESET while h
 If the pad already runs DeskCompanion / CoreBringup the script puts it into download mode by itself.
 """
 import argparse
-import json
 import os
 import subprocess
 import sys

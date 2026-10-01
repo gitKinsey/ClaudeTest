@@ -146,7 +146,6 @@ def snapshot(e, timeout=40):
                 raw = b"".join(data[k] for k in sorted(data))
                 assert begun and len(raw) == 240 * 240 * 2, f"snapshot incomplete: {len(raw)} bytes"
                 return raw
-        e.msgs.clear() if False else None
     raise TimeoutError("snapshot timed out")
 
 
@@ -420,19 +419,30 @@ def t_selftest_misc(c):
     expect(e.request({"cmd": "run", "type": "text", "val": "x"})["err"] == "no_hid", "run needs HID (sim build has none)")
     expect(e.request({"cmd": "frobnicate"})["err"] == "unknown_cmd", "unknown cmd")
     expect(e.request(b"this is not json\n")["err"] == "json", "malformed json")
-    for k, v in (("brightness", 0), ("brightness", 9999), ("time", None)):
-        pass
     expect(e.request({"cmd": "brightness", "val": 0})["ok"], "brightness low clamp")
     expect(e.request({"cmd": "hello"})["bright"] == 5, "brightness clamps to >= 5")
     expect(e.request({"cmd": "brightness", "val": 9999})["ok"], "brightness high clamp")
     expect(e.request({"cmd": "hello"})["bright"] == 255, "brightness clamps to <= 255")
     expect(e.request({"cmd": "time", "epoch": 1_800_000_000, "tz": 3600})["ok"], "time")
     expect(e.request({"cmd": "hello"})["synced"] is True, "time sync flag")
-    expect(e.request({"cmd": "stats", "cpu": 50, "ram": 60}, timeout=0.4, want="never") if False else True, "")
     expect(e.request({"cmd": "media", "vol": 33, "playing": True, "muted": False})["ok"], "media")
+    # telemetry: `stats` is fire-and-forget (no reply), and the system screen actually shows the numbers
+    e.request({"cmd": "mode", "val": 4})
+    shots = []
+    for cpu, ram in ((5, 10), (95, 90)):
+        e.msgs.clear()
+        e.send({"cmd": "stats", "cpu": cpu, "ram": ram})
+        e.pump(0.8)
+        expect(not [m for m in e.msgs if m.get("evt") == "stats" or m.get("ok") is False], f"stats must be silent: {e.msgs}")
+        shots.append(list(rgb565be_to_image(snapshot(e)).getdata()))
+    expect(shots[0] != shots[1], "system screen did not change with the telemetry values")
+    e.request({"cmd": "mode", "val": 1})
     expect(e.request({"cmd": "wifi", "ssid": "", "pass": ""})["ok"], "wifi clear")
     expect(e.request({"cmd": "os", "val": "linux"})["ok"], "os")
-    expect(e.request({"cmd": "layout", "val": "en_US"})["err"] == "layout_unsupported_core" or True, "layout")
+    r = e.request({"cmd": "layout", "val": "en_US"})
+    expect(r.get("ok") or r.get("err") == "layout_unsupported_core", f"layout en_US: {r}")
+    r = e.request({"cmd": "layout", "val": "klingon"})
+    expect(r.get("ok") is False and r.get("err") in ("layout", "layout_unsupported_core"), f"unknown layout must nack: {r}")
 
 
 def t_fuzz(c):

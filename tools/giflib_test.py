@@ -123,7 +123,6 @@ assert "403" in app.status.cget("text") or "HTTP" in app.status.cget("text"), ap
 app.on_key.delete(0, "end"); app.on_key.insert(0, "GOOD"); app.on_query.insert(0, "cat")
 app.online_run(app.on_query.get()); assert pump(80, lambda: len(app.on_sc.winfo_children()) == 5), len(app.on_sc.winfo_children())
 assert "5 result" in app.on_status.cget("text")
-assert pump(80, lambda: all(getattr(t, "_image", None) is not None or True for t in app.on_sc.winfo_children()))
 assert json.load(open(os.environ["DESK_COMPANION_CONFIG"]))["online_keys"]["Tenor"] == "GOOD"
 # thumbnails arrived
 time.sleep(0.5); pump(20)

@@ -3151,6 +3151,12 @@ class App(ctk.CTk):
     def _media_loop(self):
         """Mirror this PC's volume / mute / playing onto the pad's media screen: on change, and every 10 s as a keep-alive."""
         last, sent_at = None, 0.0
+        if self.hostmedia.kind == "pycaw":                          # COM objects need initialising once per thread
+            try:
+                import comtypes
+                comtypes.CoInitialize()
+            except Exception:                                       # noqa: BLE001
+                pass
         while not self.closing:
             time.sleep(1.5)
             if not (self.dev.connected and not self.dev.busy and self.cfg.get("host_media_sync", True) and self.hostmedia.available):

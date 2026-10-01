@@ -1,15 +1,18 @@
 # Desk Companion - ESP32-S3 macro pad (Waveshare ESP32-S3-Zero)
 
 A round-screen macro pad: 5 keys + a rotary encoder, GC9A01 1.28" display, USB keyboard / media keys, and a desktop
-companion app. The firmware works standalone; the app is only needed to remap keys, build macros, upload a GIF and
-for the **Dev tab** (bring-up and diagnostics).
+companion app. The firmware works standalone; the app is only needed to remap keys, build macros, pick / upload a GIF
+(built-in library, your own folder, or Tenor / GIPHY search), mirror your PC's volume on the pad, and for the **Dev tab**
+(bring-up and diagnostics).
 
 ```
 CoreBringup/CoreBringup.ino    STEP 1  tiny sketch, no libraries: LED + USB serial link + wiring test
 DeskCompanion/DeskCompanion.ino STEP 2  the full firmware (display, keys, macros, GIFs, ...)
-companion_app.py                desktop app (Dev tab, virtual pad, macro creator, GIF upload)
+companion_app.py                desktop app (Dev tab, virtual pad, macro creator, GIF library + upload, PC volume mirroring)
+firmware/                       prebuilt images (CoreBringup.bin, DeskCompanion.bin) + flash.py - no Arduino IDE needed
 User_Setup.h, platformio.ini    TFT_eSPI pin setup / PlatformIO alternative
-tools/                          emulator test-suite for the firmware (developers; no hardware needed)
+docs/FEATURES.md                every item of the original spec -> where it is implemented -> what proves it
+tools/                          test suites (firmware in QEMU, app headless); developers only, no hardware needed
 ```
 
 ## The bring-up ladder - do it in this order
@@ -48,8 +51,9 @@ The idea: prove each layer on its own, so when something is wrong you know *whic
 
 ### Step 0a (alternative) - flash prebuilt images, no Arduino IDE at all
 
-`firmware/` contains prebuilt images (built from this repo with arduino-esp32 core 3.2.1, USB-OTG/TinyUSB + CDC-on-boot,
-4 MB flash, DIO 80 MHz, PSRAM off) and a flasher:
+`firmware/` contains prebuilt images, built from this repo's current sources with arduino-esp32 core **3.3.6** for the
+*Waveshare ESP32-S3-Zero* board profile (USB-OTG/TinyUSB, USB CDC On Boot enabled, 4 MB flash, DIO 80 MHz bootloader,
+default partition scheme, PSRAM off), and a flasher:
 
 ```
 pip install esptool pyserial
@@ -59,7 +63,15 @@ python firmware/flash.py --image full     # DeskCompanion (step 2)
 Put the board in download mode first (hold BOOT while plugging in USB). If the pad already runs one of these firmwares the
 script reboots it into download mode by itself. The same thing is a button in the app: **Dev tab -> 0. Flash firmware**.
 `python firmware/flash.py --list` shows the serial ports (the board in download mode is `303A:1001`).
-*The images were built and emulator-tested here but have not been run on real hardware by the author.*
+
+* Flashing an image rewrites the bootloader, partition table **and the settings area**, so saved key mappings are reset
+  to the defaults (re-upload them from the app). A GIF stored in the filesystem partition is left alone.
+* `firmware/SHA256SUMS` lists the checksums; the images are byte-identical to what Arduino IDE 2 / arduino-cli produce
+  as `*.ino.merged.bin` for the same settings, just without the 4 MB of trailing padding.
+* *Verified here:* the sources compile for this exact profile, the images pass `esptool image-info`, the bootloader loads
+  and starts the app in QEMU, and the same firmware logic passes the emulator suite. *Not verified here (no board):* USB
+  enumeration on your PC, the real panel, the real flashing run. If the full image misbehaves, flash `core` first - it
+  separates "board / USB / driver" problems from "display / filesystem" problems.
 
 ### Step 0b - flash CoreBringup (Arduino IDE)
 
@@ -114,6 +126,24 @@ What the full firmware does differently from a plain sketch - **the core comes f
 3. **Safe mode**: three crashes / watchdog resets in a row boot the pad with the display and GIF engine disabled and a **red double blink**, so it stays reachable from the app (Dev tab shows `SAFE MODE`, the reset reason and the boot log). A power cycle or a clean reboot tries the full firmware again.
 4. LED heartbeat colour: **green** = all good, **amber** = a subsystem failed, **red** = safe mode.
 
+### Step 3 - GIFs, macros, PC volume (companion app)
+
+* **GIF Upload tab -> GIF library.** Three views:
+  * *Built-in* - 16 generated animations (heartbeat, spinner, fire, plasma, radar, ...), nothing to download.
+  * *My GIFs* - a folder of your own GIFs (`~/.desk_companion_gifs`, or `DESK_COMPANION_GIFS`): *Add GIF...*, right-click a
+    tile to delete it, *Open folder*.
+  * *Online* - search or browse trending GIFs from **Tenor** or **GIPHY** (the sources behind WhatsApp's / most chat apps'
+    GIF pickers; WhatsApp itself has no public API). Both need a **free API key** you create once
+    (*Get a free key* opens the sign-up page); it is stored in `~/.desk_companion.json`. Click a result to preview it.
+  * *Select GIF file...* takes any file from disk; by default a copy is kept in My GIFs (switch it off with the checkbox).
+  The app crops to a square, resizes to 240x240, masks the circle, shrinks colours / frames until it fits the pad's flash,
+  shows the result on the round preview, and *Upload to pad* sends it with a progress bar and CRC check.
+* **Macro Creator** - up to 4 modifiers + a key, text snippets (US-layout ASCII), delays, and sequences of these.
+* **Device tab -> "Mirror this PC's volume / playback on the pad"** - the pad's media screen follows the real volume, mute and
+  play state (every change, plus a refresh every 10 s). Linux: `pactl` or `amixer` (+ `playerctl`); macOS: built in;
+  Windows: `pip install pycaw` (best effort, untested by the author - without it the switch is greyed out and the pad
+  keeps counting the volume keys on its own).
+
 Default key map (works with no app): K1 copy, K2 paste, K3 undo, K4 play/pause, K5 mute, dial = volume, dial click = radial
 menu (brightness / volume / mode / exit), dial hold = next display mode. Modes: clock, focus timer (K1 start/pause, K2 reset,
 dial = minutes), media dashboard, system telemetry, GIF.
@@ -132,6 +162,8 @@ dial = minutes), media dashboard, system telemetry, GIF.
 | Keys do nothing | wiring, or HID not enumerated | Dev tab -> Keys: indicators must light up; Keyboard test must type. HID needs *USB Mode = TinyUSB* |
 | Red double-blink | safe mode (3 crashes in a row) | Dev tab -> *Device info*: look at `reset`, `boot`; usually a bad display / wiring or wrong board settings |
 | `'File' does not name a type`, or "TFT_eSPI is not configured for the GC9A01" while compiling | the TFT_eSPI library still has its default `User_Setup.h` (it enables `SMOOTH_FONT`, which hides the global `File` type) | copy this project's `User_Setup.h` over `<sketchbook>/libraries/TFT_eSPI/User_Setup.h` (Step 2). The firmware also uses `fs::File` explicitly, so it compiles either way - but without our `User_Setup.h` the display is configured for the wrong panel |
+| Online tab: "the server answered HTTP 401/403" / "enter your ... API key first" | missing or wrong Tenor / GIPHY key | create a free key with *Get a free key*, paste it, search again. A key from the other provider will not work - pick the matching provider in the menu |
+| Online tab: "no connection" | no internet / a firewall or proxy blocks `tenor.googleapis.com` or `api.giphy.com` | the Built-in and My GIFs views work offline |
 | `KeyboardLayout_xx not declared` while compiling | very old/new core mismatch | use core 3.1.0+; or 2.0.x (layout feature is compiled out automatically) |
 
 Windows check: Device Manager should list, under *Ports*, a **USB Serial Device (COMn)** and, under *Keyboards*,
@@ -167,8 +199,12 @@ Error codes include `json`, `unknown_cmd`, `key`, `spec`, `too_long`, `nvs_full`
 ## Testing without hardware
 
 `tools/` contains an emulator test-suite: the real firmware (compiled with `-DDC_SIM`) runs inside Espressif's QEMU
-ESP32-S3 and ~15 test groups drive the protocol, all five screens (with PNG screenshots), the filesystem / GIF path,
+ESP32-S3 and ~15 test groups drive the protocol, the screens (with PNG screenshots), the filesystem / GIF path,
 persistence, a fuzz run and safe mode. See `tools/README.md`. The app's *Simulate pad* uses a Python model of the same protocol.
+App tests (run headless with `xvfb-run -a python3 tools/<name>.py`): `app_selftest.py` (connection, Dev tab, key upload +
+read-back), `macro_test.py` (macro creator + the 50-action library), `giflib_test.py` (GIF library against a mock Tenor /
+GIPHY server, plus PC-volume mirroring). `docs/FEATURES.md` maps every requirement to the code and the test that covers it,
+and lists what only real hardware can prove.
 
 ## Wiring (from the project spec)
 
