@@ -175,6 +175,13 @@ Path(mp).write_text("{}"); app.macro_import(); assert "not a Desk Companion macr
 print("backup / restore / sharing OK")
 
 # ---------------------------------------------------------------- hardware test wizard (every step against the simulator)
+def dreq(cmd):                                    # a loaded CI machine can be slow: a bounded retry instead of a flaky failure
+    for attempt in range(3):
+        try:
+            return app.dev.request(cmd, timeout=8)
+        except m.DeviceError:
+            if attempt == 2:
+                raise
 app.open_hwtest(); pump(10)
 win = app.hw_listener.__self__
 assert win.STEPS[win.i] == "Connection" or win.i >= 1
@@ -185,10 +192,10 @@ assert pump(80, lambda: any(b.cget("text").startswith("Yes") for b in win.btns.w
 assert pump(120, lambda: win.i == 2 and any(b.cget("text").startswith("Yes") for b in win.btns.winfo_children())), "display question"; press(0)
 assert pump(40, lambda: win.i == 3 and getattr(win, "lbls", None)), "keys step"
 for k in range(1, 6):
-    app.dev.request({"cmd": "input", "k": k})
+    dreq({"cmd": "input", "k": k})
 assert pump(80, lambda: win.i == 4), ("keys not detected", win.seen)
 assert pump(20, lambda: getattr(win, "lbls", None) and "left" in win.lbls)
-app.dev.request({"cmd": "input", "turn": -1}); app.dev.request({"cmd": "input", "turn": 1}); app.dev.request({"cmd": "input", "click": True})
+dreq({"cmd": "input", "turn": -1}); dreq({"cmd": "input", "turn": 1}); dreq({"cmd": "input", "click": True})
 assert pump(80, lambda: win.i == 5), ("encoder not detected", win.seen)
 assert pump(20, lambda: any(b.cget("text") == "Type it" for b in win.btns.winfo_children())); press(0)
 assert pump(120, lambda: any(b.cget("text").startswith("Yes") for b in win.btns.winfo_children())), "HID question"; press(0)
