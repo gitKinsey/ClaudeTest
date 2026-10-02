@@ -853,6 +853,7 @@ class SimFirmware:
         self.gif_cur, self.gif_rot, self._up_slot = 0, 0, 0
         self.cards, self.badges, self.card_rot = [], [], 6
         self.nodisp, self.ota, self.crashes = False, False, 0
+        self.disp_why = ""                   # "init_hang" / "skipped_after_hang" when the real pad's display start-up stalled
         self.host_log = []                   # host actions the pad asked for (tests / Dev tab)
         self._up = None
         self.led = {"mode": 0, "r": 0, "g": 0, "b": 0}
@@ -932,7 +933,7 @@ class SimFirmware:
                 obj["id"] = rid
             if self.legacy:
                 if obj.get("evt") in ("hello", "info"):
-                    for k in ("layer", "layers", "modes", "gifs", "gif_rot", "caps", "safe_why", "nodisp", "ota", "ip"):
+                    for k in ("layer", "layers", "modes", "gifs", "gif_rot", "caps", "safe_why", "disp_why", "nodisp", "ota", "ip"):
                         obj.pop(k, None)
                     obj["fw"] = "1.1.0"
                 if obj.get("evt") == "keys":
@@ -982,7 +983,7 @@ class SimFirmware:
         elif cmd == "echo":
             reply({"ok": True, "evt": "echo", "data": msg.get("data")})
         elif cmd == "info":
-            reply({"ok": True, "evt": "info", "fw": FW_BUNDLED, "build": "simulated", "safe_why": "", "nodisp": self.nodisp, "ota": self.ota, "ip": "", "layer": self.layer, "chip": "ESP32-S3 (simulated)", "rev": 0,
+            reply({"ok": True, "evt": "info", "fw": FW_BUNDLED, "build": "simulated", "safe_why": "", "disp_why": self.disp_why, "nodisp": self.nodisp, "ota": self.ota, "ip": "", "layer": self.layer, "chip": "ESP32-S3 (simulated)", "rev": 0,
                    "cores": 2, "cpu_mhz": 240, "flash": 4194304,
                    "heap": 210_000, "heap_min": 190_000, "heap_blk": 110_000, "psram": 0, "temp": 31.5, "up_ms": self._up_ms(),
                    "reset": "power-on", "crashes": self.crashes, "safe": False, "core": "sim", "usb_mode": 0, "cdc_boot": 1, "hid": True,
@@ -4490,7 +4491,13 @@ class App(ctk.CTk):
         h["layer"].configure(text=str(int(i.get("layer", 0)) + 1))
         h["flash"].configure(text=f"{i.get('fs_free', 0) // 1024} KB")
         h["reset"].configure(text=str(i.get("reset", "?")), text_color=TEXT if i.get("crashes", 0) == 0 else ERR)
-        h["disp"].configure(text="ok" if i.get("ok_disp") else ("off" if i.get("nodisp") or i.get("safe") else "FAILED"), text_color=OK if i.get("ok_disp") else ERR)
+        why = i.get("disp_why") or ""
+        h["disp"].configure(text="ok" if i.get("ok_disp") else ("stalled" if why in ("init_hang", "skipped_after_hang") else "off" if i.get("nodisp") or i.get("safe") else "FAILED"),
+                            text_color=OK if i.get("ok_disp") else ERR)
+        if why in ("init_hang", "skipped_after_hang") and getattr(self, "_disp_warned", None) != id(self.dev.ser):
+            self._disp_warned = id(self.dev.ser)
+            self.set_status("The pad's display start-up stalled, so the display is off - everything else (keys, layers, LED, USB) works. "
+                            "Check the wiring / User_Setup.h and re-plug the pad to try again.", error=True)
         h["hid"].configure(text="ok" if i.get("hid") else "off (USB Mode)", text_color=OK if i.get("hid") else WARN)
         h["fs"].configure(text=str(i.get("fs_state", "?")), text_color=OK if i.get("ok_fs") else WARN)
         h["temp"].configure(text=f"{i.get('temp', 0):.0f} C")

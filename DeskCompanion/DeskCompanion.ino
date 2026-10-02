@@ -370,7 +370,11 @@ time_t   lastClockSec = 0;
 // ---- bring-up / diagnostics state
 static RTC_NOINIT_ATTR uint32_t rtcMagic;      // survives panics / watchdog resets, cleared on power-on
 static RTC_NOINIT_ATTR uint32_t rtcCrashCount;
+static RTC_NOINIT_ATTR uint32_t rtcDispTry;    // == RTC_DISP_TRY while a display start-up is (or was, when the pad reset) in progress
 static const uint32_t RTC_MAGIC = 0xDC5AFE01u;
+static const uint32_t RTC_DISP_TRY = 0xD15C0DE1u;
+const char* dispWhy = "";                       // "" | init_hang | skipped_after_hang | sprite_alloc - why the display is not running
+volatile bool dispInitDone = false;
 bool     okPrefs = false, okSprite = false, okDisp = false;
 volatile bool okFs = false;                    // true only while LittleFS is mounted AND no background job is using it
 uint32_t fsStartAt = 0;                         // start of the background filesystem job (0 = already started)
@@ -1514,7 +1518,7 @@ static void cmdInfo() {
   d["fs_free"] = okFs ? fsFreeBytes() : 0; d["fs_total"] = okFs ? (uint32_t)LittleFS.totalBytes() : 0;
   d["rx_ms_ago"] = lastRxMs ? (uint32_t)(millis() - lastRxMs) : 0; d["events"] = eventsOn; d["gpio_touched"] = gpioTouched;
   d["led_pin"] = PIN_RGB; d["led_mode"] = ledMode; d["mode"] = mode; d["bright"] = brightness;
-  d["safe_why"] = !safeMode ? "" : DC_FORCE_SAFE ? "forced" : "crash_loop"; d["nodisp"] = dispOff; d["ota"] = otaOn; d["layer"] = curLayer;
+  d["safe_why"] = !safeMode ? "" : DC_FORCE_SAFE ? "forced" : "crash_loop"; d["nodisp"] = dispOff; d["disp_why"] = dispWhy; d["ota"] = otaOn; d["layer"] = curLayer;
   d["ip"] = wifiIp(); d["wifi_build"] = (bool)DC_ENABLE_WIFI;
   d["boot"] = bootLog;
   sendDoc(d);
@@ -2047,6 +2051,7 @@ void setup() {
   bool crashed = resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT ||
                  resetReason == ESP_RST_WDT || resetReason == ESP_RST_BROWNOUT;
   if (rtcMagic != RTC_MAGIC || resetReason == ESP_RST_POWERON) { rtcMagic = RTC_MAGIC; rtcCrashCount = 0; }
+  if (rtcMagic != RTC_MAGIC || resetReason == ESP_RST_POWERON) rtcDispTry = 0;
   rtcCrashCount = crashed ? rtcCrashCount + 1 : 0;
   crashCount = rtcCrashCount;
   safeMode = DC_FORCE_SAFE || crashCount >= 3;
@@ -2085,13 +2090,38 @@ void setup() {
   // ---- 5. display (skipped in safe mode; a failure here never takes the serial link down)
   if (!safeMode && !dispOff) {
 #if DC_HAS_TFT
-    tft.init();
-    tft.fillScreen(TFT_BLACK);
-#endif
+    // The panel start-up runs in its own task with a deadline: if the SPI driver ever stalls here, the pad still comes up
+    // (serial link, keys, LED) with the display off and says why ("disp_why") instead of sitting silent after the cyan LED.
+    if (rtcDispTry == RTC_DISP_TRY) {                 // the previous start-up never finished (hang -> reset): do not run into it again
+      dispWhy = "skipped_after_hang"; bootNote("display-skipped(hung-last-boot)", false);
+    } else {
+      rtcDispTry = RTC_DISP_TRY; dispInitDone = false;
+      TaskHandle_t dispTask = nullptr;
+      xTaskCreatePinnedToCore([](void*) {
+        tft.init();
+        tft.fillScreen(TFT_BLACK);
+        spr.setColorDepth(16);
+        okSprite = spr.createSprite(240, 240) != nullptr;
+        dispInitDone = true;
+        vTaskDelete(nullptr);
+      }, "dispinit", 6144, nullptr, 1, &dispTask, 0);
+      uint32_t t0 = millis();
+      while (!dispInitDone && millis() - t0 < 4000) delay(5);
+      if (dispInitDone) {
+        rtcDispTry = 0; okDisp = okSprite;
+        if (!okSprite) dispWhy = "sprite_alloc";
+        bootNote("display", okDisp);
+      } else {
+        if (dispTask) vTaskDelete(dispTask);          // stop the stuck task before the task watchdog trips; rtcDispTry stays set
+        okDisp = okSprite = false; dispWhy = "init_hang"; bootNote("display-HANG", false);
+      }
+    }
+#else
     spr.setColorDepth(16);
     okSprite = spr.createSprite(240, 240) != nullptr;
     okDisp = okSprite;
     bootNote("display", okDisp);
+#endif
   } else bootNote(safeMode ? "display-skipped(safe-mode)" : "display-skipped(boot_opt)", false);
   ledBoot(30, 24, 0);                // amber: display done
 

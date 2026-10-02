@@ -62,6 +62,13 @@ pump(80)
 assert sim.cmd_count.get("time", 0) <= 1, f"time retry storm: {sim.cmd_count}"
 assert sim.cmd_count.get("stats", 0) >= 3
 
+# ---- a pad whose display start-up stalled is reported plainly (everything else keeps working)
+app.dev.info["core_only"] = True
+sim.disp_why = "init_hang"
+app._update_health({"ok_disp": False, "disp_why": "init_hang", "fw": "1.2.0", "reset": "power-on", "crashes": 0, "fs_free": 0})
+app.update()
+assert app.health["disp"].cget("text") == "stalled" and "display start-up stalled" in app.status.cget("text")
+
 # ---- trouble card show / clear
 app._show_trouble("COM5", mine, 2)
 app.update()
