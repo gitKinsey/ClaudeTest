@@ -831,6 +831,9 @@ def spec_ok(spec):
 LEGACY_CMDS = {"layer", "info_cards", "gif_list", "gif_cfg", "factory", "boot_opt", "safe_retry", "ota"}   # unknown to firmware 1.1
 
 
+CORE_CMDS = {"stats", "hello", "ping", "echo", "info", "led", "gpio", "inputs", "events", "run", "reboot", "display", "snapshot"}   # all CoreBringup knows
+
+
 class SimFirmware:
     """Implements the DeskCompanion wire protocol in pure Python, standing in for real hardware so the
     app's connect / remap / brightness / GIF-upload / Dev-tab code paths can be exercised with nothing plugged in."""
@@ -839,6 +842,8 @@ class SimFirmware:
         self.emit = emit                      # callable(bytes) -> pushes firmware->app bytes
         self.legacy = bool(os.environ.get("DESK_COMPANION_SIM_LEGACY")) if legacy is None else legacy   # behave like firmware 1.1.0 (single layer, 5 modes)
         self.wifi = bool(os.environ.get("DESK_COMPANION_SIM_WIFI"))        # firmware built with DC_ENABLE_WIFI=1 (default build: cable only)
+        self.core = bool(os.environ.get("DESK_COMPANION_SIM_CORE"))        # behave like the CoreBringup diagnostic sketch (diagnostic commands only)
+        self.cmd_count = {}                   # cmd -> times received (tests: no command spam)
         self._buf = b""
         self.mode, self.bright, self.osv, self.layout = 1, 200, "win", "en_US"
         self.slots = {}                       # layer 0 (kept under this name: tests and tools read it)
@@ -935,6 +940,19 @@ class SimFirmware:
                         obj.pop(k, None)
             self._send(obj)
 
+        self.cmd_count[cmd] = self.cmd_count.get(cmd, 0) + 1
+        if self.core:
+            if cmd not in CORE_CMDS:
+                reply({"ok": False, "err": "unknown_cmd"})
+                return
+            if cmd in ("hello", "info"):
+                orig = reply
+
+                def reply(obj, _orig=orig):
+                    obj.update(fw="1.1.0-core", core_only=True)
+                    for k in ("layer", "layers", "modes", "gifs", "gif_rot", "caps"):
+                        obj.pop(k, None)
+                    _orig(obj)
         if self.legacy:
             if cmd in LEGACY_CMDS:
                 reply({"ok": False, "err": "unknown_cmd"})
@@ -3607,9 +3625,9 @@ class App(ctk.CTk):
             if self.dev.connected and not self.dev.busy:
                 try:
                     self.dev.send({"cmd": "stats", "cpu": round(cpu), "ram": round(ram)})
-                    if time.time() - last_sync > 60:
+                    if not self.dev.info.get("core_only") and time.time() - last_sync > 60:
+                        last_sync = time.time()                      # BEFORE the request: a pad that refuses it is asked again in a minute, not every second
                         self.dev.request(time_msg())
-                        last_sync = time.time()
                 except DeviceError:
                     pass
 
@@ -3670,6 +3688,7 @@ class App(ctk.CTk):
             for p in gone - set(ports):                      # unplugged: forget, so the next plug-in starts fresh
                 self._fails.pop(p, None)
                 self._warned.discard(p)
+                self.post(self._clear_trouble)
             if self.auto_flag and not self.dev.connected:
                 for port in ports:
                     if self._try_connect(port, info.get(port)):
@@ -3680,11 +3699,40 @@ class App(ctk.CTk):
         if hasattr(self, "devtab"):
             self.devtab.sys(text, err)
 
+    @staticmethod
+    def trouble_text(pinfo, fails, recently_flashed=False):
+        """Plain-language reason + next steps for a pad that is visible as a serial port but does not answer."""
+        vp = fmt_vidpid(pinfo) if pinfo else "?"
+        pid = (pinfo or {}).get("pid")
+        if pid == 0x1001:
+            return (f"The pad shows up as {vp}: that is the chip's built-in bootloader / serial, not DeskCompanion. "
+                    "Unplug the cable and plug it back in WITHOUT holding BOOT, then wait ~10 s. "
+                    "(It also looks like this when a sketch was built with USB Mode = Hardware CDC and JTAG.)")
+        lines = [f"A USB device ({vp}) is there on {pinfo['device'] if pinfo else 'a port'} but it does not answer yet (tried {fails}x)."]
+        if recently_flashed or fails < 4:
+            lines.append("Right after flashing, the first start prepares the pad's storage and can take up to ~40 s - the app keeps trying by itself.")
+        lines.append("If it stays like this: 1) unplug and re-plug the cable (try another USB port), 2) Diagnostics -> Probe all ports, "
+                     "3) on Windows: Device Manager -> View -> Show hidden devices -> uninstall the old 'USB Serial Device' / 'USB Composite Device' "
+                     "entries of the board, then re-plug, 4) check the LED: a red double-blink means safe mode, no LED means the sketch is not running.")
+        return "  ".join(lines)
+
+    def _show_trouble(self, port, pinfo, fails):
+        text = self.trouble_text(pinfo, fails, time.time() - getattr(self, "_flashed_at", 0) < 180)
+        self.conn_pill.set("Not answering", ERR)
+        self.set_status(text.split(".  ")[0] + ".", error=True)
+        if hasattr(self, "trouble_lbl"):
+            self.trouble_lbl.configure(text=text)
+            self.trouble_card.pack(fill="x", padx=2, pady=(0, 8), before=self.home_first)
+
+    def _clear_trouble(self):
+        if hasattr(self, "trouble_card"):
+            self.trouble_card.pack_forget()
+
     def _try_connect(self, port, pinfo=None):
         if not self.connect_lock.acquire(blocking=False):
             return False
         try:
-            info = self.dev.connect(port)
+            info = self.dev.connect(port, hello_wait=8 if self._fails.get(port, 0) < 2 else 20)
         except (DeviceError, serial.SerialException, OSError) as e:
             self._fails[port] = self._fails.get(port, 0) + 1
             msg = str(e).lower()
@@ -3692,6 +3740,8 @@ class App(ctk.CTk):
             vp = fmt_vidpid(pinfo) if pinfo else "?"
             hint = (pinfo or {}).get("hint", "")
             self.post(lambda e=e: self._log(f"connect {port} failed: {e}"))
+            if self._fails[port] >= 2 and not busy:
+                self.post(lambda n=self._fails[port]: self._show_trouble(port, pinfo, n))
             self.post(lambda e=e: self._dev_note(f"connect {port} ({vp}) failed: {e}   {hint}", err=True))
             if port not in self._warned and (busy or self._fails[port] >= 2):   # 2 tries x 8 s = the pad had plenty of time to boot
                 self._warned.add(port)
@@ -3705,6 +3755,7 @@ class App(ctk.CTk):
         finally:
             self.connect_lock.release()
         self._fails.pop(port, None)
+        self.post(self._clear_trouble)
         self.post(lambda: self._on_connected(info))
         return True
 
@@ -3997,8 +4048,14 @@ class App(ctk.CTk):
             msg["layer"] = layer
         return msg
 
+    def _core_only(self, what="that"):
+        if self.dev.connected and self.dev.info.get("core_only"):
+            self.set_status(f"The pad runs the CoreBringup diagnostic sketch, which cannot do {what}. Flash the full firmware first (Device -> Update).", error=True)
+            return True
+        return False
+
     def upload_slots(self, slots, layer=None):
-        if not self.dev.connected:
+        if not self.dev.connected or self._core_only("key mapping"):
             return
         layer = self.edit_layer if layer is None else layer
         if layer and not self._layers_supported():
@@ -4064,6 +4121,8 @@ class App(ctk.CTk):
     def upload_all(self):
         if not self.dev.connected:
             return self.set_status("Connect the pad first (Device tab / USB cable)", error=True)
+        if self._core_only("key mapping"):
+            return
         layers = range(LAYERS) if self._layers_supported() else range(1)
         jobs = []
         for lay in layers:
@@ -4284,6 +4343,10 @@ class App(ctk.CTk):
         self.fw_banner_lbl.pack(side="left", padx=14, pady=10, fill="x", expand=True)
         ctk.CTkButton(self.fw_banner, text="Update firmware", width=130, fg_color=ui.WHITE, hover_color="#f0f0f0", text_color="#111111",
                       command=lambda: self.tabs.set("Device")).pack(side="right", padx=12)
+        self.trouble_card = ctk.CTkFrame(sc, fg_color=ui.ERR_FILL, border_width=0)
+        ctk.CTkLabel(self.trouble_card, text="Can't connect?", font=ui.font(14, "bold"), text_color=ui.WHITE, anchor="w").pack(anchor="w", padx=14, pady=(10, 0))
+        self.trouble_lbl = ctk.CTkLabel(self.trouble_card, text="", text_color=ui.WHITE, wraplength=900, justify="left", anchor="w")
+        self.trouble_lbl.pack(anchor="w", padx=14, pady=(2, 10))
         self.safe_banner = ctk.CTkFrame(sc, fg_color=ui.ERR_FILL, border_width=0)
         self.safe_banner_lbl = ctk.CTkLabel(self.safe_banner, text="", text_color=ui.WHITE, wraplength=860, justify="left", anchor="w")
         self.safe_banner_lbl.pack(side="left", padx=14, pady=10, fill="x", expand=True)
@@ -4423,7 +4486,7 @@ class App(ctk.CTk):
     def _update_health(self, i):
         h = self.health
         kind, _txt = self.fw_status()
-        h["fw"].configure(text=str(i.get("fw", "?")), text_color={"ok": OK, "off": MUTED}.get(kind, WARN))
+        h["fw"].configure(text=("CoreBringup" if i.get("core_only") else str(i.get("fw", "?"))), text_color={"ok": OK, "off": MUTED}.get(kind, WARN))
         h["layer"].configure(text=str(int(i.get("layer", 0)) + 1))
         h["flash"].configure(text=f"{i.get('fs_free', 0) // 1024} KB")
         h["reset"].configure(text=str(i.get("reset", "?")), text_color=TEXT if i.get("crashes", 0) == 0 else ERR)
@@ -4637,10 +4700,14 @@ class App(ctk.CTk):
             self.after(800, self.open_wizard)
 
         def work():
+            if info.get("core_only"):                              # the CoreBringup sketch only knows the diagnostic commands
+                return
             self.dev.request({"cmd": "os", "val": self.cfg["os"]})
             self.dev.request(time_msg())
             self._push_layout()
         self.bg(work, None, "Initial sync failed")
+        if info.get("core_only"):
+            self.set_status("Connected to the CoreBringup diagnostic sketch - LED, ports and GPIO tests work. Flash the full firmware (Device -> Update) for the rest.")
 
     def _on_disconnected(self):
         self.conn_lbl.configure(text="Not connected", text_color=WARN)
@@ -5351,6 +5418,8 @@ class App(ctk.CTk):
         if not self.dev.connected:
             return self.set_status("Connect the pad first", error=True)
         data, slot = self.gif_data, self._gif_slot()
+        if self._core_only("GIFs"):
+            return
         if slot and int(self.dev.info.get("gifs", -1)) < 0:
             return self.set_status("This pad's firmware has a single GIF slot - update it (Device -> Firmware) to use more", error=True)
         self.upload_btn.configure(state="disabled")
@@ -5383,6 +5452,11 @@ class App(ctk.CTk):
         if not self.dev.connected:
             self.pad_gifs = {}
             return self._draw_pad_gifs({"slots": [], "cur": 0, "rot": 0, "max": 1})
+        if self.dev.info.get("core_only"):
+            self.pad_gifs, self.pad_gif_free = {}, None
+            for w in self.pad_gif_box.winfo_children():
+                w.destroy()
+            return ui.muted(self.pad_gif_box, "CoreBringup has no GIF storage. Flash the full firmware.", wraplength=250).pack(anchor="w")
         if "gifslots" not in (self.dev.info.get("caps") or []):         # firmware 1.1: one GIF, no listing command
             self.pad_gifs, self.pad_gif_free = {}, None
             for w in self.pad_gif_box.winfo_children():
@@ -5879,6 +5953,8 @@ class App(ctk.CTk):
         """-> (kind, text): kind in off | ok | old | newer | unknown"""
         if not self.dev.connected:
             return "off", "pad not connected"
+        if self.dev.info.get("core_only"):
+            return "core", "CoreBringup (diagnostic sketch) - flash the full firmware to use keys, layers, GIFs and the screens"
         cur = self.dev.info.get("fw")
         a, b = self._ver(cur), self._ver(FW_BUNDLED)
         if a is None:
@@ -5910,12 +5986,12 @@ class App(ctk.CTk):
     def refresh_fw_status(self):
         self.refresh_wifi_ui()
         kind, text = self.fw_status()
-        color = {"ok": OK, "old": WARN, "newer": WARN, "unknown": WARN, "off": MUTED}[kind]
+        color = {"ok": OK, "old": WARN, "newer": WARN, "unknown": WARN, "off": MUTED, "core": WARN}[kind]
         if hasattr(self, "fw_lbl"):
             self.fw_lbl.configure(text=text, text_color=color)
             self.fw_btn.configure(state="normal")
         if hasattr(self, "fw_banner"):
-            if kind in ("old", "newer", "unknown"):
+            if kind in ("old", "newer", "unknown", "core"):
                 self.fw_banner_lbl.configure(text=text + (".  Layers, mouse actions, the Info screen and GIF slots need the newer firmware." if kind == "old" else "."))
                 self.fw_banner.pack(fill="x", padx=2, pady=(0, 8), before=self.home_first)
             else:
@@ -5960,9 +6036,12 @@ class App(ctk.CTk):
 
         def done(rc):
             finish()
+            if rc == 0:
+                self._flashed_at = time.time()
             self.devtab.sys("flash finished OK - unplug / re-plug the board; the app reconnects by itself" if rc == 0
                             else f"flash FAILED (exit code {rc}) - see the lines above", err=rc != 0)
-            self.set_status("Flash finished - re-plug the board" if rc == 0 else "Flash failed - details in Diagnostics / the log", error=rc != 0)
+            self.set_status("Flash finished - unplug and re-plug the board WITHOUT holding BOOT. The first start can take ~40 s; the app connects by itself." if rc == 0
+                            else "Flash failed - details in Diagnostics / the log", error=rc != 0)
         self.bg(work, done, "Flashing failed", fail=finish)
 
     def flash_other(self):
@@ -6059,7 +6138,7 @@ class App(ctk.CTk):
         self.bg(lambda: self.dev.request(cmd), done, "Recovery step failed")
 
     def _safe_banner(self, info):
-        if not hasattr(self, "safe_banner"):
+        if not hasattr(self, "safe_banner") or info.get("core_only"):
             return
         if info.get("safe"):
             self.safe_banner_lbl.configure(text="The pad is in SAFE MODE (it crashed repeatedly). Display and GIFs are off so it stays reachable.")

@@ -6,7 +6,7 @@ PY="${PYTHON:-python3}"
 fail=0
 echo "== lint";           $PY -m pyflakes companion_app.py desk_lib tools firmware/flash.py packaging || fail=1
 echo "== lib_test";       $PY -W error tools/lib_test.py || fail=1
-for t in app_selftest macro_test giflib_test layers_test profiles_test info_test features_test compat_test; do
+for t in app_selftest macro_test giflib_test layers_test profiles_test info_test features_test compat_test core_test; do
   echo "== $t"
   if command -v xvfb-run >/dev/null; then xvfb-run -a $PY tools/$t.py || fail=1; else $PY tools/$t.py || fail=1; fi
 done
