@@ -161,7 +161,7 @@ for i in range(200):
     r.mouse_move(i * 3, 0, i * 0.01)
     r.mouse_button("Button.left", True, i * 0.01); r.mouse_button("Button.left", False, i * 0.01 + 0.005)
 check("recording is capped at 64 steps", len(r.finish()) == 64 and r.truncated)
-import companion_app as _m   # noqa: E402
+import core.base as _m   # noqa: E402
 check("recorded mouse steps are valid pad macros", all(_m.spec_ok({"type": "macro", "val": [st]}) for st in steps), steps)
 
 # ---- diagnostic export: secrets never leave the app

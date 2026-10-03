@@ -321,7 +321,7 @@ class Shell(QMainWindow):
         self._relayout(e.size().width())
 
     def _relayout(self, w):
-        mode = "full" if w >= 1100 else "icons" if w >= 640 else "top"
+        mode = "full" if w >= 1100 else "icons" if w >= 760 else "top"
         short = self.height() < 600
         self.subtitle.setVisible(not short and mode != "top" or (not short and w >= 560))
         if mode == self._mode:

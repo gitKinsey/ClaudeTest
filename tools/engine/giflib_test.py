@@ -1,5 +1,5 @@
 """Engine test of the GIF library (built-in / My GIFs / Online) against a local mock Tenor + GIPHY server, plus host media sync."""
-import io, json, os, sys, tempfile, threading, time
+import io, json, os, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer as HTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

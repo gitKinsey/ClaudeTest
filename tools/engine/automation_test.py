@@ -1,7 +1,6 @@
 """Engine test: schedules (building rules, running them, the schedule loop, persistence) and the local API."""
 import os
 import sys
-import time
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
