@@ -6,6 +6,7 @@ from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import QComboBox, QLineEdit, QMenu, QPlainTextEdit, QSlider, QTreeWidget, QTreeWidgetItem, QWidget
 
 from core.base import LAYER_NAMES, MODE_CHOICES, SLOT_LABELS
+from ui_qt.forms import TargetKeyCombo
 from ui_qt.layouts import FlowLayout, PageGrid, hbox, vbox
 from ui_qt.padview import MIME, PadViewQt, ghost_pixmap
 from ui_qt.pages.base import Page
@@ -111,6 +112,7 @@ class KeysPage(Page):
         gest = build_gestures(self)
         test = self._build_test()
         self.inspector = TabbedPanel("Inspector", {"Key map": keymap, "Build": builder, "Sequence": seq, "Gestures": gest, "Test": test})
+        self.inspector.body.insertWidget(0, TargetKeyCombo(e))
 
         self.grid = PageGrid({"twin": t, "library": lib, "inspector": self.inspector},
                              {"wide": [[("library", 2)], [("twin", 4)], [("inspector", 3)]],

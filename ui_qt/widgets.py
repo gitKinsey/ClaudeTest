@@ -19,7 +19,9 @@ def repolish(w):
     w.update()
 
 
-def label(text="", role=None, wrap=False, selectable=False):
+def label(text="", role=None, wrap=None, selectable=False):
+    if wrap is None:
+        wrap = len(text) > 28                                   # long texts wrap instead of forcing the box wider
     l = QLabel(tr(text))
     if role:
         l.setProperty("role", role)
@@ -38,12 +40,47 @@ def set_role(l, role):
 
 
 class RippleButton(QPushButton):
+    """Button with a click ripple. A caption that does not fit is elided (the full text stays as the tooltip) so a narrow box never gets pushed wider."""
+
     def __init__(self, text="", variant="secondary", parent=None):
-        super().__init__(tr(text), parent)
+        super().__init__("", parent)
+        self._full = tr(text)
+        super().setText(self._full)
         self.setProperty("variant", variant)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._r, self._origin = 1.0, QPointF()
-        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def setText(self, t):
+        self._full = t
+        self._elide()
+        self.updateGeometry()
+
+    def text_full(self):
+        return self._full
+
+    def _pad(self):
+        return theme.px(34)
+
+    def sizeHint(self):
+        fm = QFontMetrics(self.font())
+        h = max(theme.px(34), fm.height() + theme.px(16))
+        return QSize(fm.horizontalAdvance(self._full) + self._pad() + 8, h)
+
+    def minimumSizeHint(self):
+        return QSize(theme.px(64), self.sizeHint().height())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._elide()
+
+    def _elide(self):
+        fm = QFontMetrics(self.font())
+        avail = max(10, self.width() - self._pad())
+        shown = fm.elidedText(self._full, Qt.TextElideMode.ElideRight, avail) if self.width() > 0 else self._full
+        if shown != QPushButton.text(self):
+            super().setText(shown)
+        self.setToolTip(self._full if shown != self._full else "")
 
     def set_variant(self, v, **props):
         self.setProperty("variant", v)

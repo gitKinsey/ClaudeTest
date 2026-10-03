@@ -10,13 +10,16 @@ from ui_qt.theme import theme
 
 
 def make_pages(shell):
+    from ui_qt.pages.display import DisplayPage
     from ui_qt.pages.keys import KeysPage
     from ui_qt.pages.overview import OverviewPage
-    from ui_qt.pages.stubs import StubPage
-    return [OverviewPage(shell), KeysPage(shell), StubPage(shell, "display", "Display", "GIFs, info cards, screens and look", "display"),
-            StubPage(shell, "rules", "Rules", "Programs, schedules and computer actions", "rules"),
-            StubPage(shell, "scripts", "Scripts", "Loops, conditions and variables for your keys", "scripts", advanced=True),
-            StubPage(shell, "padapp", "Pad & App", "Behaviour, firmware, backup and this app", "padapp")]
+    from ui_qt.pages.padapp import PadAppPage
+    from ui_qt.pages.rules import RulesPage
+    from ui_qt.pages.scripts import ScriptsPage
+    return [OverviewPage(shell), KeysPage(shell), DisplayPage(shell),
+            RulesPage(shell),
+            ScriptsPage(shell),
+            PadAppPage(shell)]
 
 
 def create(argv=None, start_threads=True, frontend=None):
@@ -29,4 +32,29 @@ def create(argv=None, start_threads=True, frontend=None):
     theme.apply(app)
     shell = Shell(engine, make_pages)
     fe.parent = shell
+    wire_windows(engine, shell)
     return app, engine, shell
+
+
+def wire_windows(engine, shell):
+    from ui_qt import dialogs
+    state = {"mini": None}
+
+    def show(dlg):
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        state.setdefault("open", []).append(dlg)
+
+    def mini():
+        m = state["mini"]
+        if m is not None and m.isVisible():
+            m.raise_()
+            return
+        state["mini"] = dialogs.MiniPad(shell)
+        state["mini"].show()
+    engine.on("open_wizard", lambda: show(dialogs.SetupWizard(shell)))
+    engine.on("open_hwtest", lambda: show(dialogs.HardwareTest(shell)))
+    engine.on("open_palette", lambda: show(dialogs.CommandPalette(shell, dialogs.palette_commands(shell))))
+    engine.on("open_autobackup", lambda: show(dialogs.AutoBackupDialog(shell)))
+    engine.on("open_mini_window", mini)

@@ -57,10 +57,11 @@ class FlowLayout(QLayout):
             w = min(hint.width(), r.width())
             if x + w > r.right() + 1 and line_h > 0:
                 x, y, line_h = r.x(), y + line_h + self._v, 0
+            h = it.heightForWidth(w) if it.hasHeightForWidth() else hint.height()
             if not test:
-                it.setGeometry(QRect(QPoint(x, y), QSize(w, hint.height())))
+                it.setGeometry(QRect(QPoint(x, y), QSize(w, h)))
             x += w + self._h
-            line_h = max(line_h, hint.height())
+            line_h = max(line_h, h)
         return y + line_h - rect.y() + m.bottom()
 
 

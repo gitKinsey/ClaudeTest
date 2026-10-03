@@ -515,6 +515,9 @@ class DisplayOps:
         self.bg(lambda: self.dev.request({"cmd": "settings", **fields}), lambda _r: self.set_status("Pad setting changed"), "Pad setting failed")
 
     # ------------------------------------------------------------------ screens, reminders, habits (firmware 1.4)
+    def pad_has(self, cap):
+        return padconst.has_cap(self, cap)
+
     def screens_ok(self):
         return padconst.has_cap(self, "screens")
 

@@ -112,7 +112,7 @@ class OverviewPage(Page):
         t.add(flow(button("Edit keys", "secondary", lambda: e.goto("keys")), button("Show on pad", "ghost", e.show_layer_on_pad)))
 
         self.grid = PageGrid({"connect": c, "health": h, "quick": q, "usage": u, "twin": t},
-                             {"wide": [[("connect", 3), ("health", 3)], [("quick", 3), ("usage", 3)], [("twin", 1)]],
+                             {"wide": [[("connect", 3), ("health", 3)], [("quick", 3), ("usage", 3)], [("twin", 2)]],
                               "medium": [[("connect", 3), ("health", 3)], [("quick", 3), ("usage", 3)]]},
                              order=["connect", "health", "quick", "usage", "twin"],
                              titles={"connect": "Connection", "health": "Health", "quick": "Actions", "usage": "Usage", "twin": "Pad"},

@@ -149,6 +149,7 @@ class Shell(QMainWindow):
         e.on("show_window", self.raise_window)
         e.on("quit", self.quit_app)
         e.on("appearance", lambda m: self.apply_theme())
+        e.on("pref", lambda k, v: self.apply_theme() if k in ("accent", "ui_scale", "reduce_motion") else None)
         e.on("pending", lambda n: self.set_badge("keys", int(n) if n else None))
         e.on("open_mini", self.open_mini)
         e.on("advanced", lambda on: self.apply_advanced())

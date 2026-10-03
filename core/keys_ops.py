@@ -25,6 +25,12 @@ class KeysOps:
         self._rec_job = None
         self.recompute_pending()
 
+    def set_target_slot(self, slot):
+        """The key the 'Assign ...' buttons of the builders act on."""
+        if slot != self.target_slot:
+            self.target_slot = slot
+        self.emit("target_slot", slot)
+
     # ------------------------------------------------------------------ library
     def categories(self):
         return list(ACTIONS) + (["Custom"] if self.cfg["custom"] else [])
