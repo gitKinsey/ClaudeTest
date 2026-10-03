@@ -707,7 +707,7 @@ static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out) {
   return false;
 }
 // ---- host actions: the pad cannot launch programs, so it tells the companion app ({"evt":"host",...}) which does it
-static const char* const HOST_OPS[] = {"url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip"};   // new ops are appended: the index is stored in saved macros
+static const char* const HOST_OPS[] = {"url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip", "script"};   // new ops are appended: the index is stored in saved macros
 static bool parseHost(JsonVariantConst o, Step& s) {
   const char* op = o["op"] | "";
   const char* arg = o["arg"] | "";

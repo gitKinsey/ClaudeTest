@@ -43,10 +43,11 @@ def collect_allowed(layer_maps, customs, resolve):
 
 class HostActions:
     def __init__(self, allowed_fn, allow_shell_fn, type_clipboard=None, notify=None, opener=None, runner=None, system=None,
-                 type_text=None, read_clipboard=None, counter=None):
+                 type_text=None, read_clipboard=None, counter=None, script_runner=None):
         self.allowed_fn, self.allow_shell_fn = allowed_fn, allow_shell_fn
         self.type_clipboard, self.notify = type_clipboard, notify
         self.type_text, self.read_clipboard, self.counter = type_text, read_clipboard, counter   # snippets / clipboard transforms
+        self.script_runner = script_runner                                                        # callable(name) -> message, for op "script"
         self.open_url = opener or webbrowser.open
         self.popen = runner or subprocess.Popen
         self.system = system or platform.system()
@@ -55,6 +56,10 @@ class HostActions:
         """Returns (ok, message)."""
         if (op, arg) not in self.allowed_fn():
             return False, f"refused: '{op}' '{arg[:40]}' is not part of your key configuration"
+        return self.run_trusted(op, arg)
+
+    def run_trusted(self, op, arg=""):
+        """Like run() but without the whitelist: for things the user's own scripts do. The URL-scheme and shell-switch checks stay."""
         try:
             if op == "url":
                 u = urlparse(arg)
@@ -91,6 +96,10 @@ class HostActions:
                 if out:
                     self.type_text(out)
                 return True, f"typed {len(out)} characters"
+            if op == "script":
+                if not self.script_runner:
+                    return False, "scripts are not available here"
+                return True, self.script_runner(arg)
             if op == "notify":
                 if self.notify:
                     self.notify("Desk Companion", arg)

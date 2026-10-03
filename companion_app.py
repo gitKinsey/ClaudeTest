@@ -45,7 +45,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, automation, backup, bridge, espota, extras, feeds, hostactions, padextras, recorder, scheduler, textops, wizards     # noqa: E402
+from desk_lib import activewin, automation, backup, bridge, espota, extras, feeds, hostactions, padextras, recorder, scheduler, scripting, scripts_page, textops, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
@@ -54,6 +54,7 @@ PAGES = [("Control", [("Dashboard", "Home", "Connection, health and quick action
                       ("Virtual Pad", "Pad", "Your keys on three layers, with a live twin of the device"),
                       ("Macro Creator", "Macros", "Key combinations, text, delays, mouse, computer actions"),
                       ("Profiles", "Profiles", "Switch the pad's layer automatically for each program"),
+                      ("Scripts", "Scripts", "Loops, conditions and variables for your keys"),
                       ("Automation", "Automation", "Scheduled actions and the local API")]),
          ("Display", [("GIF Upload", "GIFs", "Pick or upload animations for the round screen"),
                       ("Info Screen", "Info", "Now playing, weather, calendar and notification badges")]),
@@ -235,6 +236,8 @@ def normalize_config(cfg):
         info.setdefault(k, v)
     cfg.setdefault("usage", {})                  # key press counters
     cfg.setdefault("counters", {})               # {counter:name} values used by snippets
+    sc = cfg.get("scripts")                      # macro scripts: {name: source}
+    cfg["scripts"] = {str(k)[:32]: str(v)[:scripting.MAX_SCRIPT_CHARS] for k, v in sc.items() if str(k).strip()} if isinstance(sc, dict) else {}
     good = []                                    # scheduled actions: drop anything that no longer validates
     for e in cfg.get("schedules") or []:
         try:
@@ -786,7 +789,7 @@ def rgb565be_image(raw, w=240, h=240):
 
 FW_BUNDLED = "1.3.0"                     # version of firmware/DeskCompanion.bin shipped with this app
 LAYERS, GIF_SLOTS = 3, 4
-HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip")
+HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip", "script")
 DEFAULT_LAYERS = [
     [{"type": "combo", "val": ["PRIMARY", "c"]}, {"type": "combo", "val": ["PRIMARY", "v"]}, {"type": "combo", "val": ["PRIMARY", "z"]},
      {"type": "media", "val": "PLAY_PAUSE"}, {"type": "media", "val": "MUTE"}, {"type": "media", "val": "VOL_UP"}, {"type": "media", "val": "VOL_DOWN"}],
@@ -1665,7 +1668,7 @@ def describe_spec(spec):
         if v.get("op") == "clip":
             return "clipboard: " + textops.TRANSFORMS.get(v.get("arg"), (v.get("arg", ""),))[0]
         return {"url": "open ", "app": "start ", "shell": "run ", "file": "open file ", "clipboard": "type the clipboard", "notify": "notify: ",
-                "snippet": "type snippet: "}.get(v.get("op"), "") + (v.get("arg", "") if v.get("op") != "clipboard" else "")
+                "snippet": "type snippet: ", "script": "run script: "}.get(v.get("op"), "") + (v.get("arg", "") if v.get("op") != "clipboard" else "")
     return "nothing"
 
 
@@ -3637,10 +3640,11 @@ class App(ctk.CTk):
         self._profile_state = {"win": None, "layer": None, "text": "profiles are off"}
         self.hostact = hostactions.HostActions(self._allowed_host, lambda: bool(self.cfg.get("allow_shell")),
                                                type_clipboard=self._type_clipboard, type_text=self._type_text,
-                                               read_clipboard=self._clipboard_text, counter=self._next_counter,
+                                               read_clipboard=self._clipboard_text, counter=self._next_counter, script_runner=self.run_script,
                                                notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok")))
         if self.host.impl is not None:
             self.host.impl.host_cb = self._host_cb
+        self._script_lock, self.script_stop = threading.Lock(), threading.Event()
         self.scheduler = scheduler.Scheduler(lambda: self.cfg["schedules"])
         self.api, self.api_error = None, ""
         self.pad = VirtualPad(self.exec_slot, self.exec_media, self.on_pad_change)
@@ -3889,6 +3893,7 @@ class App(ctk.CTk):
         self._build_gif(self.tabs.tab("GIF Upload"))
         self._build_profiles(self.tabs.tab("Profiles"))
         self._build_info(self.tabs.tab("Info Screen"))
+        self.scripts = scripts_page.ScriptsPage(self, self.tabs.tab("Scripts"))
         self.automation = automation.AutomationPage(self, self.tabs.tab("Automation"))
         if self.cfg["api"]["on"]:
             self.api_start()
@@ -4864,6 +4869,52 @@ class App(ctk.CTk):
         txt = self._clipboard_text()
         if txt:
             self._type_text(txt)
+
+    # ---- macro scripts (desk_lib/scripting.py)
+    class _ScriptBackend(scripting.Backend):
+        def __init__(self, app):
+            self.app = app
+
+        def _impl(self):
+            if self.app.host.impl is None:
+                raise scripting.ScriptError("the key sender is not available (pip install pynput)")
+            return self.app.host.impl
+
+        def key(self, keys): self._impl().run(("combo", list(keys)))
+        def text(self, s): self._impl().run(("text", s))
+        def click(self, how): self._impl().run(("mouse", {"btn": "left", "act": "double"} if how == "double" else {"btn": how, "act": "click"}))
+        def scroll(self, n): self._impl().run(("mouse", {"wheel": n}))
+        def media(self, name): self._impl().run(("media", name))
+        def host(self, op, arg):
+            ok, msg = self.app.hostact.run_trusted(op, arg)
+            if not ok:
+                raise scripting.ScriptError(msg)
+
+        def wait(self, ms):
+            if self.app.script_stop.wait(ms / 1000.0):
+                raise scripting.Stop
+
+        def window(self): return self.app.active_win.get()
+        def clipboard(self): return self.app._clipboard_text()
+
+    def script_ctx(self):
+        return {"counter": self._next_counter}
+
+    def run_script(self, name):
+        """Runs a saved script (called on the host worker thread). Returns a message; raises on problems."""
+        src = self.cfg["scripts"].get(name)
+        if src is None:
+            raise RuntimeError(f"there is no script called '{name}'")
+        if not self._script_lock.acquire(blocking=False):
+            raise RuntimeError("another script is still running (Scripts page -> Stop)")
+        self.script_stop.clear()
+        try:
+            n = scripting.run(src, self._ScriptBackend(self), lookup=self.cfg["scripts"].get, ctx=self.script_ctx(), shell_ok=bool(self.cfg.get("allow_shell")))
+        except scripting.ScriptError as e:
+            raise RuntimeError(f"script '{name}': {e}") from None
+        finally:
+            self._script_lock.release()
+        return f"script '{name}' ran {n} commands"
 
     def _next_counter(self, name):
         c = self.cfg["counters"]

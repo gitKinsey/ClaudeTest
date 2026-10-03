@@ -3,7 +3,7 @@
 expand("Report {date} #{counter:report}", ctx)  ->  "Report 2026-10-03 #7"
 transform("snake", "Hello World")               ->  "hello_world"
 
-Variables:  {date} {time} {datetime} {weekday} {iso}  - the current moment; {date:%d.%m.%Y} takes any strftime format
+Variables:  your own {name} (ctx["vars"], used by scripts); {date} {time} {datetime} {weekday} {iso}  - the current moment; {date:%d.%m.%Y} takes any strftime format
             {clipboard}   {user}   {host}   {uuid}   {random:1-100}   {counter:name} (persisted, +1 on every use)
             {{ and }} are literal braces. Unknown variables are left as typed so a typo is visible, not silent."""
 import base64
@@ -18,7 +18,7 @@ from urllib.parse import quote, unquote
 
 MAX_TEXT = 2000
 
-_VAR = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]+)(?::([^{}]*))?\}")
+_VAR = re.compile(r"\{\{|\}\}|\{([a-zA-Z_][a-zA-Z0-9_]*)(?::([^{}]*))?\}")
 
 
 def expand(template, ctx=None):
@@ -34,6 +34,9 @@ def expand(template, ctx=None):
         if whole == "}}":
             return "}"
         name, arg = m.group(1).lower(), m.group(2)
+        own = ctx.get("vars") or {}
+        if m.group(1) in own and arg is None:                 # a script's own variable wins over a built-in of the same name
+            return str(own[m.group(1)])
         try:
             if name in ("date", "time", "datetime"):
                 fmt = arg or {"date": "%Y-%m-%d", "time": "%H:%M", "datetime": "%Y-%m-%d %H:%M"}[name]

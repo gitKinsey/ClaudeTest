@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 GRACE = 120
 DO_KINDS = ("layer", "mode", "brightness", "led", "host", "notify")
-HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip")
+HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip", "script")
 
 
 def parse_hhmm(s):
