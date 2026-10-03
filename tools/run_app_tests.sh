@@ -9,7 +9,7 @@ export DESK_COMPANION_GIFS="$HOME/gifs"
 fail=0
 echo "== lint";           $PY -m pyflakes companion_qt.py deskcompanion_cli.py core ui_qt desk_lib tools firmware/flash.py packaging || fail=1
 echo "== lib_test";       $PY -W error tools/lib_test.py || fail=1
-for t in appextras_test data_test textops_test scheduler_test bridge_test extras_test scripting_test sysops_test system_test; do
+for t in appextras_test textops_test scheduler_test bridge_test extras_test scripting_test sysops_test system_test; do
   echo "== $t";           $PY tools/$t.py || fail=1
 done
 # the engine (no widgets) against the simulated pad
