@@ -68,8 +68,8 @@ def validate(entry):
         out["do"] = {"kind": "brightness", "n": n}
     elif dk == "led":
         mode = do.get("mode", "auto")
-        if mode not in ("auto", "off", "solid"):
-            raise ValueError("LED mode must be auto, off or solid")
+        if mode not in ("auto", "off", "solid", "breathe", "fire"):
+            raise ValueError("LED mode must be auto, off, breathe, fire or solid")
         hx = str(do.get("hex") or "").lstrip("#")
         if mode == "solid" and not re.fullmatch(r"[0-9a-fA-F]{6}", hx):
             raise ValueError("a solid LED needs a colour like ff8800")

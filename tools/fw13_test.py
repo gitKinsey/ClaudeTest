@@ -15,10 +15,9 @@ from desk_lib import padextras as px   # noqa: E402
 
 
 def run(v12):
-    if v12:
-        os.environ["DESK_COMPANION_SIM_V12"] = "1"
-    else:
-        os.environ.pop("DESK_COMPANION_SIM_V12", None)
+    os.environ.pop("DESK_COMPANION_SIM_V12", None)
+    os.environ.pop("DESK_COMPANION_SIM_V13", None)
+    os.environ["DESK_COMPANION_SIM_V12" if v12 else "DESK_COMPANION_SIM_V13"] = "1"       # this file tests a 1.3.0 pad and a 1.2.0 pad
     app = m.App()
     app.update()
 
@@ -37,8 +36,8 @@ def run(v12):
 # ======================================================================= firmware 1.3 pad
 app, sim, pump = run(False)
 caps = app.dev.info["caps"]
-assert all(c in caps for c in m.NEW13_CAPS) and app.dev.info["fw"] == "1.3.0" == m.FW_BUNDLED
-assert app.fw_status()[0] == "ok"
+assert all(c in caps for c in m.NEW13_CAPS) and app.dev.info["fw"] == "1.3.0" and not any(c in caps for c in m.NEW14_CAPS)
+assert app.fw_status()[0] == "old"          # the bundled firmware is newer (1.4.0)
 app.tabs.set("Device")
 b = app.behaviour
 assert pump(40, lambda: all(str(w.cget("state")) == "normal" for w in b.widgets)), "controls enabled for a 1.3 pad"

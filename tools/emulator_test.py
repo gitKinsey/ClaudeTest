@@ -180,7 +180,7 @@ def t_first_boot_responsive(c):
 
 def t_hello(c):
     h = c.e.request({"cmd": "hello"})
-    expect(h["ok"] and h["dev"] == "desk-companion" and h["fw"] == "1.3.0", f"bad hello {h}")
+    expect(h["ok"] and h["dev"] == "desk-companion" and h["fw"] == "1.4.0", f"bad hello {h}")
     for k in ("mode", "bright", "os", "fs_free", "fs_total", "layout", "hid", "disp", "fs", "safe", "led_pin"):
         expect(k in h, f"hello lacks {k}")
     expect(h["led_pin"] == 21, "LED pin should default to GPIO21 (Waveshare ESP32-S3-Zero)")
@@ -775,7 +775,7 @@ def t_settings(c):
     h = e.request({"cmd": "hello"})
     for cap in ("hostx", "gestures", "dialaccel", "clockstyle", "saver", "nightdim"):
         expect(cap in h["caps"], f"capability {cap} missing: {h['caps']}")
-    expect(h["fw"] == "1.3.0", f"firmware version {h['fw']}")
+    expect(h["fw"] == "1.4.0", f"firmware version {h['fw']}")
     st = e.request({"cmd": "settings"})
     expect(st["evt"] == "settings" and st["dial_accel"] == 0 and st["clock_style"] == 0 and st["saver_s"] == 0 and st["night_on"] is False, f"defaults {st}")
     for bad in ({"dial_accel": 3}, {"clock_style": 4}, {"saver_s": 3601}, {"saver_style": 0}, {"night_from": 24}, {"night_level": 4}, {"night_on": 1}, {"dial_accel": "x"}):
@@ -861,6 +861,216 @@ def t_settings(c):
     expect(not e.panicked(), "no crash")
 
 
+def t_screens(c):
+    """Screens 7-12 (stopwatch, breathing, dice, reaction, snake, habits), the screen mask, and reminders (firmware 1.4)."""
+    import calendar
+    e = c.e
+    for cap in ("screens", "pressturn", "toggle", "wheelmods", "ledfx", "reminders", "habits"):
+        expect(cap in e.request({"cmd": "hello"})["caps"], f"capability {cap}")
+    expect(e.request({"cmd": "hello"})["modes"] == 12 and e.request({"cmd": "hello"})["fw"] == "1.4.0", "12 screens, firmware 1.4.0")
+    expect(e.request({"cmd": "settings"})["mode_mask"] == 0x3F, "default: the six classic screens only")
+    for bad in (0, 4096, -1):
+        expect(e.request({"cmd": "settings", "mode_mask": bad})["err"] == "settings", f"mask {bad}")
+    scr = lambda: e.request({"cmd": "screens"})   # noqa: E731
+
+    def press(k, g=None):
+        r = e.request({"cmd": "input", "k": k, **({"g": g} if g else {})}); expect(r["ok"], f"press K{k}"); return r
+    e.request({"cmd": "reset_keys"})
+    n = {"op": "notify"}
+    e.request({"cmd": "time", "epoch": calendar.timegm((2026, 10, 7, 12, 0, 0)), "tz": 0})
+    # every new screen renders something, and they all differ
+    imgs = {}
+    for m in range(7, 13):
+        expect(e.request({"cmd": "mode", "val": m})["ok"], f"mode {m}")
+        e.pump(0.5)
+        img = rgb565be_to_image(snapshot(e))
+        lit = sum(1 for px in img.getdata() if px != (0, 0, 0))
+        expect(lit > 400, f"screen {m} looks empty ({lit} lit pixels)")
+        c.save(img, f"screen_{m}.png"); imgs[m] = img.tobytes()
+    expect(len(set(imgs.values())) == 6, "the six new screens must look different")
+    # the dial menu / long press only visit enabled screens
+    e.request({"cmd": "mode", "val": 1})
+    expect(e.request({"cmd": "settings", "mode_mask": (1 << 0) | (1 << 6)})["mode_mask"] == 65, "mask: clock + stopwatch")
+    expect(e.request({"cmd": "input", "hold": True})["ok"], "long press"); e.pump(0.3)
+    expect(e.request({"cmd": "info"})["mode"] == 7, "long press: clock -> stopwatch (the others are skipped)")
+    e.request({"cmd": "input", "hold": True}); e.pump(0.3)
+    expect(e.request({"cmd": "info"})["mode"] == 1, "...and back to the clock")
+    for step in ({"click": True}, {"turn": 2}, {"click": True}, {"turn": 1}, {"click": True}):
+        expect(e.request({"cmd": "input", **step})["ok"], f"menu {step}")
+    e.pump(0.4)
+    expect(e.request({"cmd": "info"})["mode"] == 7, "the menu's MODE entry also skips screens that are switched off")
+    e.request({"cmd": "input", "hold": True}); e.pump(0.3)                       # a long press closes the menu again
+    expect(e.request({"cmd": "info"})["mode"] == 7, "closing the menu keeps the screen")
+    e.request({"cmd": "settings", "mode_mask": 0x3F}); e.request({"cmd": "mode", "val": 7})
+    # ---- stopwatch (K1 start / stop, K2 lap / reset; the other keys keep their own actions)
+    e.request({"cmd": "remap", "key": 1, "type": "host", "val": dict(n, arg="k1")}); e.request({"cmd": "remap", "key": 3, "type": "host", "val": dict(n, arg="k3")})
+    press(1); e.pump(0.6)
+    sw = scr()["sw"]
+    expect(sw["run"] is True and 300 < sw["ms"] < 5000, f"stopwatch running {sw}")
+    press(2); expect(scr()["sw"]["laps"] and len(scr()["sw"]["laps"]) == 1, "lap while running")
+    press(1); frozen = scr()["sw"]["ms"]; e.pump(0.5)
+    expect(scr()["sw"]["run"] is False and scr()["sw"]["ms"] == frozen, "stop freezes the time")
+    press(2); expect(scr()["sw"]["ms"] == 0 and scr()["sw"]["laps"] == [], "K2 while stopped = reset")
+    e.msgs.clear(); press(3); e.pump(0.4)
+    expect([m["arg"] for m in e.msgs if m.get("evt") == "host"] == ["k3"], "K3 keeps its macro in the stopwatch screen")
+    e.msgs.clear(); press(1); e.pump(0.3); press(1)
+    expect(not [m for m in e.msgs if m.get("evt") == "host"], "K1 does NOT run its macro in the stopwatch screen")
+    # ---- breathing
+    e.request({"cmd": "mode", "val": 8}); press(1)
+    expect(scr()["br"] == {"run": True, "pattern": 0}, "breathing starts")
+    for want in (1, 2, 3, 0):
+        press(2); expect(scr()["br"]["pattern"] == want, f"pattern {want}")
+    press(1); expect(scr()["br"]["run"] is False, "breathing stops")
+    # ---- dice, coin, 8-ball
+    e.request({"cmd": "mode", "val": 9})
+    for k, kind, lo, hi in ((1, 0, 1, 6), (2, 1, 1, 20), (3, 2, 0, 1), (4, 3, 0, 7), (5, 4, 1, 100)):
+        for _ in range(4):
+            press(k); t = scr()["toy"]
+            expect(t["kind"] == kind and lo <= t["result"] <= hi and t["rolling"] is True, f"toy K{k}: {t}")
+    # ---- reaction test
+    e.request({"cmd": "mode", "val": 10})
+    press(1); expect(scr()["rx"]["state"] == 1, "waiting")
+    press(2); expect(scr()["rx"]["state"] == 4, "pressing too early")
+    press(1); t0 = time.time()
+    while time.time() - t0 < 9 and scr()["rx"]["state"] != 2:
+        e.pump(0.1)
+    expect(scr()["rx"]["state"] == 2, "GO never came")
+    press(3); r = scr()["rx"]
+    expect(r["state"] == 3 and 0 <= r["ms"] < 3000 and r["best"] == r["ms"], f"reaction result {r}")
+    e.request({"cmd": "mode", "val": 1}); expect(scr()["rx"]["state"] == 0, "leaving the screen resets the test")
+    # ---- snake
+    e.request({"cmd": "remap", "key": 6, "type": "host", "val": dict(n, arg="cw")})
+    e.request({"cmd": "mode", "val": 11})
+    e.msgs.clear(); e.request({"cmd": "input", "turn": 1}); e.pump(0.3)
+    expect([m["arg"] for m in e.msgs if m.get("evt") == "host"] == ["cw"], "the dial keeps its action while no game is running")
+    press(1); sn = scr()["snake"]
+    expect(sn["run"] is True and sn["len"] == 3 and sn["dir"] == 1, f"snake starts {sn}")
+    e.msgs.clear(); e.request({"cmd": "input", "turn": 1}); e.pump(0.2)
+    expect(not [m for m in e.msgs if m.get("evt") == "host"], "while playing the dial steers, it does not run its action")
+    t0 = time.time()
+    while time.time() - t0 < 4 and scr()["snake"]["dir"] != 2:
+        e.pump(0.1)
+    expect(scr()["snake"]["dir"] == 2, "turning the dial right turns the snake clockwise (right -> down)")
+    t0 = time.time()
+    while time.time() - t0 < 12 and not scr()["snake"]["over"]:
+        e.pump(0.2)
+    sn = scr()["snake"]
+    expect(sn["over"] is True and sn["run"] is False, f"the snake must hit the wall eventually {sn}")
+    press(1); expect(scr()["snake"]["run"] is True and scr()["snake"]["over"] is False, "K1 restarts"); press(1)
+    expect(scr()["snake"]["run"] is False and scr()["snake"]["over"] is False, "K1 while playing = pause")
+    e.request({"cmd": "mode", "val": 1})
+    # ---- habits
+    hb = lambda **kw: e.request({"cmd": "habits", **kw})   # noqa: E731
+    day0 = calendar.timegm((2026, 10, 7, 12, 0, 0))
+    e.request({"cmd": "time", "epoch": day0, "tz": 0})
+    h = hb(); expect(h["synced"] is True and h["today"] == [0] * 5 and h["streak"] == [0] * 5 and h["names"][0] == "WATER", f"habits {h}")
+    for bad in ({"names": ["a"] * 4}, {"names": ["a"] * 4 + ["x" * 11]}, {"names": ["a"] * 4 + [""]}, {"names": ["a"] * 4 + ["b|c"]}, {"toggle": 5}, {"toggle": -1}):
+        expect(hb(**bad)["err"] in ("names", "habit"), f"accepted {bad}")
+    h = hb(names=["Water", "Walk", "Read", "Sleep", "Code"]); expect(h["names"] == ["Water", "Walk", "Read", "Sleep", "Code"], "names set")
+    e.request({"cmd": "mode", "val": 12})
+    h = hb(toggle=0); expect(h["today"] == [1, 0, 0, 0, 0] and h["streak"][0] == 1, f"toggle {h}")
+    press(3); expect(hb()["today"] == [1, 0, 1, 0, 0], "K3 toggles habit 3 in the habits screen")
+    press(3); expect(hb()["today"] == [1, 0, 0, 0, 0], "and back")
+    e.power_cycle(); e.wait_boot(120)
+    e.request({"cmd": "time", "epoch": day0 + 600, "tz": 0})
+    h = hb(); expect(h["today"] == [1, 0, 0, 0, 0] and h["names"][1] == "Walk", f"habits survive a power cycle: {h}")
+    e.request({"cmd": "time", "epoch": day0 + 86400, "tz": 0})
+    h = hb(); expect(h["today"] == [0] * 5 and h["streak"][0] == 1, f"next day: yesterday still counts as a streak {h}")
+    h = hb(toggle=0); expect(h["streak"][0] == 2, f"two days in a row {h}")
+    e.request({"cmd": "time", "epoch": day0 + 4 * 86400, "tz": 0})
+    h = hb(); expect(h["streak"][0] == 0 and h["today"][0] == 0, f"a missed day ends the streak {h}")
+    e.request({"cmd": "time", "epoch": day0 + 20 * 86400, "tz": 0}); expect(hb()["streak"] == [0] * 5, "a long gap clears the history")
+    e.request({"cmd": "mode", "val": 1})
+    # ---- reminders
+    rm = lambda **kw: e.request({"cmd": "reminders", **kw})   # noqa: E731
+    expect(rm()["list"] == [{"m": 0, "t": ""}] * 3, "no reminders by default")
+    for bad in ([{"m": 5, "t": "x" * 17}], [{"m": 1441, "t": "ok"}], [{"m": 5, "t": ""}], [{"m": 5, "t": "a|b"}], [{"m": 5, "t": "a;b"}], [{"m": 1, "t": "a"}] * 4, [{"m": -1, "t": "a"}]):
+        expect(rm(list=bad)["err"] == "list", f"accepted {bad}")
+    r = rm(list=[{"m": 20, "t": "Look away"}, {"m": 45, "t": "Stand up"}])
+    expect(r["list"] == [{"m": 20, "t": "Look away"}, {"m": 45, "t": "Stand up"}, {"m": 0, "t": ""}], f"reminders {r}")
+    expect(rm(test=2)["err"] == "test" and rm(test=7)["err"] == "test", "testing an empty / invalid reminder")
+    before = rgb565be_to_image(snapshot(e)).tobytes()
+    e.msgs.clear(); e.send({"cmd": "reminders", "test": 0, "id": 9001}); e.pump(0.8)      # (the event arrives before the reply: read both from the raw stream)
+    ev = [m for m in e.msgs if m.get("evt") == "reminder"]
+    r = next(m for m in e.msgs if m.get("id") == 9001)
+    expect(r["active"] is True and len(ev) == 1 and ev[0]["i"] == 0 and ev[0]["text"] == "Look away" and "id" not in ev[0], f"reminder event {ev}")
+    shown = rgb565be_to_image(snapshot(e)); c.save(shown, "reminder.png")
+    expect(shown.tobytes() != before and scr()["reminder_active"] is True, "the reminder takes over the screen")
+    press(3); e.pump(0.3)
+    expect(scr()["reminder_active"] is False, "any key dismisses it")
+    e.power_cycle(); e.wait_boot(120)
+    expect(rm()["list"][1] == {"m": 45, "t": "Stand up"}, "reminders survive a power cycle")
+    rm(list=[]); e.request({"cmd": "settings", "mode_mask": 0x3F}); e.request({"cmd": "reset_keys"})
+    expect(not e.panicked(), "no crash")
+
+
+def t_actions14(c):
+    """Dial press+turn slots, toggle / random / panic actions, mouse wheel modifiers, LED effects (firmware 1.4)."""
+    e = c.e
+    e.request({"cmd": "reset_keys"}); e.request({"cmd": "mode", "val": 1})
+    n = lambda a: {"op": "notify", "arg": a}   # noqa: E731
+    hosts = lambda: [m["arg"] for m in e.msgs if m.get("evt") == "host"]   # noqa: E731
+
+    def press(k):
+        e.msgs.clear(); expect(e.request({"cmd": "input", "k": k})["ok"], f"K{k}"); e.pump(0.45); return hosts()
+    # ---- dial pressed + turned
+    expect(e.request({"cmd": "getkeys", "layer": 0})["pt"] == [False, False], "no press+turn actions yet")
+    expect(e.request({"cmd": "remap", "key": 8, "type": "host", "val": n("pr")})["ok"] and e.request({"cmd": "remap", "key": 9, "layer": 1, "type": "host", "val": n("pl")})["ok"], "remap slots 8 / 9")
+    expect(e.request({"cmd": "remap", "key": 10, "type": "text", "val": "x"})["err"] == "key" and e.request({"cmd": "remap", "key": 8, "gesture": "hold", "type": "text", "val": "x"})["err"] == "key", "no slot 10; no gestures on slot 8")
+    expect(e.request({"cmd": "getkeys", "layer": 0})["pt"] == [True, False] and e.request({"cmd": "getkeys", "layer": 1})["pt"] == [False, True], "flags per layer")
+    sp = e.request({"cmd": "getkeys", "layer": 0, "slot": 8}); expect(sp["def"] is False and sp["spec"]["val"]["arg"] == "pr", f"slot 8 {sp}")
+    sp = e.request({"cmd": "getkeys", "layer": 0, "slot": 9}); expect(sp["def"] is True and "spec" not in sp, f"slot 9 unset {sp}")
+    e.request({"cmd": "remap", "key": 6, "type": "host", "val": n("cw")})
+    def turn(**kw):
+        e.msgs.clear(); e.request({"cmd": "input", "turn": 1, **kw}); e.pump(0.4); return hosts()
+    expect(turn(press=True) == ["pr"], "dial pressed + turned right runs slot 8")
+    expect(turn() == ["cw"], "a plain turn runs the normal action")
+    expect(e.request({"cmd": "input", "turn": -1, "press": True})["ok"], "slot 9 is not set on layer 1: falls back to the normal turn")
+    e.request({"cmd": "reset_keys"}); expect(e.request({"cmd": "getkeys", "layer": 0})["pt"] == [False, False] and e.request({"cmd": "getkeys", "layer": 1})["pt"] == [False, False], "reset clears them")
+    # ---- toggle / random / panic
+    tg = {"type": "toggle", "val": [{"type": "host", "val": n("A")}, {"type": "host", "val": n("B")}]}
+    expect(e.request({"cmd": "remap", "key": 1, **tg})["ok"], "toggle accepted")
+    expect([press(1) for _ in range(5)] == [["A"], ["B"], ["A"], ["B"], ["A"]], "a toggle key alternates")
+    expect(e.request({"cmd": "remap", "key": 2, **tg})["ok"], "second toggle key")
+    expect(press(2) == ["A"] and press(1) == ["B"], "each toggle key keeps its own state")
+    for bad in ({"type": "toggle", "val": [{"type": "host", "val": n("A")}]}, {"type": "toggle", "val": [tg] * 2}, {"type": "toggle", "val": "x"},
+                {"type": "toggle", "val": [{"type": "host", "val": n("A")}, {"type": "banana"}]}, {"type": "random", "val": [{"type": "none"}] * 7}, {"type": "random", "val": [{"type": "none"}]},
+                {"type": "random", "val": [tg, tg]}):
+        expect(e.request({"cmd": "remap", "key": 3, **bad})["err"] == "spec", f"accepted {str(bad)[:60]}")
+    rd = {"type": "random", "val": [{"type": "host", "val": n(x)} for x in "XYZ"]}
+    expect(e.request({"cmd": "remap", "key": 3, **rd})["ok"], "random accepted")
+    seen = []
+    for _ in range(14):
+        seen += press(3)
+    expect(set(seen) <= {"X", "Y", "Z"} and len(set(seen)) >= 2 and len(seen) >= 12, f"random picks among the choices: {seen}")
+    # panic stops a running macro at once and is itself a valid key action / macro step
+    expect(e.request({"cmd": "remap", "key": 4, "type": "panic", "val": None})["ok"], "panic key")
+    slow = [{"host": n("start")}, {"delay": 2500}, {"host": n("late")}]
+    e.request({"cmd": "remap", "key": 5, "type": "macro", "val": slow})
+    e.msgs.clear(); e.request({"cmd": "input", "k": 5}); e.pump(0.4)
+    expect(hosts() == ["start"], "the slow macro started")
+    e.request({"cmd": "input", "k": 4}); e.pump(3.2)
+    expect("late" not in hosts(), f"panic cancelled the rest of the macro: {hosts()}")
+    expect(e.request({"cmd": "remap", "key": 5, "type": "macro", "val": [{"host": n("a")}, {"panic": True}, {"host": n("never")}]})["ok"], "panic as a macro step")
+    expect(press(5) == ["a"], "a panic step ends the macro right there")
+    # ---- mouse wheel modifiers / sideways scroll
+    for good in ({"wheel": 3, "mods": ["CTRL"]}, {"wheel": -3, "mods": ["ctrl", "shift"], "h": True}, {"wheel": 2, "h": True}, {"wheel": 1, "mods": []}):
+        expect(e.request({"cmd": "remap", "key": 1, "type": "mouse", "val": good})["ok"], f"wheel {good}")
+    for bad in ({"wheel": 3, "mods": ["BANANA"]}, {"wheel": 3, "mods": "CTRL"}):
+        expect(e.request({"cmd": "remap", "key": 1, "type": "mouse", "val": bad})["err"] == "spec", f"accepted {bad}")
+    e.request({"cmd": "remap", "key": 1, "type": "mouse", "val": {"wheel": 3, "mods": ["CTRL", "ALT", "GUI", "SHIFT"]}}); press(1)
+    # ---- LED effects
+    modes = {"auto": 0, "off": 1, "solid": 2, "blink": 3, "rainbow": 4, "breathe": 5, "fire": 6}
+    for name, num in modes.items():
+        r = e.request({"cmd": "led", "mode": name}); expect(r["ok"] and r["mode"] == num, f"led {name}: {r}")
+        e.pump(0.15)
+    expect(e.request({"cmd": "led", "mode": "sparkle"})["err"] == "led_mode", "unknown led mode")
+    expect(e.request({"cmd": "led", "alert": "ff0000", "times": 3})["ok"], "alert"); e.pump(1.0)
+    expect(e.request({"cmd": "led", "alert": "00ff00"})["ok"] and e.request({"cmd": "led", "mode": "auto"})["mode"] == 0, "alert default + back to auto")
+    e.request({"cmd": "reset_keys"})
+    expect(not e.panicked() and e.request({"cmd": "ping"})["ok"], "no crash")
+
+
 def t_recovery(c):
     e = c.e
     expect(e.request({"cmd": "factory"})["err"] == "confirm", "factory needs confirm")
@@ -885,7 +1095,7 @@ def t_recovery(c):
 
 
 TESTS = [t_first_boot_responsive, t_hello, t_ping_echo_id, t_info, t_led, t_gpio, t_inputs, t_display_and_snapshot, t_modes_render, t_virtual_input,
-         t_events, t_remap_persistence, t_gif, t_layers, t_new_actions, t_info_screen, t_gif_slots, t_gestures, t_settings, t_recovery, t_selftest_misc, t_fuzz, t_safe_mode]
+         t_events, t_remap_persistence, t_gif, t_layers, t_new_actions, t_info_screen, t_gif_slots, t_gestures, t_settings, t_screens, t_actions14, t_recovery, t_selftest_misc, t_fuzz, t_safe_mode]
 
 
 def main():

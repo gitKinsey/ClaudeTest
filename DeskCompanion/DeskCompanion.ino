@@ -119,12 +119,12 @@ struct HidStub {                               // keeps every call site valid wh
 #endif
 
 // ================================================================ types (kept above all functions)
-enum StepType : uint8_t { ST_KEYS, ST_MEDIA, ST_TEXT, ST_DELAY, ST_LAYER, ST_HOST, ST_MOUSE };
+enum StepType : uint8_t { ST_KEYS, ST_MEDIA, ST_TEXT, ST_DELAY, ST_LAYER, ST_HOST, ST_MOUSE, ST_PANIC };
 struct Step { uint8_t t = 0; uint8_t n = 0; uint8_t keys[6] = {0, 0, 0, 0, 0, 0}; uint16_t val = 0; String text; };
 struct KeyName { const char* name; uint8_t code; };
 struct MediaName { const char* name; uint16_t code; };
 struct FileOut { fs::File f; void put(const uint8_t* b, size_t n) { f.write(b, n); } void tick() { delay(1); } };
-enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF, M_INFO };
+enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF, M_INFO, M_STOPW, M_BREATH, M_TOYS, M_REACT, M_SNAKE, M_HABIT };
 struct InfoCard { char kind = 'c'; String label, t, a, b; };
 struct InfoBadge { String name; uint16_t n = 0; };
 enum PomoState : uint8_t { PS_IDLE, PS_RUN, PS_PAUSE, PS_DONE };
@@ -147,6 +147,38 @@ static void sceneClockAlt(const struct tm& t);
 static void sceneSaver();
 static void cmdSettings(JsonDocument& doc);
 static void cmdGestureTest(JsonDocument& doc);
+static void panicNow();
+static void fmtTime(char* b, size_t n, uint32_t ms);
+static uint32_t swElapsed();
+static int toyRoll(uint8_t kind);
+static void snakeFood();
+static void snakeNew();
+static uint8_t habStreak(uint8_t h);
+static void remTrigger(uint8_t i);
+static void habitsReply();
+static void remindersReply();
+static bool snCellOk(int x, int y);
+static void runSpecJson(const String& js, const char* fallback, uint8_t sid);
+static bool modeKey(int i);
+static void snakeTurn(int steps);
+static void snakeTick();
+static void reactTick();
+static void remTick();
+static void remDismiss();
+static void habitRoll();
+static void habitSave();
+static uint8_t nextEnabledMode(uint8_t m, int dir);
+static void sceneStopwatch();
+static void sceneBreathe();
+static void sceneToys();
+static void sceneReact();
+static void sceneSnake();
+static void sceneHabits();
+static void sceneReminder();
+static void cmdScreens(JsonDocument& doc);
+static void cmdReminders(JsonDocument& doc);
+static void cmdHabits(JsonDocument& doc);
+static void onEncPressTurn(int steps);
 static bool nightActive(int hour, uint8_t from, uint8_t to);
 static uint8_t effBright();
 static void gestureKey(uint8_t lay, uint8_t i, char g, char* out);
@@ -297,9 +329,9 @@ static const float    VCC_DIVIDER = 2.0f;
 static const size_t   RX_MAX = 6000;              // longest accepted JSON line
 static const bool     DC_IS_SIM = DC_SIM_FLAG;
 static const uint8_t  PIN_RGB = DC_RGB_PIN;       // onboard WS2812 (Waveshare ESP32-S3-Zero: GPIO21)
-static const char*    FW_VERSION = "1.3.0";
-static const char*    MODE_NAME[7] = {"", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO"};
-static const uint8_t  NUM_MODES = 6;
+static const char*    FW_VERSION = "1.4.0";
+static const char*    MODE_NAME[13] = {"", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO", "STOPWATCH", "BREATHE", "DICE", "REACTION", "SNAKE", "HABITS"};
+static const uint8_t  NUM_MODES = 12;   // 1-6 are the classic screens; 7-12 are optional (enable them with settings "mode_mask")
 static const uint8_t  LAYERS = 3;                 // key layers (each has K1..K5 + dial right / left)
 static const uint8_t  GIF_SLOTS = 4;              // /anim.gif (slot 0, also the built-in demo) + /anim1.gif .. /anim3.gif
 static const uint32_t INFO_STALE_MS = 300000UL;   // info cards older than this are shown as "no data"
@@ -334,6 +366,18 @@ bool     saverOn = false;
 int32_t  turnDtOverride = -1;                    // tests: pretend the previous detent was this many ms ago
 uint8_t  lastTurnRuns = 0;                       // how many times the dial action ran for the last turn (after acceleration)
 uint8_t  gHold[LAYERS], gDbl[LAYERS];            // bit i = key i of that layer has a stored hold / double-tap action
+// ---- v1.4: optional screens 7-12, reminders, toggle / random actions, LED effects
+uint16_t modeMask = 0x003F;                      // screens in the dial menu / long-press cycle (bit m-1 = screen m); 1-6 by default
+uint8_t  tglState[LAYERS * 9 * 3];               // toggle actions: which half runs next, per (layer, slot, gesture)
+bool     swRun = false; uint32_t swStartAt = 0, swAccum = 0, swLaps[4]; uint8_t swLapN = 0;
+bool     brRun = false; uint8_t brPattern = 0; uint32_t brStartAt = 0;
+uint8_t  toyKind = 0; int toyResult = 0; uint32_t toyRollUntil = 0;
+uint8_t  rxState = 0; uint32_t rxAt = 0, rxGoAt = 0; uint16_t rxMs = 0, rxBest = 0;        // 0 idle, 1 wait, 2 go, 3 result, 4 too early
+bool     snRun = false, snOver = false; uint8_t snLen = 0, snDir = 1, snFx = 0, snFy = 0; int8_t snTurn = 0; int8_t snX[100], snY[100]; uint16_t snBest = 0; uint32_t snAt = 0;
+uint32_t habDay = 0; uint8_t habHist[5]; char habName[5][11] = {"WATER", "MOVE", "READ", "SLEEP", "FOCUS"};
+struct Reminder { uint16_t min = 0; char text[17] = ""; uint32_t nextAt = 0; };
+Reminder remArr[3]; bool remActive = false; uint8_t remIdx = 0; uint32_t remUntil = 0, remShownAt = 0, remPulseAt = 0;
+uint32_t alertStart = 0, alertEnd = 0; uint8_t alertR = 0, alertG = 0, alertB = 0;      // LED alert pattern (a few quick flashes)
 uint8_t  curLayer = 0, menuLayer = 0;
 uint32_t layerToastUntil = 0, flashAt = 0, ledFlashUntil = 0;
 uint8_t  ledFlashR = 0, ledFlashG = 0, ledFlashB = 0;
@@ -421,7 +465,7 @@ bool     gpioTouched = false;
 
 enum FsState : uint8_t { FS_IDLE, FS_MOUNTING, FS_FORMATTING, FS_PREPARING, FS_READY, FS_FAILED };
 static const char* const FS_STATE_NAME[6] = {"idle", "mounting", "formatting", "preparing", "ready", "failed"};
-enum LedMode : uint8_t { LM_AUTO, LM_OFF, LM_SOLID, LM_BLINK, LM_RAINBOW };
+enum LedMode : uint8_t { LM_AUTO, LM_OFF, LM_SOLID, LM_BLINK, LM_RAINBOW, LM_BREATHE, LM_FIRE };
 uint8_t  ledMode = LM_AUTO, ledUserR = 0, ledUserG = 0, ledUserB = 0;
 uint8_t  ledBootR = 24, ledBootG = 0, ledBootB = 24;
 uint8_t  ledLastR = 0, ledLastG = 0, ledLastB = 0;
@@ -467,7 +511,7 @@ static int b64dec(const char* in, size_t n, uint8_t* out) {
 }
 static void localTm(struct tm& t) { time_t n = time(nullptr) + tzOff; gmtime_r(&n, &t); }
 static void uiTouch() { menuTouched = millis(); }
-static void activity() { lastActivity = millis(); if (saverOn) { saverOn = false; needRedraw = true; } }   // any physical input wakes the screensaver
+static void activity() { lastActivity = millis(); if (saverOn) { saverOn = false; needRedraw = true; } if (remActive && millis() - remShownAt > 400) remDismiss(); }   // any physical input wakes the screensaver
 static bool nightActive(int hour, uint8_t from, uint8_t to) {                  // pure: is `hour` inside [from, to) - the window may wrap midnight
   if (from == to) return false;
   return from < to ? (hour >= from && hour < to) : (hour >= from || hour < to);
@@ -583,11 +627,18 @@ static void ledFlash(uint8_t r, uint8_t g, uint8_t b, uint32_t ms) {   // short 
 static void ledService() {
   uint32_t now = millis();
   if ((int32_t)(now - ledNextAt) < 0) return;
+  if ((int32_t)(alertEnd - now) > 0) { bool on = ((now - alertStart) / 120) % 2 == 0; ledRaw(on ? alertR / 3 : 0, on ? alertG / 3 : 0, on ? alertB / 3 : 0); ledNextAt = now + 20; return; }
   switch (ledMode) {
     case LM_OFF: ledRaw(0, 0, 0); ledNextAt = now + 500; break;
     case LM_SOLID: ledRaw(ledUserR, ledUserG, ledUserB); ledNextAt = now + 500; break;
     case LM_BLINK: ledRaw(((now / 400) & 1) ? ledUserR : 0, ((now / 400) & 1) ? ledUserG : 0, ((now / 400) & 1) ? ledUserB : 0); ledNextAt = now + 40; break;
     case LM_RAINBOW: { uint8_t r, g, b; hsv2rgb((now / 8) % 360, &r, &g, &b); ledRaw(r / 4, g / 4, b / 4); ledNextAt = now + 20; break; }
+    case LM_BREATHE: {                                              // slow sine fade in the user's colour (cyan until one is set)
+      float f = 0.5f - 0.5f * cosf(now / 1100.0f);
+      bool unset = !ledUserR && !ledUserG && !ledUserB;
+      ledRaw((uint8_t)((unset ? 0 : ledUserR) * f), (uint8_t)((unset ? 60 : ledUserG) * f), (uint8_t)((unset ? 70 : ledUserB) * f)); ledNextAt = now + 25; break;
+    }
+    case LM_FIRE: { uint32_t r = esp_random(); uint8_t base = 18 + (r & 31); ledRaw(base, (uint8_t)(base / 4 + ((r >> 8) & 7)), 0); ledNextAt = now + 45 + ((r >> 16) & 31); break; }
     default:                                                          // LM_AUTO
       if ((int32_t)(ledFlashUntil - now) > 0) { ledRaw(ledFlashR, ledFlashG, ledFlashB); ledNextAt = now + 30; }
       else if (!ledReady) { ledRaw(ledBootR, ledBootG, ledBootB); ledNextAt = now + 100; }
@@ -682,6 +733,20 @@ static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out) {
   }
   if (!strcmp(type, "host")) { Step s; if (!parseHost(val, s)) return false; out.push_back(s); return true; }
   if (!strcmp(type, "mouse")) { Step s; if (!parseMouse(val, s)) return false; out.push_back(s); return true; }
+  if (!strcmp(type, "panic")) { Step s; s.t = ST_PANIC; out.push_back(s); return true; }
+  if (!strcmp(type, "toggle") || !strcmp(type, "random")) {      // {"type":"toggle","val":[specA,specB]} alternates; {"type":"random","val":[spec x2..6]} picks one
+    if (!val.is<JsonArrayConst>()) return false;
+    size_t n = val.size(), lo = !strcmp(type, "toggle") ? 2 : 2, hi = !strcmp(type, "toggle") ? 2 : 6;
+    if (n < lo || n > hi) return false;
+    for (JsonVariantConst sub : val.as<JsonArrayConst>()) {
+      const char* st = sub["type"] | "";
+      if (!strcmp(st, "toggle") || !strcmp(st, "random")) return false;       // no nesting
+      std::vector<Step> tmp;
+      if (!parseSpec(sub, tmp)) return false;
+    }
+    Step s; s.t = ST_DELAY; s.val = 0; out.push_back(s);          // a harmless placeholder: the real choice is made when the key runs (runSpecJson)
+    return true;
+  }
   if (!strcmp(type, "macro")) {
     if (!val.is<JsonArrayConst>()) return false;
     for (JsonVariantConst o : val.as<JsonArrayConst>()) {
@@ -693,6 +758,7 @@ static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out) {
       else if (!o["media"].isNull()) { s.t = ST_MEDIA; if (!resolveMedia(o["media"].as<const char*>(), s.val)) return false; }
       else if (!o["host"].isNull()) { if (!parseHost(o["host"], s)) return false; }
       else if (!o["mouse"].isNull()) { if (!parseMouse(o["mouse"], s)) return false; }
+      else if (!o["panic"].isNull()) { s.t = ST_PANIC; }
       else if (!o["layer"].isNull()) {
         s.t = ST_LAYER;
         if (o["layer"].is<const char*>()) { String v = o["layer"].as<const char*>(); if (v == "next") s.val = 100; else if (v == "prev") s.val = 101; else return false; }
@@ -731,7 +797,17 @@ static void evtHost(const Step& s) {
 static bool parseMouse(JsonVariantConst o, Step& s) {
   if (!o.is<JsonObjectConst>()) return false;
   s.t = ST_MOUSE;
-  if (!o["wheel"].isNull()) { s.n = 3; s.val = (uint16_t)(int16_t)constrain(o["wheel"].as<int>(), -20, 20); return true; }
+  if (!o["wheel"].isNull()) {                                    // {"wheel":n,"mods":["CTRL"],"h":true}: Ctrl+wheel = zoom, "h" = sideways scroll
+    s.n = 3; s.val = (uint16_t)(int16_t)constrain(o["wheel"].as<int>(), -20, 20); s.keys[0] = 0; s.keys[1] = o["h"] | false ? 1 : 0;
+    if (!o["mods"].isNull()) {
+      if (!o["mods"].is<JsonArrayConst>()) return false;
+      for (JsonVariantConst m : o["mods"].as<JsonArrayConst>()) {
+        String n = m.as<String>(); n.toUpperCase();
+        if (n == "CTRL") s.keys[0] |= 1; else if (n == "SHIFT") s.keys[0] |= 2; else if (n == "ALT") s.keys[0] |= 4; else if (n == "GUI") s.keys[0] |= 8; else return false;
+      }
+    }
+    return true;
+  }
   if (!o["move"].isNull()) {
     if (!o["move"].is<JsonArrayConst>() || o["move"].size() != 2) return false;
     s.n = 4; s.keys[1] = (uint8_t)(int8_t)constrain(o["move"][0].as<int>(), -100, 100); s.keys[2] = (uint8_t)(int8_t)constrain(o["move"][1].as<int>(), -100, 100);
@@ -747,7 +823,15 @@ static void mouseDo(const Step& s) {
   switch (s.n) {
     case 1: Mouse.click(s.keys[0]); break;
     case 2: Mouse.click(s.keys[0]); delay(40); Mouse.click(s.keys[0]); break;
-    case 3: Mouse.move(0, 0, (int8_t)(int16_t)s.val, 0); break;
+    case 3: {
+      static const uint8_t MODCODE[4] = {0x80, 0x81, 0x82, 0x83};
+      for (int i = 0; i < 4; i++) if (s.keys[0] & (1 << i)) Keyboard.press(MODCODE[i]);
+      if (s.keys[0]) delay(15);
+      int8_t w = (int8_t)(int16_t)s.val;
+      if (s.keys[1]) Mouse.move(0, 0, 0, w); else Mouse.move(0, 0, w, 0);
+      if (s.keys[0]) { delay(15); Keyboard.releaseAll(); }
+      break;
+    }
     case 4: Mouse.move((int8_t)s.keys[1], (int8_t)s.keys[2], 0, 0); break;
     case 5: Mouse.press(s.keys[0]); break;
     case 6: Mouse.release(s.keys[0]); break;
@@ -763,6 +847,11 @@ static void macroStart(std::vector<Step>& steps) {
     return;
   }
   macro.swap(steps); macroIdx = 0; textPos = 0; macroWake = millis(); macroRun = true;
+}
+static void panicNow() {                                          // panic key: let go of everything and drop every queued macro step
+  Keyboard.releaseAll(); Mouse.release(0xFF); ConsumerControl.release();
+  macro.clear(); macroIdx = 0; macroRun = false; textPos = 0;
+  ledFlash(60, 0, 0, 300);
 }
 static void macroTick() {
   while (macroRun) {
@@ -780,6 +869,7 @@ static void macroTick() {
       case ST_LAYER: setLayer(s.val == 100 ? (curLayer + 1) % LAYERS : s.val == 101 ? (curLayer + LAYERS - 1) % LAYERS : (uint8_t)s.val); macroIdx++; macroWake = millis() + 5; break;
       case ST_HOST: evtHost(s); macroIdx++; macroWake = millis() + 5; break;
       case ST_MOUSE: mouseDo(s); macroIdx++; macroWake = millis() + 8; break;
+      case ST_PANIC: panicNow(); return;
       case ST_TEXT:
         if (textPos < s.text.length()) {
           uint8_t c = (uint8_t)s.text[textPos++];
@@ -819,13 +909,31 @@ static const char* const DEFAULT_SLOT[LAYERS][7] = {
 static void slotKey(uint8_t lay, uint8_t i, char* out) {         // NVS key (max 15 chars): layer 0 keeps the v1.0/1.1 names "s0".."s6"
   if (lay == 0) snprintf(out, 8, "s%u", i); else snprintf(out, 8, "L%us%u", lay, i);
 }
-static void runSlot(uint8_t i) {
-  char k[8]; slotKey(curLayer, i, k);
-  String js = prefs.getString(k, String(DEFAULT_SLOT[curLayer][i]));
+// Runs a stored spec. Toggle / random / panic are decided here, at the moment the key runs; everything else goes through parseSpec().
+// sid identifies the key (layer, slot, gesture) so every toggle key remembers its own state.
+static void runSpecJson(const String& js, const char* fallback, uint8_t sid) {
   JsonDocument d;
-  if (deserializeJson(d, js)) deserializeJson(d, DEFAULT_SLOT[curLayer][i]);
+  if (deserializeJson(d, js)) { if (!fallback || deserializeJson(d, fallback)) return; }
+  JsonVariantConst spec = d.as<JsonVariantConst>();
+  const char* t = spec["type"] | "";
+  if (!strcmp(t, "panic")) { panicNow(); return; }
+  if (!strcmp(t, "toggle") && spec["val"].is<JsonArrayConst>() && spec["val"].size() == 2) {
+    uint8_t half = tglState[sid % sizeof tglState] ? 1 : 0;
+    tglState[sid % sizeof tglState] = half ? 0 : 1;
+    spec = spec["val"][half];
+    ledFlash(half ? 40 : 0, half ? 20 : 40, 0, 220);                // green = first action, amber = second
+  } else if (!strcmp(t, "random") && spec["val"].is<JsonArrayConst>() && spec["val"].size() >= 2) {
+    spec = spec["val"][esp_random() % spec["val"].size()];
+  }
+  if (!strcmp(spec["type"] | "", "panic")) { panicNow(); return; }
   std::vector<Step> steps;
-  if (parseSpec(d.as<JsonVariantConst>(), steps)) macroStart(steps);
+  if (parseSpec(spec, steps)) macroStart(steps);
+}
+static void runSlot(uint8_t i) {                                  // i: 0..6 = K1..K5, dial right, dial left; 7 / 8 = dial pressed + turned right / left
+  char k[8]; slotKey(curLayer, i, k);
+  const char* def = i < 7 ? DEFAULT_SLOT[curLayer][i] : "";
+  if (i >= 7 && !prefs.isKey(k)) return;
+  runSpecJson(prefs.getString(k, String(def)), def, (curLayer * 9 + i) * 3);
 }
 static void evtLayer() {
   if (!hostActive()) return;
@@ -1113,6 +1221,235 @@ static void sceneInfo() {
   }
 }
 
+// ================================================================ v1.4 screens 7-12 (optional: see settings "mode_mask")
+static void fmtTime(char* b, size_t n, uint32_t ms) {            // "MM:SS" or "H:MM:SS"
+  uint32_t t = ms / 1000;
+  if (t >= 3600) snprintf(b, n, "%lu:%02lu:%02lu", (unsigned long)(t / 3600), (unsigned long)((t / 60) % 60), (unsigned long)(t % 60));
+  else snprintf(b, n, "%02lu:%02lu", (unsigned long)(t / 60), (unsigned long)(t % 60));
+}
+static uint32_t swElapsed() { return swRun ? swAccum + (millis() - swStartAt) : swAccum; }
+static void sceneStopwatch() {
+  uint32_t e = swElapsed(); char b[24];
+  spr.fillSprite(C_BG);
+  gauge(120, 120, 116, 104, (e % 60000) / 59999.0f, swRun ? C_ACC : C_DIM2);
+  spr.setTextDatum(MC_DATUM); spr.setTextColor(C_GRAY); spr.drawString("STOPWATCH", 120, 46, 2);
+  fmtTime(b, sizeof b, e); spr.setTextColor(swRun ? C_TXT : C_WARN); spr.drawString(b, 120, 98, e >= 3600000UL ? 6 : 7);
+  snprintf(b, sizeof b, ".%02lu", (unsigned long)((e % 1000) / 10)); spr.setTextColor(C_ACC); spr.drawString(b, 120, 142, 4);
+  spr.setTextColor(C_GRAY);
+  for (int i = 0; i < 2 && i < swLapN; i++) {
+    char t[16]; fmtTime(t, sizeof t, swLaps[i]); snprintf(b, sizeof b, "LAP %d  %s", swLapN - i, t); spr.drawString(b, 120, 168 + i * 17, 2);
+  }
+  if (!swLapN) spr.drawString(swRun ? "K2 = lap" : "K1 = start", 120, 172, 2);
+  spr.setTextColor(C_DIM2); spr.drawString(swRun ? "K1 stop" : (e ? "K1 go  K2 reset" : ""), 120, 206, 1);
+}
+static const uint8_t BR_PHASES[4][4] = {{4, 7, 8, 0}, {4, 4, 4, 4}, {5, 0, 5, 0}, {4, 0, 6, 0}};    // seconds: in, hold, out, hold
+static const char* const BR_NAMES[4] = {"4-7-8", "BOX 4-4-4-4", "EVEN 5-5", "RELAX 4-6"};
+static void sceneBreathe() {
+  spr.fillSprite(C_BG);
+  spr.setTextDatum(MC_DATUM); spr.setTextColor(C_GRAY); spr.drawString(BR_NAMES[brPattern], 120, 40, 2);
+  uint32_t cyc = 0; for (int i = 0; i < 4; i++) cyc += BR_PHASES[brPattern][i] * 1000UL;
+  float r = 34; const char* lbl = "READY"; int secLeft = 0;
+  if (brRun) {
+    uint32_t t = (millis() - brStartAt) % cyc, acc = 0;
+    static const char* const PL[4] = {"BREATHE IN", "HOLD", "BREATHE OUT", "HOLD"};
+    for (int i = 0; i < 4; i++) {
+      uint32_t len = BR_PHASES[brPattern][i] * 1000UL;
+      if (!len) continue;
+      if (t < acc + len) {
+        float f = (t - acc) / (float)len;
+        r = i == 0 ? 34 + 56 * f : i == 1 ? 90 : i == 2 ? 90 - 56 * f : 34;
+        lbl = PL[i]; secLeft = (int)((len - (t - acc)) / 1000) + 1; break;
+      }
+      acc += len;
+    }
+  }
+  spr.fillCircle(120, 120, (int)r, rgb(0, 70, 95)); spr.drawCircle(120, 120, (int)r, C_ACC); spr.drawCircle(120, 120, (int)r + 1, C_ACC);
+  spr.setTextColor(C_TXT); spr.drawString(lbl, 120, 120, brRun ? 2 : 4);
+  char b[8]; if (brRun) { snprintf(b, sizeof b, "%d", secLeft); spr.setTextColor(C_ACC); spr.drawString(b, 120, 146, 4); }
+  spr.setTextColor(C_DIM2); spr.drawString(brRun ? "K1 stop  K2 pattern" : "K1 start  K2 pattern", 120, 208, 1);
+}
+static const char* const TOY_NAME[5] = {"DICE D6", "DICE D20", "COIN", "8-BALL", "D100"};
+static const char* const BALL[8] = {"YES", "NO", "MAYBE", "ASK LATER", "DEFINITELY", "UNLIKELY", "LOOKS GOOD", "DOUBTFUL"};
+static int toyRoll(uint8_t kind) {
+  switch (kind) { case 0: return 1 + esp_random() % 6; case 1: return 1 + esp_random() % 20; case 2: return esp_random() % 2; case 3: return esp_random() % 8; default: return 1 + esp_random() % 100; }
+}
+static void sceneToys() {
+  spr.fillSprite(C_BG);
+  spr.setTextDatum(MC_DATUM); spr.setTextColor(C_GRAY);
+  spr.setTextColor(C_ACC); spr.drawString(TOY_NAME[toyKind], 120, 48, 2);
+  bool rolling = (int32_t)(toyRollUntil - millis()) > 0;
+  int v = rolling ? toyRoll(toyKind) : toyResult; char b[16];
+  spr.setTextColor(rolling ? C_GRAY : C_TXT);
+  if (toyKind == 2) spr.drawString(v ? "HEADS" : "TAILS", 120, 120, 4);
+  else if (toyKind == 3) spr.drawString(BALL[v & 7], 120, 120, 4);
+  else { snprintf(b, sizeof b, "%d", v); spr.drawString(b, 120, 120, 7); }
+  spr.setTextColor(C_DIM2); spr.drawString("K1 d6  K2 d20  K3 coin", 120, 192, 1); spr.drawString("K4 8-ball  K5 d100", 120, 206, 1);
+}
+static void sceneReact() {
+  uint16_t bg = rxState == 1 ? rgb(120, 0, 0) : rxState == 2 ? rgb(0, 140, 40) : C_BG;
+  spr.fillSprite(bg);
+  spr.setTextDatum(MC_DATUM); char b[24];
+  spr.setTextColor(C_TXT);
+  if (rxState == 0) { spr.setTextColor(C_GRAY); spr.drawString("REACTION", 120, 70, 2); spr.setTextColor(C_TXT); spr.drawString("PRESS ANY KEY", 120, 110, 2); spr.drawString("TO START", 120, 130, 2); }
+  else if (rxState == 1) spr.drawString("WAIT...", 120, 120, 4);
+  else if (rxState == 2) spr.drawString("GO!", 120, 120, 7);
+  else if (rxState == 3) { snprintf(b, sizeof b, "%u ms", rxMs); spr.drawString(b, 120, 108, 4); spr.setTextColor(rxMs < 250 ? C_OK : C_WARN); spr.drawString(rxMs < 200 ? "FAST!" : rxMs < 300 ? "GOOD" : "SLOW", 120, 140, 2); }
+  else { spr.setTextColor(C_WARN); spr.drawString("TOO SOON", 120, 120, 4); }
+  if (rxBest) { snprintf(b, sizeof b, "BEST %u ms", rxBest); spr.setTextColor(C_GRAY); spr.drawString(b, 120, 196, 2); }
+}
+static const int8_t SN_DX[4] = {0, 1, 0, -1}, SN_DY[4] = {-1, 0, 1, 0};
+static bool snCellOk(int x, int y) { if (x < 0 || x > 10 || y < 0 || y > 10) return false; int dx = x - 5, dy = y - 5; return dx * dx + dy * dy <= 29; }
+static void snakeFood() {
+  for (int tries = 0; tries < 300; tries++) {
+    int x = esp_random() % 11, y = esp_random() % 11;
+    if (!snCellOk(x, y)) continue;
+    bool hit = false; for (int i = 0; i < snLen; i++) if (snX[i] == x && snY[i] == y) { hit = true; break; }
+    if (!hit) { snFx = (uint8_t)x; snFy = (uint8_t)y; return; }
+  }
+  snFx = snFy = 255;
+}
+static void snakeNew() {
+  snLen = 3; snDir = 1; snTurn = 0;
+  for (int i = 0; i < 3; i++) { snX[i] = 5 - i; snY[i] = 5; }
+  snakeFood(); snRun = true; snOver = false; snAt = millis() + 500; needRedraw = true;
+}
+static void snakeTurn(int steps) { snTurn = (int8_t)(steps > 0 ? 1 : -1); }
+static void snakeTick() {
+  if (!snRun || mode != M_SNAKE) return;
+  uint32_t now = millis();
+  if ((int32_t)(now - snAt) < 0) return;
+  snAt = now + (uint32_t)max(70, 170 - (snLen - 3) * 5);
+  if (snTurn > 0) snDir = (snDir + 1) & 3; else if (snTurn < 0) snDir = (snDir + 3) & 3;
+  snTurn = 0;
+  int nx = snX[0] + SN_DX[snDir], ny = snY[0] + SN_DY[snDir];
+  bool eat = (nx == snFx && ny == snFy);
+  bool dead = !snCellOk(nx, ny);
+  for (int i = 0; !dead && i < snLen - (eat ? 0 : 1); i++) if (snX[i] == nx && snY[i] == ny) dead = true;     // the tail cell frees up unless we grow
+  if (dead) {
+    snRun = false; snOver = true;
+    if ((uint16_t)(snLen - 3) > snBest) { snBest = (uint16_t)(snLen - 3); prefs.putUShort("snkb", snBest); }
+    needRedraw = true; return;
+  }
+  if (eat && snLen < 99) snLen++;
+  for (int i = snLen - 1; i > 0; i--) { snX[i] = snX[i - 1]; snY[i] = snY[i - 1]; }
+  snX[0] = (int8_t)nx; snY[0] = (int8_t)ny;
+  if (eat) snakeFood();
+  needRedraw = true;
+}
+static void sceneSnake() {
+  spr.fillSprite(C_BG);
+  spr.drawCircle(120, 120, 119, C_DIM2);
+  for (int y = 0; y < 11; y++) for (int x = 0; x < 11; x++) if (snCellOk(x, y)) spr.drawRect(21 + x * 18, 21 + y * 18, 18, 18, C_DIM);
+  if (snFx != 255) spr.fillRect(21 + snFx * 18 + 3, 21 + snFy * 18 + 3, 12, 12, C_RED);
+  for (int i = snLen - 1; i >= 0; i--) spr.fillRect(21 + snX[i] * 18 + 1, 21 + snY[i] * 18 + 1, 16, 16, i == 0 ? C_OK : rgb(30, 150, 80));
+  spr.setTextDatum(MC_DATUM); char b[24];
+  if (!snRun) {
+    spr.fillRoundRect(40, 90, 160, 60, 8, C_BG); spr.drawRoundRect(40, 90, 160, 60, 8, C_ACC);
+    spr.setTextColor(snOver ? C_RED : C_ACC);
+    if (snOver) { snprintf(b, sizeof b, "GAME OVER  %d", snLen - 3); spr.drawString(b, 120, 108, 2); } else spr.drawString("SNAKE", 120, 108, 4);
+    spr.setTextColor(C_GRAY); spr.drawString("K1 = start", 120, 132, 2);
+  } else { spr.setTextColor(C_GRAY); snprintf(b, sizeof b, "%d", snLen - 3); spr.drawString(b, 120, 12, 2); }
+}
+// ---- habits: five daily toggles with an 8-day history each (bit 0 = today); streak = consecutive days up to today / yesterday
+static uint8_t habStreak(uint8_t h) {
+  uint8_t i = (h & 1) ? 0 : 1, n = 0;
+  while (i < 8 && ((h >> i) & 1)) { n++; i++; }
+  return n;
+}
+static void habitSave() {
+  prefs.putULong("hb_d", habDay);
+  for (int i = 0; i < 5; i++) { char k[6]; snprintf(k, sizeof k, "hb_%d", i); prefs.putUChar(k, habHist[i]); }
+}
+static void habitRoll() {
+  if (!timeSynced) return;
+  uint32_t day = (uint32_t)(((int64_t)time(nullptr) + tzOff) / 86400);
+  if (habDay == 0 || day < habDay) { habDay = day; habitSave(); return; }
+  if (day > habDay) {
+    uint32_t sh = day - habDay;
+    for (int i = 0; i < 5; i++) habHist[i] = sh >= 8 ? 0 : (uint8_t)(habHist[i] << sh);
+    habDay = day; habitSave();
+  }
+}
+static void sceneHabits() {
+  habitRoll();
+  spr.fillSprite(C_BG);
+  spr.setTextDatum(MC_DATUM); spr.setTextColor(C_GRAY); spr.drawString("HABITS", 120, 38, 2);
+  if (!timeSynced) { spr.setTextColor(C_WARN); spr.drawString("CLOCK NOT SET", 120, 112, 4); spr.setTextColor(C_GRAY); spr.drawString("open the companion app", 120, 146, 2); return; }
+  char b[24];
+  for (int i = 0; i < 5; i++) {
+    int y = 66 + i * 25; bool done = habHist[i] & 1;
+    if (done) spr.fillCircle(66, y, 8, C_OK); else spr.drawCircle(66, y, 8, C_DIM2);
+    spr.setTextDatum(ML_DATUM); spr.setTextColor(done ? C_TXT : C_GRAY); spr.drawString(habName[i], 82, y, 2);
+    spr.setTextDatum(MR_DATUM); snprintf(b, sizeof b, "%dd", habStreak(habHist[i])); spr.setTextColor(habStreak(habHist[i]) ? C_ACC : C_DIM2); spr.drawString(b, 176, y, 2);
+  }
+  spr.setTextDatum(MC_DATUM); spr.setTextColor(C_DIM2); spr.drawString("K1-K5 toggle today", 120, 204, 1);
+}
+static bool modeKey(int i) {                                      // a screen may claim some keys (like the focus timer claims K1 / K2); true = handled
+  uint32_t now = millis();
+  switch (mode) {
+    case M_STOPW:
+      if (i == 0) { if (swRun) { swAccum += now - swStartAt; swRun = false; } else { swStartAt = now; swRun = true; } needRedraw = true; return true; }
+      if (i == 1) {
+        if (swRun) { for (int k = 3; k > 0; k--) swLaps[k] = swLaps[k - 1]; swLaps[0] = swElapsed(); if (swLapN < 4) swLapN++; }
+        else { swAccum = 0; swLapN = 0; }
+        needRedraw = true; return true;
+      }
+      return false;
+    case M_BREATH:
+      if (i == 0) { brRun = !brRun; brStartAt = now; needRedraw = true; return true; }
+      if (i == 1) { brPattern = (brPattern + 1) & 3; brStartAt = now; needRedraw = true; return true; }
+      return false;
+    case M_TOYS:
+      if (i < 5) { toyKind = (uint8_t)i; toyResult = toyRoll(toyKind); toyRollUntil = now + 600; needRedraw = true; return true; }
+      return false;
+    case M_REACT:
+      if (rxState == 2) { rxMs = (uint16_t)min<uint32_t>(now - rxGoAt, 9999); if (!rxBest || rxMs < rxBest) rxBest = rxMs; rxState = 3; }
+      else if (rxState == 1) rxState = 4;
+      else { rxState = 1; rxAt = now + 1500 + esp_random() % 3500; }
+      needRedraw = true; return true;
+    case M_SNAKE:
+      if (i == 0) { if (snRun) snRun = false; else snakeNew(); needRedraw = true; return true; }
+      return false;
+    case M_HABIT:
+      if (i < 5) { habitRoll(); if (timeSynced) { habHist[i] ^= 1; habitSave(); } needRedraw = true; return true; }
+      return false;
+  }
+  return false;
+}
+static void reactTick() {
+  if (rxState == 1 && (int32_t)(millis() - rxAt) >= 0) { rxState = 2; rxGoAt = millis(); needRedraw = true; }
+}
+
+// ---- reminders (drink / stand up / rest your eyes): a full-screen nudge every N minutes, any key or dial turn dismisses it
+static void remDismiss() { remActive = false; needRedraw = true; }
+static void remTrigger(uint8_t i) {
+  remActive = true; remIdx = i; remShownAt = millis(); remUntil = remShownAt + 12000; saverOn = false; needRedraw = true;
+  if (hostActive()) { int32_t keep = reqId; reqId = -1; JsonDocument d; d["evt"] = "reminder"; d["i"] = i; d["text"] = remArr[i].text; sendDoc(d); reqId = keep; }
+}
+static void remTick() {
+  uint32_t now = millis();
+  if (remActive) {
+    if ((int32_t)(now - remUntil) >= 0) { remDismiss(); return; }
+    if ((int32_t)(now - remPulseAt) >= 0) { remPulseAt = now + 700; ledFlash(0, 45, 45, 350); }
+    return;
+  }
+  for (uint8_t i = 0; i < 3; i++) {
+    if (!remArr[i].min) continue;
+    if (!remArr[i].nextAt) { remArr[i].nextAt = now + remArr[i].min * 60000UL; continue; }
+    if ((int32_t)(now - remArr[i].nextAt) >= 0) { remArr[i].nextAt = now + remArr[i].min * 60000UL; remTrigger(i); return; }
+  }
+}
+static void sceneReminder() {
+  uint32_t now = millis();
+  float pulse = 0.5f + 0.5f * sinf(now / 220.0f);
+  spr.fillSprite(C_BG);
+  arcBand(120, 120, 118, 108 - (int)(6 * pulse), 0, 360, rgb(0, (uint8_t)(120 + 100 * pulse), (uint8_t)(140 + 80 * pulse)));
+  spr.setTextDatum(MC_DATUM); spr.setTextColor(C_GRAY); spr.drawString("REMINDER", 120, 62, 2);
+  const char* t = remArr[remIdx].text; spr.setTextColor(C_TXT);
+  spr.drawString(t, 120, 118, strlen(t) <= 9 ? 4 : 2);
+  spr.setTextColor(C_DIM2); spr.drawString("any key = dismiss", 120, 188, 1);
+}
+
 // ---- screensaver (starts after saverSec seconds without input; any key / dial action wakes it)
 static uint32_t sRng = 0x1234ABCDu;
 static uint32_t sRand() { sRng ^= sRng << 13; sRng ^= sRng >> 17; sRng ^= sRng << 5; return sRng; }
@@ -1152,6 +1489,12 @@ static void renderScene() {
     case M_MEDIA: sceneMedia(); break;
     case M_TELEM: sceneTelemetry(); break;
     case M_INFO:  sceneInfo(); break;
+    case M_STOPW: sceneStopwatch(); break;
+    case M_BREATH: sceneBreathe(); break;
+    case M_TOYS:  sceneToys(); break;
+    case M_REACT: sceneReact(); break;
+    case M_SNAKE: sceneSnake(); break;
+    case M_HABIT: sceneHabits(); break;
     default:      sceneGifMsg(); break;
   }
 }
@@ -1163,6 +1506,7 @@ static void pushScreen() {
 static void renderFrame() {
   if (!okSprite) return;
   if (uploading) sceneUpload();
+  else if (remActive && !menuOpen) sceneReminder();
   else if (saverOn && !menuOpen) sceneSaver();
   else {
     if (menuOpen && mode == M_GIF) spr.fillSprite(C_BG); else renderScene();
@@ -1173,6 +1517,7 @@ static void renderFrame() {
 }
 static uint32_t renderInterval() {
   if (uploading || menuOpen) return 100;
+  if (remActive) return 50;
   if (saverOn) return saverStyle == 3 ? 5000 : 45;
   if (flashAt && millis() - flashAt < 280 && mode != M_GIF) return 30;
   switch (mode) {
@@ -1181,6 +1526,12 @@ static uint32_t renderInterval() {
     case M_TELEM: return 500;
     case M_GIF:   return 1000;
     case M_INFO:  return 500;
+    case M_STOPW: return swRun ? 50 : 1000;
+    case M_BREATH: return brRun ? 40 : 1000;
+    case M_TOYS:  return (int32_t)(toyRollUntil - millis()) > 0 ? 60 : 1000;
+    case M_REACT: return rxState == 1 || rxState == 2 ? 100 : 1000;
+    case M_SNAKE: return snRun ? 60 : 1000;
+    case M_HABIT: return 1000;
     default:      return 100000;                       // clock redraws on second change
   }
 }
@@ -1405,6 +1756,8 @@ static void setMode(uint8_t m) {
   if (m < 1 || m > NUM_MODES) return;
   if (m != mode) prefs.putUChar("mode", m);
   mode = m; needRedraw = true;
+  if (m != M_SNAKE) snRun = false;                                // leaving a game pauses / resets it
+  if (m != M_REACT) rxState = 0;
   if (mode == M_GIF) gifRestart = true; else gifClose();
 }
 static void pomoToggle() {
@@ -1427,13 +1780,20 @@ static void menuCloseNow() {
   menuOpen = false; menuEdit = 0; needRedraw = true;
   if (mode == M_GIF) gifRestart = true;
 }
+static uint8_t nextEnabledMode(uint8_t m, int dir) {            // next screen in the dial-menu / long-press cycle (screens switched off in mode_mask are skipped)
+  for (int i = 1; i <= NUM_MODES; i++) {
+    int c = (((int)m - 1 + dir * i) % NUM_MODES + NUM_MODES) % NUM_MODES + 1;
+    if ((modeMask >> (c - 1)) & 1) return (uint8_t)c;
+  }
+  return m;
+}
 static void menuTurn(int steps) {
   uiTouch();
   int n = steps < 0 ? -steps : steps, dir = steps > 0 ? 1 : -1;
   if (!menuEdit) { for (int i = 0; i < n; i++) menuSel = (menuSel + (dir > 0 ? 1 : 4)) % 5; }
   else if (menuEdit == 1) { int b = (int)brightness + steps * 8; brightness = (uint8_t)constrain(b, 5, 255); applyBacklight(); }
   else if (menuEdit == 2) { for (int i = 0; i < n; i++) sendMedia(dir > 0 ? 0xE9 : 0xEA); }
-  else if (menuEdit == 3) { menuMode = (uint8_t)((((int)menuMode - 1 + steps) % NUM_MODES + NUM_MODES) % NUM_MODES + 1); }
+  else if (menuEdit == 3) { for (int i = 0; i < n; i++) menuMode = nextEnabledMode(menuMode, dir); }
   else if (menuEdit == 4) { menuLayer = (uint8_t)((((int)menuLayer + steps) % LAYERS + LAYERS) % LAYERS); }
   needRedraw = true;
 }
@@ -1500,10 +1860,7 @@ static void runGesture(uint8_t i, char g) {
   char k[10]; gestureKey(curLayer, i, g, k);
   String js = prefs.getString(k, "");
   if (!js.length()) return;
-  JsonDocument d;
-  if (deserializeJson(d, js)) return;
-  std::vector<Step> steps;
-  if (parseSpec(d.as<JsonVariantConst>(), steps)) macroStart(steps);
+  runSpecJson(js, nullptr, (curLayer * 9 + i) * 3 + (g == 'h' ? 1 : 2));
 }
 // ---- dial acceleration: the faster the dial turns, the more often the action (volume ...) repeats
 static uint8_t accelMult(uint32_t dtPerDetent, uint8_t level) {
@@ -1518,6 +1875,7 @@ static void onKey(int i) {                              // the key's TAP action
   activity();
   if (menuOpen) uiTouch();
   if (mode == M_POMO && i < 2) { if (i == 0) pomoToggle(); else pomoReset(); return; }   // K1/K2 = timer controls in focus mode
+  if (!menuOpen && modeKey(i)) return;                      // stopwatch / breathing / dice / reaction / snake / habits claim some keys
   runSlot(i);
 }
 static void onKeyGesture(int i, char g) {               // 'h' hold / 'd' double-tap
@@ -1525,8 +1883,13 @@ static void onKeyGesture(int i, char g) {               // 'h' hold / 'd' double
   if (menuOpen) { uiTouch(); return; }
   runGesture(i, g);
 }
+static void onEncPressTurn(int steps) {                       // dial pressed + turned: its own pair of actions (slots 7 / 8), when configured
+  int n = steps < 0 ? -steps : steps;
+  for (int i = 0; i < n; i++) runSlot(steps > 0 ? 7 : 8);
+}
 static void onEncSteps(int steps) {
   if (menuOpen) { menuTurn(steps); return; }
+  if (mode == M_SNAKE && snRun) { snakeTurn(steps); return; }
   if (mode == M_POMO && pomoState == PS_IDLE) {
     pomoMinutes = (uint8_t)constrain((int)pomoMinutes + steps, 1, 90);
     pomoRemain = pomoMinutes * 60000UL; needRedraw = true; return;
@@ -1553,7 +1916,7 @@ static void onEncClick() {
 static void onEncLong() {
   activity();
   if (menuOpen) { menuCloseNow(); return; }
-  setMode(mode % NUM_MODES + 1);
+  setMode(nextEnabledMode(mode, 1));
 }
 static void IRAM_ATTR encISR() {
   uint32_t now = micros();
@@ -1589,7 +1952,12 @@ static void inputsService() {
   int steps = encRem / ENC_EDGES_PER_DETENT;
   encRem -= steps * ENC_EDGES_PER_DETENT;
   if (ENC_INVERT) steps = -steps;
-  if (steps) { encTurned(steps); onEncSteps(steps); }
+  if (steps) {
+    encTurned(steps);
+    char pk[8]; slotKey(curLayer, steps > 0 ? 7 : 8, pk);
+    if (encHeld && !menuOpen && prefs.isKey(pk)) { encLongDone = true; onEncPressTurn(steps); }    // turning while pressed: no click / long-press afterwards
+    else onEncSteps(steps);
+  }
 }
 
 // ================================================================ Wi-Fi / NTP (compiled in only with DC_ENABLE_WIFI=1; needs credentials from {"cmd":"wifi"})
@@ -1681,6 +2049,7 @@ static void cmdHello() {
   JsonArray cp = d["caps"].to<JsonArray>();
   cp.add("layers"); cp.add("mouse"); cp.add("host"); cp.add("info"); cp.add("gifslots"); cp.add("factory");
   cp.add("hostx"); cp.add("gestures"); cp.add("dialaccel"); cp.add("clockstyle"); cp.add("saver"); cp.add("nightdim");   // firmware 1.3
+  cp.add("screens"); cp.add("pressturn"); cp.add("toggle"); cp.add("wheelmods"); cp.add("ledfx"); cp.add("reminders"); cp.add("habits");  // firmware 1.4
   if (DC_ENABLE_WIFI) cp.add("wifi");
   if (DC_HAS_OTA) cp.add("ota");
   sendDoc(d);
@@ -1731,7 +2100,14 @@ static void cmdLed(JsonDocument& doc) {
   else if (!strcmp(m, "solid")) ledMode = LM_SOLID;
   else if (!strcmp(m, "blink")) ledMode = LM_BLINK;
   else if (!strcmp(m, "rainbow")) ledMode = LM_RAINBOW;
+  else if (!strcmp(m, "breathe")) ledMode = LM_BREATHE;
+  else if (!strcmp(m, "fire")) ledMode = LM_FIRE;
   else if (*m) { nack("led_mode"); return; }
+  if (!doc["alert"].isNull()) {                                 // {"alert":"ff0000","times":3}: a few quick flashes in that colour, then back to what the LED was doing
+    unsigned long v = strtoul(doc["alert"] | "", nullptr, 16);
+    int times = constrain(doc["times"] | 3, 1, 10);
+    alertR = (v >> 16) & 255; alertG = (v >> 8) & 255; alertB = v & 255; alertStart = millis(); alertEnd = alertStart + times * 240UL;
+  }
   if (doc["save"] | false) prefs.putUChar("ledm", ledMode == LM_OFF ? 1 : 0);   // only auto/off survive a reboot
   ledNextAt = 0;
   JsonDocument d; d["ok"] = true; d["evt"] = "led"; d["mode"] = ledMode; d["pin"] = PIN_RGB;
@@ -1889,7 +2265,7 @@ static void cmdGetKeys(JsonDocument& doc) {                // lets the app verif
   JsonDocument d; d["ok"] = true; d["evt"] = "keys"; d["layer"] = lay; d["cur"] = curLayer; d["layers"] = LAYERS;
   if (!doc["slot"].isNull()) {                              // one slot with its full spec (stored or default)
     int sl = doc["slot"].as<int>();
-    if (sl < 1 || sl > 7) { nack("key"); return; }
+    if (sl < 1 || sl > 9) { nack("key"); return; }
     const char* gest = doc["gesture"] | "tap";
     if (strcmp(gest, "tap")) {                                // a hold / double-tap action: stored or absent (there is no default)
       char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : 0;
@@ -1903,6 +2279,10 @@ static void cmdGetKeys(JsonDocument& doc) {                // lets the app verif
     char k[8]; slotKey((uint8_t)lay, (uint8_t)(sl - 1), k);
     String js = prefs.getString(k, "");
     d["s"] = sl; d["def"] = js.length() == 0;
+    if (sl > 7) {                                             // dial press+turn slots have no default action
+      if (js.length()) { JsonDocument sp; if (!deserializeJson(sp, js)) d["spec"] = sp; }
+      sendDoc(d); return;
+    }
     JsonDocument sp;
     if (deserializeJson(sp, js.length() ? js : String(DEFAULT_SLOT[lay][sl - 1]))) deserializeJson(sp, DEFAULT_SLOT[lay][sl - 1]);
     d["spec"] = sp;
@@ -1917,6 +2297,7 @@ static void cmdGetKeys(JsonDocument& doc) {                // lets the app verif
     if (i < 5) { o["h"] = (bool)((gHold[lay] >> i) & 1); o["d"] = (bool)((gDbl[lay] >> i) & 1); }
     o["crc"] = js.length() ? crc32u(0, (const uint8_t*)js.c_str(), js.length()) : 0u;
   }
+  { JsonArray pt = d["pt"].to<JsonArray>(); for (uint8_t i = 7; i < 9; i++) { char k[8]; slotKey((uint8_t)lay, i, k); pt.add(prefs.isKey(k)); } }   // dial press+turn right / left set?
   sendDoc(d);
 }
 static void cmdLayer(JsonDocument& doc) {
@@ -1961,7 +2342,7 @@ static void cmdFactory(JsonDocument& doc) {
   const char* what = doc["what"] | "settings";
   bool reboot = doc["reboot"] | true;
   if (!strcmp(what, "keys")) {
-    for (uint8_t l = 0; l < LAYERS; l++) for (uint8_t i = 0; i < 7; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); if (i < 5) { char g[10]; gestureKey(l, i, 'h', g); prefs.remove(g); gestureKey(l, i, 'd', g); prefs.remove(g); } }
+    for (uint8_t l = 0; l < LAYERS; l++) for (uint8_t i = 0; i < 9; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); if (i < 5) { char g[10]; gestureKey(l, i, 'h', g); prefs.remove(g); gestureKey(l, i, 'd', g); prefs.remove(g); } }
     loadGestureFlags();
     ack("factory");
   } else if (!strcmp(what, "settings")) {
@@ -2032,7 +2413,10 @@ static void cmdInput(JsonDocument& doc) {               // virtual key presses: 
     if (t == 0 || t > 20 || t < -20) { nack("turn"); return; }
     turnDtOverride = doc["dt"].isNull() ? -1 : (int32_t)constrain(doc["dt"].as<int>(), 0, 5000);
     lastTurnRuns = 0;
-    encTurned(t); onEncSteps(t);
+    char pk[8]; slotKey(curLayer, t > 0 ? 7 : 8, pk);
+    bool pressed = (doc["press"] | false) && !menuOpen && prefs.isKey(pk);          // "press": the dial is held down while it turns
+    encTurned(t);
+    if (pressed) onEncPressTurn(t); else onEncSteps(t);
     turnDtOverride = -1;
     JsonDocument r; r["ok"] = true; r["evt"] = "input"; r["runs"] = lastTurnRuns; sendDoc(r); return;
   } else if (doc["click"] | false) onEncClick();
@@ -2053,7 +2437,7 @@ static void settingsReply() {
   JsonDocument d; d["ok"] = true; d["evt"] = "settings";
   d["dial_accel"] = dialAccel; d["clock_style"] = clockStyle; d["saver_s"] = saverSec; d["saver_style"] = saverStyle;
   d["night_on"] = nightOn; d["night_from"] = nightFrom; d["night_to"] = nightTo; d["night_level"] = nightLevel;
-  d["bl"] = lastBl; d["saver_on"] = saverOn;
+  d["bl"] = lastBl; d["saver_on"] = saverOn; d["mode_mask"] = modeMask;
   sendDoc(d);
 }
 static bool optInt(JsonDocument& doc, const char* key, int lo, int hi, int& out, bool& bad) {
@@ -2068,6 +2452,7 @@ static void cmdSettings(JsonDocument& doc) {
   bool hDa = optInt(doc, "dial_accel", 0, 2, da, bad), hCs = optInt(doc, "clock_style", 0, 3, cs, bad), hSs = optInt(doc, "saver_s", 0, 3600, ss, bad),
        hSt = optInt(doc, "saver_style", 1, 3, st, bad), hNf = optInt(doc, "night_from", 0, 23, nf, bad), hNt = optInt(doc, "night_to", 0, 23, nt, bad),
        hNl = optInt(doc, "night_level", 5, 255, nl, bad);
+  int mm = modeMask; bool hMm = optInt(doc, "mode_mask", 1, 0x0FFF, mm, bad);
   bool hNo = !doc["night_on"].isNull();
   if (hNo && !doc["night_on"].is<bool>()) bad = true;
   if (bad) { nack("settings"); return; }
@@ -2079,6 +2464,7 @@ static void cmdSettings(JsonDocument& doc) {
   if (hNt) { nightTo = (uint8_t)nt; prefs.putUChar("nd_t", nightTo); }
   if (hNl) { nightLevel = (uint8_t)nl; prefs.putUChar("nd_l", nightLevel); }
   if (hNo) { nightOn = doc["night_on"].as<bool>(); prefs.putBool("nd_on", nightOn); }
+  if (hMm) { modeMask = (uint16_t)mm; prefs.putUShort("mmask", modeMask); }
   if (hNf || hNt || hNl || hNo) applyBacklight();
   settingsReply();
 }
@@ -2108,6 +2494,79 @@ static void cmdGestureTest(JsonDocument& doc) {
   }
   for (int guard = 0; guard < 4; guard++) { uint32_t dl = f.deadline(hh); if (!dl) break; emit(f.step(f.down, dl, hh, dd), dl); }
   sendDoc(out);
+}
+// ---- {"cmd":"screens"}: state of the optional screens (for the app and for tests); {"habit"} / {"reminders"} have their own commands
+static void cmdScreens(JsonDocument& doc) {
+  (void)doc;
+  JsonDocument d; d["ok"] = true; d["evt"] = "screens"; d["mask"] = modeMask;
+  JsonObject sw = d["sw"].to<JsonObject>(); sw["run"] = swRun; sw["ms"] = swElapsed(); JsonArray l = sw["laps"].to<JsonArray>(); for (int i = 0; i < swLapN; i++) l.add(swLaps[i]);
+  JsonObject br = d["br"].to<JsonObject>(); br["run"] = brRun; br["pattern"] = brPattern;
+  JsonObject toy = d["toy"].to<JsonObject>(); toy["kind"] = toyKind; toy["result"] = toyResult; toy["rolling"] = (int32_t)(toyRollUntil - millis()) > 0;
+  JsonObject rx = d["rx"].to<JsonObject>(); rx["state"] = rxState; rx["ms"] = rxMs; rx["best"] = rxBest;
+  JsonObject sn = d["snake"].to<JsonObject>(); sn["run"] = snRun; sn["over"] = snOver; sn["len"] = snLen; sn["dir"] = snDir; sn["best"] = snBest;
+  d["reminder_active"] = remActive;
+  sendDoc(d);
+}
+static void habitsReply() {
+  habitRoll();
+  JsonDocument d; d["ok"] = true; d["evt"] = "habits"; d["synced"] = timeSynced; d["day"] = habDay;
+  JsonArray n = d["names"].to<JsonArray>(), t = d["today"].to<JsonArray>(), st = d["streak"].to<JsonArray>();
+  for (int i = 0; i < 5; i++) { n.add(habName[i]); t.add(habHist[i] & 1); st.add(habStreak(habHist[i])); }
+  sendDoc(d);
+}
+static void cmdHabits(JsonDocument& doc) {
+  if (!doc["names"].isNull()) {
+    JsonArrayConst a = doc["names"].as<JsonArrayConst>();
+    if (a.isNull() || a.size() != 5) { nack("names"); return; }
+    char nm[5][11]; String joined;
+    for (int i = 0; i < 5; i++) {
+      String v = a[i].as<String>(); v.trim();
+      if (!v.length() || v.length() > 10) { nack("names"); return; }
+      for (unsigned j = 0; j < v.length(); j++) if ((uint8_t)v[j] < 32 || (uint8_t)v[j] > 126 || v[j] == '|') { nack("names"); return; }
+      strncpy(nm[i], v.c_str(), 10); nm[i][10] = 0; joined += v; if (i < 4) joined += '|';
+    }
+    memcpy(habName, nm, sizeof habName); prefs.putString("hb_n", joined); needRedraw = true;
+  }
+  if (!doc["toggle"].isNull()) {
+    int i = doc["toggle"] | -1;
+    if (i < 0 || i > 4) { nack("habit"); return; }
+    if (!timeSynced) { nack("no_clock"); return; }
+    habitRoll(); habHist[i] ^= 1; habitSave(); needRedraw = true;
+  }
+  habitsReply();
+}
+// ---- {"cmd":"reminders","list":[{"m":20,"t":"Look away"}, ...]} (up to 3; m = minutes, 0 = off), {"test":i} shows reminder i now; no field = read
+static void remindersReply() {
+  JsonDocument d; d["ok"] = true; d["evt"] = "reminders"; d["active"] = remActive;
+  JsonArray l = d["list"].to<JsonArray>();
+  for (int i = 0; i < 3; i++) { JsonObject o = l.add<JsonObject>(); o["m"] = remArr[i].min; o["t"] = remArr[i].text; }
+  sendDoc(d);
+}
+static void cmdReminders(JsonDocument& doc) {
+  if (!doc["list"].isNull()) {
+    JsonArrayConst a = doc["list"].as<JsonArrayConst>();
+    if (a.isNull() || a.size() > 3) { nack("list"); return; }
+    Reminder tmp[3]; String joined;
+    for (size_t i = 0; i < 3; i++) {
+      int m = 0; String t;
+      if (i < a.size()) {
+        m = a[i]["m"] | 0; t = a[i]["t"].as<String>(); t.trim();
+        if (m < 0 || m > 1440 || t.length() > 16) { nack("list"); return; }
+        for (unsigned j = 0; j < t.length(); j++) if ((uint8_t)t[j] < 32 || (uint8_t)t[j] > 126 || t[j] == '|' || t[j] == ';') { nack("list"); return; }
+        if (m && !t.length()) { nack("list"); return; }
+      }
+      tmp[i].min = (uint16_t)m; strncpy(tmp[i].text, t.c_str(), 16); tmp[i].text[16] = 0;
+      joined += String(m) + "|" + t; if (i < 2) joined += ';';
+    }
+    for (int i = 0; i < 3; i++) remArr[i] = tmp[i];                // (nextAt = 0: the countdown restarts)
+    prefs.putString("rem", joined);
+  }
+  if (!doc["test"].isNull()) {
+    int i = doc["test"] | -1;
+    if (i < 0 || i > 2 || !remArr[i].text[0]) { nack("test"); return; }
+    remTrigger((uint8_t)i);
+  }
+  remindersReply();
 }
 static void cmdReboot(JsonDocument& doc) {
   const char* m = doc["mode"] | "normal";
@@ -2159,7 +2618,7 @@ static void handleLine(const String& line) {
   else if (!strcmp(cmd, "echo")) { JsonDocument d; d["ok"] = true; d["evt"] = "echo"; d["data"] = doc["data"]; sendDoc(d); }
   else if (!strcmp(cmd, "remap")) {
     int key = doc["key"] | 0;
-    if (key < 1 || key > 7) { nack("key"); return; }
+    if (key < 1 || key > 9) { nack("key"); return; }                  // 8 / 9 = dial pressed + turned right / left (firmware 1.4)
     const char* gest = doc["gesture"] | "tap";
     char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : 0;
     if (strcmp(gest, "tap") && !gch) { nack("gesture"); return; }
@@ -2168,6 +2627,9 @@ static void handleLine(const String& line) {
     if (glay < 0 || glay >= LAYERS) { nack("layer"); return; }
     if (gch && (doc["clear"] | false)) {                             // remove a hold / double-tap action again
       char gk[10]; gestureKey((uint8_t)glay, (uint8_t)(key - 1), gch, gk); prefs.remove(gk); loadGestureFlags(); ack("remap"); return;
+    }
+    if (key >= 8 && (doc["clear"] | false)) {                          // remove a dial press+turn action again
+      char pk[8]; slotKey((uint8_t)glay, (uint8_t)(key - 1), pk); prefs.remove(pk); ack("remap"); return;
     }
     JsonDocument spec;
     spec["type"] = doc["type"]; spec["val"] = doc["val"];
@@ -2184,10 +2646,13 @@ static void handleLine(const String& line) {
     ack("remap");
   }
   else if (!strcmp(cmd, "settings")) cmdSettings(doc);
+  else if (!strcmp(cmd, "screens")) cmdScreens(doc);
+  else if (!strcmp(cmd, "habits")) cmdHabits(doc);
+  else if (!strcmp(cmd, "reminders")) cmdReminders(doc);
   else if (!strcmp(cmd, "gesture_test")) cmdGestureTest(doc);
   else if (!strcmp(cmd, "reset_keys")) {
     int only = doc["layer"] | -1;                                    // omitted = every layer
-    for (uint8_t l = 0; l < LAYERS; l++) { if (only >= 0 && l != only) continue; for (uint8_t i = 0; i < 7; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); if (i < 5) { char g[10]; gestureKey(l, i, 'h', g); prefs.remove(g); gestureKey(l, i, 'd', g); prefs.remove(g); } } }
+    for (uint8_t l = 0; l < LAYERS; l++) { if (only >= 0 && l != only) continue; for (uint8_t i = 0; i < 9; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); if (i < 5) { char g[10]; gestureKey(l, i, 'h', g); prefs.remove(g); gestureKey(l, i, 'd', g); prefs.remove(g); } } }
     loadGestureFlags();
     ack("reset_keys");
   }
@@ -2324,6 +2789,26 @@ static void loadSettings() {
   nightFrom = prefs.getUChar("nd_f", 22); if (nightFrom > 23) nightFrom = 22;
   nightTo = prefs.getUChar("nd_t", 7); if (nightTo > 23) nightTo = 7;
   nightLevel = prefs.getUChar("nd_l", 30); if (nightLevel < 5) nightLevel = 30;
+  modeMask = prefs.getUShort("mmask", 0x003F) & 0x0FFF; if (!modeMask) modeMask = 0x003F;
+  snBest = prefs.getUShort("snkb", 0);
+  {                                                               // reminders "min|text;min|text;min|text"
+    String r = prefs.getString("rem", ""); int pos = 0;
+    for (int i = 0; i < 3 && pos <= (int)r.length(); i++) {
+      int semi = r.indexOf(';', pos); if (semi < 0) semi = r.length();
+      String part = r.substring(pos, semi); int bar = part.indexOf('|');
+      if (bar > 0) { remArr[i].min = (uint16_t)constrain(part.substring(0, bar).toInt(), 0, 1440); strncpy(remArr[i].text, part.substring(bar + 1).c_str(), 16); remArr[i].text[16] = 0; }
+      pos = semi + 1;
+    }
+  }
+  {                                                               // habits: names "A|B|C|D|E", day number, 8-day history per habit
+    String n = prefs.getString("hb_n", ""); int pos = 0;
+    for (int i = 0; i < 5 && pos <= (int)n.length() && n.length(); i++) {
+      int bar = n.indexOf('|', pos); if (bar < 0) bar = n.length();
+      strncpy(habName[i], n.substring(pos, bar).c_str(), 10); habName[i][10] = 0; pos = bar + 1;
+    }
+    habDay = prefs.getULong("hb_d", 0);
+    for (int i = 0; i < 5; i++) { char k[6]; snprintf(k, sizeof k, "hb_%d", i); habHist[i] = prefs.getUChar(k, 0); }
+  }
   otaOn = prefs.getBool("ota", false); otaPw = prefs.getString("otapw", "");
   ledMode = prefs.getUChar("ledm", 0) == 1 ? LM_OFF : LM_AUTO;
   wifiSsid = prefs.getString("ssid", ""); wifiPass = prefs.getString("wpass", "");
@@ -2435,6 +2920,9 @@ void loop() {
   inputsService();
   macroTick();
   pomoTick();
+  snakeTick();
+  reactTick();
+  remTick();
   netService();
   otaService();
   ledService();
@@ -2445,7 +2933,8 @@ void loop() {
   { static uint32_t svAt = 0, ndAt = 0;                         // screensaver start / night dimming follow the clock, twice a second / every 15 s
     if ((uint32_t)(now - svAt) >= 500) {
       svAt = now;
-      bool can = saverSec > 0 && okSprite && mode != M_GIF && !menuOpen && !uploading && !dispHoldUntil && !(mode == M_POMO && pomoState == PS_RUN);
+      bool can = saverSec > 0 && okSprite && mode != M_GIF && !menuOpen && !uploading && !dispHoldUntil && !(mode == M_POMO && pomoState == PS_RUN) &&
+                 !remActive && !(mode == M_STOPW && swRun) && !(mode == M_BREATH && brRun) && !(mode == M_SNAKE && snRun) && !(mode == M_REACT && (rxState == 1 || rxState == 2));
       bool want = can && (uint32_t)(now - lastActivity) >= (uint32_t)saverSec * 1000UL;
       if (want != saverOn) { saverOn = want; needRedraw = true; }
     }

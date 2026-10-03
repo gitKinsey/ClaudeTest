@@ -48,9 +48,9 @@ def validate(path, body):
             if len(hx) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hx):
                 raise ApiError(400, "'hex' must be a colour like ff8800")
             return {"kind": "led", "hex": hx.lower()}
-        if mode in ("auto", "off"):
+        if mode in ("auto", "off", "breathe", "fire"):
             return {"kind": "led", "mode": mode}
-        raise ApiError(400, "send {\"mode\": \"auto\"|\"off\"} or {\"hex\": \"ff8800\"}")
+        raise ApiError(400, "send {\"mode\": \"auto\"|\"off\"|\"breathe\"|\"fire\"} or {\"hex\": \"ff8800\"}")
     if path == "/v1/card":
         out = {k: str(body.get(k) or "")[:40] for k in ("label", "title", "a", "b")}
         return {"kind": "card", **out}

@@ -9,7 +9,7 @@ from desk_lib import padextras, scheduler, ui
 WHEN_KINDS = ["Every day", "Weekdays", "Weekends", "Every N minutes", "Once"]
 # label -> (kind of rule action, host op or None, hint)
 DO_KINDS = {"Switch layer": ("layer", None, "1, 2, 3, next or prev"), "Show screen": ("mode", None, "1 clock, 2 focus, 3 media, 4 system, 5 GIF, 6 info"),
-            "Set brightness": ("brightness", None, "5 to 255"), "LED": ("led", None, "auto, off, or a colour like ff8800"),
+            "Set brightness": ("brightness", None, "5 to 255"), "LED": ("led", None, "auto, off, breathe, fire, or a colour like ff8800"),
             "Open website": ("host", "url", "https://example.com"), "Start program": ("host", "app", "program name or path"),
             "Open file or folder": ("host", "file", "path"), "Type a snippet": ("host", "snippet", "text with {date} {time} {counter:name}"),
             "Run shell command": ("host", "shell", "command line (needs the shell switch)"), "Show a reminder": ("notify", None, "reminder text")}
@@ -27,7 +27,7 @@ def build_entry(when_label, when_arg, do_label, do_arg, days=None, name=""):
         do = {"kind": kind, "n": int(a)}
     elif kind == "led":
         low = a.lower().lstrip("#")
-        do = {"kind": "led", "mode": low if low in ("auto", "off") else "solid", "hex": low}
+        do = {"kind": "led", "mode": low if low in ("auto", "off", "breathe", "fire") else "solid", "hex": low}
     elif kind == "host":
         do = {"kind": "host", "op": op, "arg": a}
     else:
@@ -108,6 +108,7 @@ class AutomationPage:
         self._when_changed()
         self.refresh()
         self.gestures = padextras.GesturePanel(app, sc)
+        self.choices = padextras.ChoicePanel(app, sc)
         self._build_api(sc)
 
     # ---- local API

@@ -25,6 +25,7 @@ import platform
 import subprocess
 import sys
 import queue
+import random
 import re
 import secrets
 import shutil
@@ -159,6 +160,7 @@ ACTIONS = {
         ("Blender: Grab", C("g")), ("Blender: Rotate", C("r")), ("Blender: Scale", C("s")), ("Blender: Edit Mode", C("TAB")),
     ],
     "Layers & Pad": [
+        ("Panic: stop all macros", ("panic", None)),
         ("Next Layer", ("layer", "next")), ("Previous Layer", ("layer", "prev")),
         ("Layer 1", ("layer", 0)), ("Layer 2", ("layer", 1)), ("Layer 3", ("layer", 2)),
     ],
@@ -167,6 +169,9 @@ ACTIONS = {
         ("Middle Click", ("mouse", {"btn": "middle"})), ("Double Click", ("mouse", {"btn": "left", "act": "double"})),
         ("Scroll Up", ("mouse", {"wheel": 3})), ("Scroll Down", ("mouse", {"wheel": -3})),
         ("Mouse Back Button", ("mouse", {"btn": "back"})), ("Mouse Forward Button", ("mouse", {"btn": "forward"})),
+        ("Zoom In (Ctrl+Scroll)", ("mouse", {"wheel": 2, "mods": ["CTRL"]})), ("Zoom Out (Ctrl+Scroll)", ("mouse", {"wheel": -2, "mods": ["CTRL"]})),
+        ("Scroll Left (sideways)", ("mouse", {"wheel": 3, "h": True})), ("Scroll Right (sideways)", ("mouse", {"wheel": -3, "h": True})),
+        ("Scroll Faster Up (Shift)", ("mouse", {"wheel": 3, "mods": ["SHIFT"]})),
     ],
     "Navigation": [
         ("Page Down", C("PGDN")), ("Page Up", C("PGUP")), ("Home", C("HOME")), ("End", C("END")),
@@ -204,7 +209,7 @@ NAMED_KEYS = ["ENTER", "TAB", "ESC", "SPACE", "BACKSPACE", "DELETE", "INSERT", "
 KEY_CHOICES = (list("abcdefghijklmnopqrstuvwxyz0123456789") + [f"F{i}" for i in range(1, 13)] + NAMED_KEYS
                + list("-=[];',./`\\"))
 MEDIA_CHOICES = ["PLAY_PAUSE", "NEXT", "PREV", "STOP", "MUTE", "VOL_UP", "VOL_DOWN", "FF", "REWIND"]
-MODE_CHOICES = ["1 Clock", "2 Focus timer", "3 Media", "4 System", "5 GIF", "6 Info"]
+MODE_CHOICES = ["1 Clock", "2 Focus timer", "3 Media", "4 System", "5 GIF", "6 Info", "7 Stopwatch", "8 Breathing", "9 Dice & coin", "10 Reaction test", "11 Snake", "12 Habits"]
 
 
 def valid_key(k):
@@ -282,7 +287,7 @@ def normalize_config(cfg):
             pass
     info["extras"] = good[:4]
     gs = cfg.get("gestures")                     # hold / double-tap actions: {"layer:slot:hold": {"cat","action"}}
-    cfg["gestures"] = {k: v for k, v in gs.items() if isinstance(v, dict) and "cat" in v and "action" in v and re.fullmatch(r"[0-2]:[1-5]:(hold|double)", str(k))} \
+    cfg["gestures"] = {k: v for k, v in gs.items() if isinstance(v, dict) and "cat" in v and "action" in v and re.fullmatch(r"[0-2]:([1-5]:(hold|double)|[89]:press)", str(k))} \
         if isinstance(gs, dict) else {}
     api = cfg.setdefault("api", {})              # local API for scripts (off unless switched on)
     api.setdefault("on", False)
@@ -828,7 +833,7 @@ def rgb565be_image(raw, w=240, h=240):
     return img
 
 
-FW_BUNDLED = "1.3.0"                     # version of firmware/DeskCompanion.bin shipped with this app
+FW_BUNDLED = "1.4.0"                     # version of firmware/DeskCompanion.bin shipped with this app
 LAYERS, GIF_SLOTS = 3, 4
 HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip", "script")
 DEFAULT_LAYERS = [
@@ -853,7 +858,9 @@ def spec_ok(spec):
         if not isinstance(o, dict):
             return False
         if "wheel" in o:
-            return isinstance(o["wheel"], int)
+            mods = o.get("mods", [])
+            return (isinstance(o["wheel"], int) and isinstance(mods, list) and all(isinstance(x, str) and x.upper() in ("CTRL", "SHIFT", "ALT", "GUI") for x in mods)
+                    and isinstance(o.get("h", False), bool))
         if "move" in o:
             return isinstance(o["move"], list) and len(o["move"]) == 2
         return o.get("btn", "left") in ("left", "right", "middle", "back", "forward") and o.get("act", "click") in ("click", "double", "down", "up")
@@ -871,6 +878,11 @@ def spec_ok(spec):
         return host_ok(v)
     if t == "mouse":
         return mouse_ok(v)
+    if t == "panic":
+        return True
+    if t in ("toggle", "random"):
+        lo, hi = (2, 2) if t == "toggle" else (2, 6)
+        return (isinstance(v, list) and lo <= len(v) <= hi and all(isinstance(x, dict) and x.get("type") not in ("toggle", "random") and spec_ok(x) for x in v))
     if t == "macro":
         if not isinstance(v, list) or len(v) > 64:
             return False
@@ -891,6 +903,8 @@ def spec_ok(spec):
             elif "mouse" in o:
                 if not mouse_ok(o["mouse"]):
                     return False
+            elif "panic" in o:
+                pass
             elif "layer" in o:
                 if not layer_ok(o["layer"]):
                     return False
@@ -901,8 +915,9 @@ def spec_ok(spec):
 
 
 NEW13_CAPS = ["hostx", "gestures", "dialaccel", "clockstyle", "saver", "nightdim"]       # firmware 1.3 additions (see hello "caps")
-SETTINGS_DEFAULT = {"dial_accel": 0, "clock_style": 0, "saver_s": 0, "saver_style": 1, "night_on": False, "night_from": 22, "night_to": 7, "night_level": 30}
-SETTINGS_RANGE = {"dial_accel": (0, 2), "clock_style": (0, 3), "saver_s": (0, 3600), "saver_style": (1, 3), "night_from": (0, 23), "night_to": (0, 23), "night_level": (5, 255)}
+NEW14_CAPS = ["screens", "pressturn", "toggle", "wheelmods", "ledfx", "reminders", "habits"]     # firmware 1.4 additions
+SETTINGS_DEFAULT = {"dial_accel": 0, "clock_style": 0, "saver_s": 0, "saver_style": 1, "night_on": False, "night_from": 22, "night_to": 7, "night_level": 30, "mode_mask": 0x3F}
+SETTINGS_RANGE = {"dial_accel": (0, 2), "clock_style": (0, 3), "saver_s": (0, 3600), "saver_style": (1, 3), "night_from": (0, 23), "night_to": (0, 23), "night_level": (5, 255), "mode_mask": (1, 4095)}
 LEGACY_CMDS = {"layer", "info_cards", "gif_list", "gif_cfg", "factory", "boot_opt", "safe_retry", "ota"}   # unknown to firmware 1.1
 
 
@@ -918,6 +933,10 @@ class SimFirmware:
         self.legacy = bool(os.environ.get("DESK_COMPANION_SIM_LEGACY")) if legacy is None else legacy   # behave like firmware 1.1.0 (single layer, 5 modes)
         self.wifi = bool(os.environ.get("DESK_COMPANION_SIM_WIFI"))        # firmware built with DC_ENABLE_WIFI=1 (default build: cable only)
         self.fw12 = bool(os.environ.get("DESK_COMPANION_SIM_V12"))          # behave like firmware 1.2.0 (layers, no gestures / settings / new host ops)
+        self.fw13 = bool(os.environ.get("DESK_COMPANION_SIM_V13"))          # behave like firmware 1.3.0 (everything but the 1.4 screens / actions)
+        self.reminders = [{"m": 0, "t": ""} for _ in range(3)]
+        self.habits = {"names": ["WATER", "MOVE", "READ", "SLEEP", "FOCUS"], "today": [0] * 5}
+        self._tgl = {}
         self.gest = {}                        # (layer, key, "hold"|"double") -> spec
         self.settings = dict(SETTINGS_DEFAULT)
         self.core = bool(os.environ.get("DESK_COMPANION_SIM_CORE"))        # behave like the CoreBringup diagnostic sketch (diagnostic commands only)
@@ -939,6 +958,9 @@ class SimFirmware:
         self.pins = {}
         self.t0 = time.monotonic()
         self.display = None                   # (r, g, b) of an active "fill" test pattern, or a pattern name
+
+    def fw_text(self):
+        return "1.2.0" if self.fw12 else "1.3.0" if self.fw13 else FW_BUNDLED
 
     def feed(self, data):
         self._buf += data
@@ -970,6 +992,15 @@ class SimFirmware:
     def _run_spec(self, spec):
         """What pressing a key does on the real pad that is visible to the app: layer switches and host actions."""
         t, v = spec.get("type"), spec.get("val")
+        if t == "toggle" and isinstance(v, list) and len(v) == 2:          # alternates between its two halves, like the firmware
+            key = compact_json(v)
+            half = self._tgl.get(key, 0)
+            self._tgl[key] = 1 - half
+            return self._run_spec(v[half])
+        if t == "random" and isinstance(v, list) and v:
+            return self._run_spec(random.choice(v))
+        if t == "panic":
+            return
         steps = v if t == "macro" else [{t: v}]
         for st in steps:
             if "layer" in st:
@@ -1020,7 +1051,7 @@ class SimFirmware:
             self._send(obj)
 
         self.cmd_count[cmd] = self.cmd_count.get(cmd, 0) + 1
-        if self.fw12 and cmd in ("settings", "gesture_test"):
+        if (self.fw12 and cmd in ("settings", "gesture_test")) or ((self.fw12 or self.fw13) and cmd in ("screens", "habits", "reminders")):
             reply({"ok": False, "err": "unknown_cmd"})
             return
         if self.core:
@@ -1050,9 +1081,10 @@ class SimFirmware:
         if cmd == "stats":
             return                             # 1 Hz telemetry, no reply - matches the real firmware
         if cmd == "hello":
-            reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": "1.2.0" if self.fw12 else FW_BUNDLED,
-                   "layer": self.layer, "layers": LAYERS, "modes": 6, "gifs": len(self.gifs), "gif_rot": self.gif_rot,
-                   "caps": ["layers", "mouse", "host", "info", "gifslots", "factory"] + ([] if self.fw12 else NEW13_CAPS) + (["wifi", "ota"] if self.wifi else []),
+            reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": self.fw_text(),
+                   "layer": self.layer, "layers": LAYERS, "modes": 6 if (self.fw12 or self.fw13) else NUM_MODES, "gifs": len(self.gifs), "gif_rot": self.gif_rot,
+                   "caps": ["layers", "mouse", "host", "info", "gifslots", "factory"] + ([] if self.fw12 else NEW13_CAPS) + ([] if self.fw12 or self.fw13 else NEW14_CAPS)
+                           + (["wifi", "ota"] if self.wifi else []),
                    "mode": self.mode, "bright": self.bright, "os": self.osv, "gif": self.gif_present,
                    "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "synced": False, "layout": self.layout,
                    "hid": True, "disp": True, "fs": True, "fs_state": "ready", "safe": False, "led_pin": 21})
@@ -1064,7 +1096,7 @@ class SimFirmware:
         elif cmd == "echo":
             reply({"ok": True, "evt": "echo", "data": msg.get("data")})
         elif cmd == "info":
-            reply({"ok": True, "evt": "info", "fw": "1.2.0" if self.fw12 else FW_BUNDLED, "build": "simulated", "safe_why": "", "disp_why": self.disp_why, "bl": self.bright, "saver_on": False, "nodisp": self.nodisp, "ota": self.ota, "ip": "", "layer": self.layer, "chip": "ESP32-S3 (simulated)", "rev": 0,
+            reply({"ok": True, "evt": "info", "fw": self.fw_text(), "build": "simulated", "safe_why": "", "disp_why": self.disp_why, "bl": self.bright, "saver_on": False, "nodisp": self.nodisp, "ota": self.ota, "ip": "", "layer": self.layer, "chip": "ESP32-S3 (simulated)", "rev": 0,
                    "cores": 2, "cpu_mhz": 240, "flash": 4194304,
                    "heap": 210_000, "heap_min": 190_000, "heap_blk": 110_000, "psram": 0, "temp": 31.5, "up_ms": self._up_ms(),
                    "reset": "power-on", "crashes": self.crashes, "safe": False, "core": "sim", "usb_mode": 0, "cdc_boot": 1, "hid": True,
@@ -1074,7 +1106,9 @@ class SimFirmware:
                    "boot": "0:power-on=ok;1:prefs=ok;2:usb=ok;3:fs=ok;4:display=ok;5:ready=ok;"})
         elif cmd == "led":
             m = msg.get("mode", "")
-            modes = {"auto": 0, "off": 1, "solid": 2, "blink": 3, "rainbow": 4}
+            modes = {"auto": 0, "off": 1, "solid": 2, "blink": 3, "rainbow": 4, "breathe": 5, "fire": 6}
+            if "alert" in msg and not (self.fw12 or self.fw13):
+                self.led["alert"] = str(msg["alert"])
             if "hex" in msg:
                 try:
                     v = int(str(msg["hex"]).lstrip("#"), 16)
@@ -1158,6 +1192,11 @@ class SimFirmware:
                 if self.events:
                     self._send({"evt": "enc", "d": 1 if t > 0 else -1, "pos": t})
                 runs = 1
+                pt = self.layers[self.layer].get(8 if t > 0 else 9) if (msg.get("press") and not (self.fw12 or self.fw13)) else None
+                if pt:
+                    self._run_spec(pt)
+                    reply({"ok": True, "evt": "input", "runs": 1})
+                    return
                 if not self.fw12:
                     dt = msg.get("dt", 1000)
                     per = dt / abs(t)
@@ -1184,8 +1223,12 @@ class SimFirmware:
             base = {"ok": True, "evt": "keys", "layer": lay, "cur": self.layer, "layers": LAYERS}
             if "slot" in msg:
                 sl = msg["slot"]
-                if not isinstance(sl, int) or not 1 <= sl <= 7:
+                if not isinstance(sl, int) or not 1 <= sl <= (7 if (self.fw12 or self.fw13) else 9):
                     reply({"ok": False, "err": "key"})
+                    return
+                if sl > 7:
+                    sp = self.layers[lay].get(sl)
+                    reply(dict(base, s=sl, **{"def": sp is None}, **({"spec": sp} if sp else {})))
                     return
                 g = msg.get("gesture", "tap")
                 if g != "tap" and not self.fw12:
@@ -1204,6 +1247,8 @@ class SimFirmware:
                 slots.append({"s": i, "def": not s, "len": len(j.encode()), "crc": zlib.crc32(j.encode()) & 0xFFFFFFFF if s else 0})
                 if i <= 5 and not self.fw12:
                     slots[-1].update(h=(lay, i, "hold") in self.gest, d=(lay, i, "double") in self.gest)
+            if not (self.fw12 or self.fw13):
+                base["pt"] = [8 in self.layers[lay], 9 in self.layers[lay]]
             reply(dict(base, slots=slots))
         elif cmd == "layer":
             v = msg.get("val")
@@ -1269,7 +1314,7 @@ class SimFirmware:
             reply({"ok": True, "evt": "reboot"})
         elif cmd == "remap":
             key, lay = msg.get("key"), msg.get("layer", 0)
-            if not isinstance(key, int) or not 1 <= key <= 7:
+            if not isinstance(key, int) or not 1 <= key <= (7 if (self.fw12 or self.fw13) else 9):
                 reply({"ok": False, "err": "key"})
             elif not isinstance(lay, int) or not 0 <= lay < LAYERS:
                 reply({"ok": False, "err": "layer"})
@@ -1277,6 +1322,9 @@ class SimFirmware:
                 reply({"ok": False, "err": "gesture"})
             elif not self.fw12 and msg.get("gesture", "tap") != "tap" and key > 5:
                 reply({"ok": False, "err": "key"})
+            elif key >= 8 and msg.get("clear"):
+                self.layers[lay].pop(key, None)
+                reply({"ok": True, "evt": "remap"})
             elif not self.fw12 and msg.get("gesture", "tap") != "tap" and msg.get("clear"):
                 self.gest.pop((lay, key, msg["gesture"]), None)
                 reply({"ok": True, "evt": "remap"})
@@ -1298,10 +1346,43 @@ class SimFirmware:
                     for k in [k for k in self.gest if k[0] == n]:
                         del self.gest[k]
             reply({"ok": True, "evt": "reset_keys"})
+        elif cmd == "screens":
+            reply({"ok": True, "evt": "screens", "mask": self.settings["mode_mask"], "reminder_active": False})
+        elif cmd == "habits":
+            if "names" in msg:
+                nm = msg["names"]
+                if not (isinstance(nm, list) and len(nm) == 5 and all(isinstance(x, str) and 0 < len(x.strip()) <= 10 and "|" not in x for x in nm)):
+                    reply({"ok": False, "err": "names"})
+                    return
+                self.habits["names"] = [x.strip() for x in nm]
+            if "toggle" in msg:
+                i = msg["toggle"]
+                if not isinstance(i, int) or not 0 <= i <= 4:
+                    reply({"ok": False, "err": "habit"})
+                    return
+                self.habits["today"][i] ^= 1
+            reply({"ok": True, "evt": "habits", "synced": True, "names": self.habits["names"], "today": self.habits["today"], "streak": list(self.habits["today"])})
+        elif cmd == "reminders":
+            if "list" in msg:
+                lst = msg["list"]
+                ok = isinstance(lst, list) and len(lst) <= 3 and all(isinstance(x, dict) and isinstance(x.get("m", 0), int) and 0 <= x.get("m", 0) <= 1440
+                                                                      and len(str(x.get("t", ""))) <= 16 and not any(c in str(x.get("t", "")) for c in "|;")
+                                                                      and (x.get("m", 0) == 0 or str(x.get("t", "")).strip()) for x in lst)
+                if not ok:
+                    reply({"ok": False, "err": "list"})
+                    return
+                self.reminders = [{"m": x.get("m", 0), "t": str(x.get("t", "")).strip()} for x in lst] + [{"m": 0, "t": ""}] * (3 - len(lst))
+            if "test" in msg:
+                i = msg["test"]
+                if not isinstance(i, int) or not 0 <= i <= 2 or not self.reminders[i]["t"]:
+                    reply({"ok": False, "err": "test"})
+                    return
+                self._send({"evt": "reminder", "i": i, "text": self.reminders[i]["t"]})
+            reply({"ok": True, "evt": "reminders", "list": self.reminders, "active": False})
         elif cmd == "settings":
             new = {}
             for k, v in msg.items():
-                if k in ("cmd", "id"):
+                if k in ("cmd", "id") or (k == "mode_mask" and (self.fw12 or self.fw13)):
                     continue
                 if k == "night_on":
                     if not isinstance(v, bool):
@@ -1321,7 +1402,7 @@ class SimFirmware:
             reply({"ok": True, "evt": "brightness"})
         elif cmd == "mode":
             v = int(msg.get("val", 1))
-            if 1 <= v <= 6:
+            if 1 <= v <= (6 if (self.fw12 or self.fw13) else NUM_MODES):
                 self.mode = v
             reply({"ok": True, "evt": "mode"})
         elif cmd == "os":
@@ -1699,9 +1780,16 @@ def describe_spec(spec):
         return f"macro, {len(v)} steps"
     if t == "layer":
         return "switch to the next layer" if v == "next" else "switch to the previous layer" if v == "prev" else f"switch to layer {int(v) + 1}"
+    if t == "panic":
+        return "panic: release all keys and stop every macro"
+    if t == "toggle":
+        return "alternate: " + "  /  ".join(describe_spec((x.get("type"), x.get("val"))) for x in v)
+    if t == "random":
+        return f"random one of {len(v)}: " + ", ".join(describe_spec((x.get("type"), x.get("val"))) for x in v)[:60]
     if t == "mouse":
         if "wheel" in v:
-            return f"scroll {'up' if v['wheel'] > 0 else 'down'} {abs(v['wheel'])}"
+            how = f"scroll {'left' if v['wheel'] > 0 else 'right'} {abs(v['wheel'])}" if v.get("h") else f"scroll {'up' if v['wheel'] > 0 else 'down'} {abs(v['wheel'])}"
+            return how + (" with " + "+".join(m.capitalize() for m in v["mods"]) if v.get("mods") else "")
         if "move" in v:
             return f"move the pointer by {v['move'][0]}, {v['move'][1]}"
         return f"mouse {v.get('act', 'click')} ({v.get('btn', 'left')} button)"
@@ -2215,8 +2303,8 @@ def detect_layout():
 SS = 2                      # supersampling of the virtual 240x240 screen
 DISP = 240                  # on-screen size of the virtual display
 M_CLOCK, M_POMO, M_MEDIA, M_TELEM, M_GIF, M_INFO = 1, 2, 3, 4, 5, 6
-NUM_MODES = 6
-MODE_NAMES = ["", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO"]
+NUM_MODES = 12                                   # 1-6 classic screens, 7-12 optional ones that run on the pad (firmware 1.4)
+MODE_NAMES = ["", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO", "STOPWATCH", "BREATHE", "DICE", "REACTION", "SNAKE", "HABITS"]
 PS_IDLE, PS_RUN, PS_PAUSE, PS_DONE = range(4)
 DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
@@ -2317,6 +2405,7 @@ class VirtualPad:
         self.cpu = self.ram = 0
         self.boot = time.monotonic()
         self.menu_open, self.menu_sel, self.menu_edit, self.menu_mode, self.menu_touched = False, 0, 0, 1, 0.0
+        self.mode_mask = 0x3F                                    # screens in the dial menu / long-press cycle (the pad's "mode_mask" setting)
         self.pomo_minutes, self.pomo_state = 25, PS_IDLE
         self.pomo_remain, self.pomo_last, self.pomo_done_at = 25 * 60.0, 0.0, 0.0
         self.gif_frames = self.gif_durs = self._demo_cache = None
@@ -2428,7 +2517,8 @@ class VirtualPad:
             for _ in range(n):
                 self.exec_media("VOL_UP" if d > 0 else "VOL_DOWN")
         elif self.menu_edit == 3:
-            self.menu_mode = (self.menu_mode - 1 + steps) % NUM_MODES + 1
+            for _ in range(n):
+                self.menu_mode = self.next_mode(self.menu_mode, d)
         elif self.menu_edit == 4:
             self.menu_layer = (self.menu_layer + steps) % LAYERS
         self.dirty = True
@@ -2486,7 +2576,14 @@ class VirtualPad:
         if self.menu_open:
             self._menu_close()
         else:
-            self.set_mode(self.mode % NUM_MODES + 1)
+            self.set_mode(self.next_mode(self.mode, 1))
+
+    def next_mode(self, m, d=1):
+        for i in range(1, NUM_MODES + 1):
+            c = (m - 1 + d * i) % NUM_MODES + 1
+            if (self.mode_mask >> (c - 1)) & 1:
+                return c
+        return m
 
     # ---- timing
     def tick(self):
@@ -2695,6 +2792,13 @@ class VirtualPad:
                               fill=(18, 22, 30), outline=C_ACC, width=SS)
         g.text(text, 120, 209, 13, C_TXT, bold=True)
 
+    def _scene_pad_only(self, g):
+        """Screens 7-12 are drawn by the pad itself (stopwatch, breathing, dice, reaction test, snake, habits): the twin shows a card."""
+        g.fill(C_BG)
+        g.text(MODE_NAMES[self.mode], 120, 96, 22, C_ACC, bold=True)
+        g.text("runs on the pad", 120, 130, 14, C_GRAY)
+        g.text("(enable it in Device -> Screens)", 120, 150, 11, C_DIM2)
+
     def render(self):
         """Returns the current virtual screen as a DISPxDISP RGB image."""
         now = time.monotonic()
@@ -2715,6 +2819,8 @@ class VirtualPad:
             elif self.mode == M_INFO:
                 g.fill(C_BG)
                 self._scene_info(g, now)
+            elif self.mode > M_INFO:
+                self._scene_pad_only(g)
             else:
                 self._scene_gif(g, now)
             if self.menu_open:
@@ -4128,7 +4234,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(row, text="Mode").pack(side="left")
         self.vp_mode_var = tk.StringVar(value=MODE_CHOICES[self.pad.mode - 1])
         ctk.CTkOptionMenu(row, values=MODE_CHOICES, variable=self.vp_mode_var, width=150,
-                          command=lambda v: self.pad.set_mode(int(v[0]))).pack(side="right")
+                          command=lambda v: self.pad.set_mode(int(v.split()[0]))).pack(side="right")
         row = ctk.CTkFrame(right, fg_color="transparent")
         row.pack(fill="x", padx=12, pady=2)
         ctk.CTkLabel(row, text="Brightness").pack(side="left")
@@ -4159,6 +4265,8 @@ class App(ctk.CTk):
                 self.tree_items[self.tree.insert(parent, "end", text="    " + n)] = {"cat": cat, "action": n}
         if hasattr(self, "automation") and hasattr(self.automation, "gestures"):
             self.automation.gestures.reload_categories()
+        if hasattr(self, "automation") and hasattr(self.automation, "choices"):
+            self.automation.choices.reload_categories()
 
     def _tree_press(self, e):
         it = self.tree_items.get(self.tree.identify_row(e.y))
@@ -4261,6 +4369,12 @@ class App(ctk.CTk):
             msg["layer"] = layer
         return msg
 
+    def resolve_action(self, cat, name):
+        return resolve_spec(self.cfg, cat, name)
+
+    def spec_valid(self, spec):
+        return spec_ok({"type": spec[0], "val": spec[1]})
+
     def _pad_cap(self, cap):
         return bool(self.dev.connected and cap in (self.dev.info.get("caps") or []))
 
@@ -4274,7 +4388,10 @@ class App(ctk.CTk):
                     existing.add((lay, sl["s"], "hold"))
                 if sl.get("d"):
                     existing.add((lay, sl["s"], "double"))
-        msgs = padextras.gesture_msgs(self, existing, lambda c, a: resolve_spec(self.cfg, c, a))
+            for i, flag in enumerate(r.get("pt") or []):                   # dial pressed + turned right / left (firmware 1.4)
+                if flag:
+                    existing.add((lay, 8 + i, "press"))
+        msgs = padextras.gesture_msgs(self, existing, lambda c, a: resolve_spec(self.cfg, c, a), set(self.dev.info.get("caps") or []))
         for m in msgs:
             self.dev.request(m)
         return len(msgs)
@@ -4859,6 +4976,8 @@ class App(ctk.CTk):
             self.post(lambda: self.vp_log("host action ignored while the hardware test is running"))
         elif evt == "host":
             self.host_q.put((("host", {"op": m.get("op"), "arg": m.get("arg", "")}), "pad action", f"{m.get('op')}", False))
+        elif evt == "reminder":                                            # the pad's reminder fired: also tell the user on the computer
+            self.post(lambda t=str(m.get("text", "")): self.notify("Reminder", t, "ok"))
         elif evt == "key" and m.get("v") == 1 and 1 <= m.get("k", 0) <= 5:
             self.post(lambda k=m["k"]: self._count_use(f"K{k}"))
         elif evt == "enc" and m.get("d"):
@@ -5106,6 +5225,7 @@ class App(ctk.CTk):
         self.refresh_health()
         self.refresh_pad_gifs()
         self.behaviour.on_connected()
+        self.screens_card.on_connected()
         if not self.cfg.get("wizard_done") and not simulated and not getattr(self, "_wizard_offered", False):
             self._wizard_offered = True
             self.after(800, self.open_wizard)
@@ -5125,6 +5245,7 @@ class App(ctk.CTk):
         self.conn_pill.set("Not connected", WARN)
         self.refresh_fw_status()
         self.behaviour.refresh()
+        self.screens_card.refresh()
         if hasattr(self, "pad_gif_box"):
             self.refresh_pad_gifs()
         self.conn_btn.configure(text="Connect")
@@ -6827,6 +6948,8 @@ class App(ctk.CTk):
 
         box = self._card(sc, "Pad behaviour", "Dial acceleration, clock face, screensaver and night dimming - stored on the pad (firmware 1.3).")
         self.behaviour = padextras.BehaviourCard(self, box)
+        box = self._card(sc, "Screens, reminders and habits", "Optional screens on the pad (stopwatch, breathing, dice, reaction test, snake, habits), which screens the dial cycles through, and nudges every N minutes (firmware 1.4).")
+        self.screens_card = padextras.ScreensCard(self, box)
 
         # ---- firmware
         box = self._card(sc, "Firmware", "Version check, one-click update over USB, and an experimental Wi-Fi update.")
@@ -6917,7 +7040,7 @@ class App(ctk.CTk):
             lambda: self.dev.request({"cmd": "brightness", "val": val}), None, "Brightness failed"))
 
     def _mode_changed(self, v):
-        m = int(v[0])
+        m = int(v.split()[0])
         self.pad.set_mode(m)
         if self.dev.connected:
             self.bg(lambda: self.dev.request({"cmd": "mode", "val": m}),
