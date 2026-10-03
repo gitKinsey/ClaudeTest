@@ -119,5 +119,42 @@ app.dev.info["modes"] = 6
 app.cfg["info"]["ics"] = "/no/such/file.ics"; app._info_cache.clear()
 c2, b2, e2 = app._info_collect()
 assert "calendar problem" in e2["event"] and [c["k"] for c in c2] == ["m", "w", "c"], (e2, c2)
+# ---- extra cards: countdown / world clock / git / CI / crypto
+from desk_lib import extras   # noqa: E402
+import subprocess   # noqa: E402
+for k in ("music", "weather", "event", "custom"):
+    app.info_vars[k].set(False)
+app._info_changed(); app.cfg["info"]["extras"].clear(); app._extra_refresh()
+def add_extra(kind, label, arg):
+    app.extra_kind.set(extras.KINDS[kind]); app._extra_kind_changed()
+    app.extra_label.delete(0, "end"); app.extra_label.insert(0, label)
+    app.extra_arg.delete(0, "end"); app.extra_arg.insert(0, arg)
+    app.extra_add()
+add_extra("countdown", "Trip", "not a date")
+assert app.cfg["info"]["extras"] == [] and "Cannot add the card" in app.status.cget("text")
+target = (dt.date.today() + dt.timedelta(days=9)).isoformat()
+add_extra("countdown", "Trip", target)
+assert [c["t"] for c in app._info_collect()[0]] == ["9 days"], app._info_collect()[0]
+repo = tmp + "/repo"; os.makedirs(repo)
+subprocess.run(["git", "init", "-q", repo], check=True); open(repo + "/f.txt", "w").write("x")
+add_extra("git", "", repo)
+gc = app._info_collect()[0][1]
+assert gc["k"] == "c" and gc["label"] == "GIT" and gc["a"] == "1 change", gc
+add_extra("worldclock", "", "UTC")
+def offline(url, timeout=8):
+    raise OSError("offline (test)")
+extras._fetch_json = offline                                    # the test must not depend on the internet
+add_extra("crypto", "", "bitcoin")
+assert len(app.cfg["info"]["extras"]) == 4
+add_extra("ci", "", "a/b"); assert len(app.cfg["info"]["extras"]) == 4 and "at most 4" in app.status.cget("text")
+cards, _b, errs = app._info_collect()
+assert [c["k"] for c in cards[:3]] == ["e", "c", "c"] and errs["x3"].startswith("Crypto price:"), (cards, errs)   # a failing service is reported, not fatal
+app.extra_remove(3); app.extra_remove(2)
+app.info_poll = 0.15; sim.cards = []; app._info_sent = (None, 0.0)
+assert pump(80, lambda: len(sim.cards) == 2), "extras alone are sent by the loop"
+app.cfg["info"]["extras"][1]["arg"] = "/definitely/not/a/repo"; app._info_cache.clear()
+assert app._info_collect()[2]["x1"].startswith("Git repository status:")
+app.cfg["info"]["extras"].append({"type": "nope"}); app.save_cfg()
+assert len(m.load_config()["info"]["extras"]) == 2, "junk card definitions are dropped on load"
 app.destroy()
 print("ALL INFO TESTS PASSED")

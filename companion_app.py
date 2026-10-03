@@ -45,7 +45,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, automation, backup, bridge, espota, feeds, hostactions, recorder, scheduler, textops, wizards     # noqa: E402
+from desk_lib import activewin, automation, backup, bridge, espota, extras, feeds, hostactions, recorder, scheduler, textops, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
@@ -242,6 +242,13 @@ def normalize_config(cfg):
         except (ValueError, TypeError):
             pass
     cfg["schedules"] = good
+    good = []                                    # extra info cards (countdown, world clock, git, CI, crypto)
+    for x in info.get("extras") or []:
+        try:
+            good.append(extras.validate(x))
+        except (ValueError, TypeError):
+            pass
+    info["extras"] = good[:4]
     api = cfg.setdefault("api", {})              # local API for scripts (off unless switched on)
     api.setdefault("on", False)
     api.setdefault("port", 47651)
@@ -5883,6 +5890,23 @@ class App(ctk.CTk):
             self.info_custom[k] = e
         c = ctk.CTkFrame(left)
         c.pack(fill="x", pady=5, padx=2)
+        ui.heading(c, "More cards").grid(row=0, column=0, sticky="w", padx=14, pady=(12, 2))
+        ui.muted(c, "Countdowns, other time zones, a git repository's state, the latest GitHub Actions run, a crypto price. The pad shows up to 4 cards in total.",
+                 wraplength=620).grid(row=1, column=0, columnspan=4, sticky="w", padx=14)
+        self.extra_list = ctk.CTkFrame(c, fg_color="transparent")
+        self.extra_list.grid(row=2, column=0, columnspan=4, sticky="ew", padx=10, pady=4)
+        form = ctk.CTkFrame(c, fg_color="transparent")
+        form.grid(row=3, column=0, columnspan=4, sticky="w", padx=14, pady=(2, 12))
+        self.extra_kind = tk.StringVar(value=extras.KINDS["countdown"])
+        ctk.CTkOptionMenu(form, values=list(extras.KINDS.values()), variable=self.extra_kind, width=190, command=lambda _v: self._extra_kind_changed()).pack(side="left")
+        self.extra_label = ctk.CTkEntry(form, width=120, placeholder_text="label")
+        self.extra_label.pack(side="left", padx=6)
+        self.extra_arg = ctk.CTkEntry(form, width=230, placeholder_text="2026-12-24")
+        self.extra_arg.pack(side="left", padx=6)
+        ctk.CTkButton(form, text="Add card", width=90, command=self.extra_add).pack(side="left", padx=6)
+        self._extra_refresh()
+        c = ctk.CTkFrame(left)
+        c.pack(fill="x", pady=5, padx=2)
         ui.heading(c, "Notification badges").grid(row=0, column=0, sticky="w", padx=14, pady=(12, 2))
         ui.muted(c, "Small counters on the Info screen. Any script, IFTTT / Home-Assistant rule or mail filter can set one - the app listens on this computer only "
                  "and needs the secret token:", wraplength=620).grid(row=1, column=0, columnspan=3, sticky="w", padx=14)
@@ -5926,6 +5950,49 @@ class App(ctk.CTk):
         if not save_only:
             self._info_cache.pop("event_src", None)
             self._info_sent = (None, 0.0)
+
+    EXTRA_HINTS = {"countdown": "date: 2026-12-24", "worldclock": "Europe/Zurich, Asia/Tokyo", "git": "folder of the repository",
+                   "ci": "owner/name (public repository)", "crypto": "bitcoin  or  ethereum:eur"}
+
+    def _extra_kind_changed(self):
+        key = next(k for k, v in extras.KINDS.items() if v == self.extra_kind.get())
+        self.extra_arg.delete(0, "end")
+        self.extra_arg.configure(placeholder_text=self.EXTRA_HINTS[key])
+
+    def _extra_refresh(self):
+        for w in self.extra_list.winfo_children():
+            w.destroy()
+        items = self.cfg["info"]["extras"]
+        if not items:
+            ui.muted(self.extra_list, "None yet.").pack(anchor="w", padx=6, pady=4)
+        for i, it in enumerate(items):
+            row = ctk.CTkFrame(self.extra_list, fg_color=CARD2, corner_radius=8, border_width=0)
+            row.pack(fill="x", pady=2)
+            ctk.CTkLabel(row, text=extras.KINDS[it["type"]], width=170, anchor="w", font=ui.font(12, "bold")).pack(side="left", padx=(10, 4), pady=6)
+            ui.muted(row, (it["label"] + "  " if it["label"] else "") + it["arg"], width=300).pack(side="left", padx=4)
+            ui.secondary_button(row, "Remove", lambda i=i: self.extra_remove(i), width=70).pack(side="right", padx=8)
+
+    def extra_add(self):
+        key = next(k for k, v in extras.KINDS.items() if v == self.extra_kind.get())
+        try:
+            item = extras.validate({"type": key, "label": self.extra_label.get(), "arg": self.extra_arg.get()})
+            if len(self.cfg["info"]["extras"]) >= 4:
+                raise ValueError("the pad shows at most 4 cards - remove one first")
+        except ValueError as e:
+            return self.set_status(f"Cannot add the card: {e}", error=True)
+        self.cfg["info"]["extras"].append(item)
+        save_config(self.cfg)
+        self._info_sent = (None, 0.0)
+        self.extra_label.delete(0, "end")
+        self.extra_arg.delete(0, "end")
+        self._extra_refresh()
+        self.set_status(f"Added: {extras.KINDS[key]}")
+
+    def extra_remove(self, i):
+        del self.cfg["info"]["extras"][i]
+        save_config(self.cfg)
+        self._info_sent = (None, 0.0)
+        self._extra_refresh()
 
     def info_find_city(self):
         name = self.info_city.get().strip()
@@ -6016,6 +6083,13 @@ class App(ctk.CTk):
         if info.get("custom") and any(info.get(k) for k in ("c_label", "c_t", "c_a", "c_b")):
             f = feeds.ascii_fold
             cards.append({"k": "c", "label": f(info.get("c_label", ""), 24) or "NOTE", "t": f(info.get("c_t", ""), 24), "a": f(info.get("c_a", ""), 40), "b": f(info.get("c_b", ""), 40)})
+        for i, item in enumerate(info.get("extras") or []):
+            key = f"x{i}"
+            try:
+                cards.append(cached(key + json.dumps(item, sort_keys=True), extras.TTL[item["type"]], lambda it=item: extras.build(it)))
+                errs[key] = ""
+            except Exception as e:                           # noqa: BLE001
+                errs[key] = f"{extras.KINDS.get(item.get('type'), 'card')}: {e}"
         badges = self.badges.get() if self.badges else []
         return cards[:4], badges, errs
 
@@ -6046,7 +6120,7 @@ class App(ctk.CTk):
         while not self.closing:
             time.sleep(max(0.05, self.info_poll))
             info = self.cfg["info"]
-            if not any(info.get(k) for k in ("music", "weather", "event", "custom")) and not (self.badges and self.badges.get()):
+            if not any(info.get(k) for k in ("music", "weather", "event", "custom")) and not info.get("extras") and not (self.badges and self.badges.get()):
                 continue
             try:
                 cards, badges, errs = self._info_collect()
