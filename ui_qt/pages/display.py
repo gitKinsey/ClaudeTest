@@ -27,7 +27,7 @@ class DisplayPage(Page):
         t.add(self.twin, 1)
         t.add(flow(button("Show on pad", "ghost", e.show_layer_on_pad)))
         self.grid = PageGrid({"main": self.tabs, "twin": t}, {"wide": [[("main", 4)], [("twin", 1)]], "medium": [[("main", 1)]]},
-                             order=["main", "twin"], titles={"main": "Display", "twin": "Pad"}, tabs_factory=shell.make_tabs, wide_min=1180, medium_min=720)
+                             order=["main", "twin"], titles={"main": "Display", "twin": "Pad"}, tabs_factory=None, wide_min=1180, medium_min=720)
         self.root.addWidget(self.grid, 1)
         self.tabs.changed.connect(lambda k: self.info_activate(k))
 
