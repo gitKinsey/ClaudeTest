@@ -147,5 +147,59 @@ from desk_lib import scheduler as sch   # noqa: E402
 e = sch.validate({"when": {"kind": "every", "minutes": 5}, "do": {"kind": "host", "op": "script", "arg": "demo"}})
 assert e["do"] == {"kind": "host", "op": "script", "arg": "demo"}
 assert m.describe_spec(("host", {"op": "script", "arg": "demo"})) == "run script: demo"
+# ---- version 2: exec / card / alert / ask / translate / pointer commands through the real app backend
+rec.moves = []
+rec.moveto = lambda x, y: rec.moves.append(("to", x, y))
+rec.clickat = lambda x, y, b: rec.moves.append(("click", x, y, b))
+app.cfg["allow_shell"] = True
+app.cfg["scripts"]["build"] = ("exec echo hello && exit 0\nif var exit == 0\ncard BUILD | passed | {out} |\nalert 00ff00 2\nelse\ncard BUILD | FAILED |  |\nend\n"
+                               "exec exit 3\nif var exit != 0\ncard BUILD | red | {exit} |\nend")
+assert run_bg("build") == "script 'build' ran 5 commands"
+assert app.cfg["info"]["custom"] and app.cfg["info"]["c_label"] == "BUILD" and app.cfg["info"]["c_t"] == "red" and app.cfg["info"]["c_a"] == "3"
+assert pump(40, lambda: sim.led.get("alert") == "00ff00"), sim.led
+app.cfg["allow_shell"] = False
+try:
+    run_bg("build"); raise SystemExit("exec ran with the shell switched off")
+except RuntimeError as e:
+    assert "shell commands" in str(e)
+urls = []
+def fetch(method, url, body=None, headers=None):
+    urls.append(url)
+    return (200, '{"content": [{"type": "text", "text": "the answer"}]}') if "anthropic" in url else (200, '{"responseData": {"translatedText": "hola"}}') if "mymemory" in url else (200, "ok")
+app.hostact.net_fetch = fetch
+app.cfg["ai"]["key"] = "sk-x"
+app.clipboard_clear(); app.clipboard_append("some text"); app.update()
+app.cfg["scripts"]["ai"] = "ask Explain: {clipboard}\ntext {answer}\ntranslate es\ntext {translated}\nhttp GET https://ok.example/ping\nmoveto 10 20\nclickat 30 40 right"
+rec.calls.clear()
+assert run_bg("ai").endswith("ran 7 commands")
+assert [c for c in rec.calls if c[0] == "text"] == [("text", "the answer"), ("text", "hola")] and rec.moves == [("to", 10, 20), ("click", 30, 40, "right")], rec.moves
+# ---- versions, templates, import from an address
+page.pick.set("demo"); page._load("demo"); page.editor.delete("1.0", "end"); page.editor.insert("1.0", "key a\n"); page.save()
+page.editor.delete("1.0", "end"); page.editor.insert("1.0", "key b\n"); page.save()
+hist = app.cfg["script_history"]["demo"]
+assert len(hist) == 2 and hist[0]["src"] == "key a\n" and "repeat 3" in hist[1]["src"]
+page.hist_var.set(hist[1]["t"]); page.restore_version()
+assert "repeat 3" in page.source() and app.cfg["scripts"]["demo"] == "key b\n", "restoring only loads it into the editor"
+for i in range(12):
+    page.editor.delete("1.0", "end"); page.editor.insert("1.0", f"key {chr(97 + i)}\n"); page.save()
+assert len(app.cfg["script_history"]["demo"]) == 10, "the history keeps 10 versions"
+from desk_lib import scripting as scr   # noqa: E402
+for key, src in scr.TEMPLATES.items():
+    page.use_template(key); assert page.source() == src and page.name.get(), key
+    page.save(); assert page.name.get() in app.cfg["scripts"]
+import threading   # noqa: E402
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E402
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        body = b"key ctrl+a\ntext shared script" if self.path.startswith("/good") else b"this is not a script at all"
+        self.send_response(200); self.end_headers(); self.wfile.write(body)
+srv = ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
+page.url.insert(0, f"http://127.0.0.1:{srv.server_port}/good/shared-macro.txt"); page.import_url()
+assert pump(60, lambda: page.name.get() == "shared-macro") and "shared script" in page.source() and "READ IT" in app.status.cget("text")
+assert "shared-macro" not in app.cfg["scripts"], "an imported script is only loaded into the editor until the user saves it"
+page.url.delete(0, "end"); page.url.insert(0, f"http://127.0.0.1:{srv.server_port}/bad.txt"); page.import_url()
+assert pump(60, lambda: "Import failed" in app.status.cget("text")), app.status.cget("text")
+srv.shutdown()
 app.destroy()
 print("ALL SCRIPTS TESTS PASSED")

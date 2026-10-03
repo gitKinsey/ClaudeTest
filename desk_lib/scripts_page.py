@@ -4,7 +4,10 @@ from datetime import datetime
 
 import customtkinter as ctk
 
-from desk_lib import scripting, ui
+import time
+import urllib.parse
+
+from desk_lib import netactions, scripting, ui
 
 EXAMPLE = '''# Fill in a form: copy, switch window, paste, confirm
 key ctrl+c
@@ -45,6 +48,19 @@ class ScriptsPage:
         self.name.pack(side="left", padx=6)
         ctk.CTkButton(row, text="Save", width=80, command=self.save).pack(side="left", padx=6)
         ui.secondary_button(row, "Delete", self.delete, width=80).pack(side="left", padx=6)
+        r2 = ctk.CTkFrame(box, fg_color="transparent")
+        r2.pack(fill="x", padx=14, pady=(2, 2))
+        self.tpl_var = tk.StringVar(value="Start from a ready-made script...")
+        ctk.CTkOptionMenu(r2, values=list(scripting.TEMPLATES), variable=self.tpl_var, width=300, command=self.use_template).pack(side="left")
+        self.hist_var = tk.StringVar(value="Earlier versions")
+        self.hist_menu = ctk.CTkOptionMenu(r2, values=["(none)"], variable=self.hist_var, width=190)
+        self.hist_menu.pack(side="left", padx=(14, 4))
+        ui.secondary_button(r2, "Restore that version", self.restore_version, width=150).pack(side="left", padx=4)
+        r3 = ctk.CTkFrame(box, fg_color="transparent")
+        r3.pack(fill="x", padx=14, pady=(2, 2))
+        self.url = ctk.CTkEntry(r3, width=420, placeholder_text="https:// address of a shared script (plain text)")
+        self.url.pack(side="left")
+        ui.secondary_button(r3, "Import from the address", self.import_url, width=170).pack(side="left", padx=6)
         self.editor = ctk.CTkTextbox(box, height=260, font=ctk.CTkFont(family="Courier", size=13), wrap="none")
         self.editor.pack(fill="x", padx=16, pady=6)
         ui.muted(box, HELP, wraplength=880).pack(anchor="w", padx=16)
@@ -77,6 +93,47 @@ class ScriptsPage:
         self.name.insert(0, name)
         self.editor.delete("1.0", "end")
         self.editor.insert("1.0", self.app.cfg["scripts"].get(name, EXAMPLE if not name else ""))
+        self._refresh_history(name)
+
+    def _refresh_history(self, name):
+        items = self.app.cfg["script_history"].get(name, [])
+        self.hist_menu.configure(values=[h["t"] for h in items] or ["(none)"])
+        self.hist_var.set(items[0]["t"] if items else "(none)")
+
+    def restore_version(self):
+        name = self.pick.get()
+        hit = next((h for h in self.app.cfg["script_history"].get(name, []) if h["t"] == self.hist_var.get()), None)
+        if not hit:
+            return self.app.set_status("There is no earlier version of this script yet", error=True)
+        self.editor.delete("1.0", "end")
+        self.editor.insert("1.0", hit["src"])
+        self.app.set_status(f"Version from {hit['t']} loaded - press Save to keep it (the current one stays in the history)")
+
+    def use_template(self, key):
+        self.new()
+        self.editor.delete("1.0", "end")
+        self.editor.insert("1.0", scripting.TEMPLATES[key])
+        self.name.insert(0, "".join(ch for ch in key.split(":")[0] if ch.isalnum() or ch in " _-.").strip()[:30])
+        self.app.set_status("Template loaded - change it and press Save")
+
+    def import_url(self):
+        url = self.url.get().strip()
+
+        def work():
+            status, text = netactions.http_request("GET", url)
+            if status != 200:
+                raise ValueError(f"the server answered {status}")
+            scripting.parse(text)                                          # must be a valid script
+            return text
+
+        def done(text):
+            self.new()
+            self.editor.delete("1.0", "end")
+            self.editor.insert("1.0", text)
+            leaf = urllib.parse.urlparse(url).path.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "imported"
+            self.name.insert(0, leaf[:30])
+            self.app.set_status("Script imported - READ IT, then press Save (it can run commands and open things)")
+        self.app.bg(work, done, "Import failed")
 
     def new(self):
         self.pick.set("")
@@ -94,6 +151,14 @@ class ScriptsPage:
             scripting.parse(self.source())
         except scripting.ScriptError as e:
             return self.app.set_status(f"Not saved - {e}", error=True)
+        old = self.app.cfg["scripts"].get(name)
+        if old is not None and old != self.source():                     # keep the last 10 versions of every script
+            hist = self.app.cfg["script_history"].setdefault(name, [])
+            label = time.strftime("%Y-%m-%d %H:%M:%S")
+            while any(h["t"] == label for h in hist):                  # two saves in the same second keep distinct labels
+                label += "+"
+            hist.insert(0, {"t": label, "src": old})
+            del hist[10:]
         self.app.cfg["scripts"][name] = self.source()
         self.app.save_cfg()
         self.refresh(name)

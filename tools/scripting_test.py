@@ -88,4 +88,34 @@ try:
 except sc.ScriptError as e:
     assert "too long" in str(e)
 assert sc.dry_run("", now=NOW) == ["(0 commands)"]
+# ---- version 2 commands: jitter, exec + var conditions, card, alert, layout, http, ask, translate, moveto / clickat, do
+class Rec2(sc.Recorder):
+    def __init__(self, **kw):
+        super().__init__(**kw); self.code = 0; self.waits = []
+    def wait(self, ms): self.waits.append(ms); super().wait(ms)
+    def exec(self, cmd): self.log.append(f"exec {cmd}"); return self.code, "line one\nline two"
+    def http(self, arg): self.log.append(f"http {arg}"); return "200"
+    def ask(self, prompt): self.log.append(f"ask {prompt!r}"); return "42"
+    def translate(self, lang): self.log.append(f"translate {lang}"); return "hallo"
+import random   # noqa: E402
+r = Rec2(); sc.run("wait 200 jitter 50\nwait 100 jitter 0\nwait 20 jitter 1000", r, ctx={"rng": random.Random(3)})
+assert 150 <= r.waits[0] <= 250 and r.waits[1] == 100 and 0 <= r.waits[2] <= 1020, r.waits
+r = Rec2(); r.code = 0
+sc.run("exec make test\nif var exit == 0\ncard BUILD | passed | {out} | done\nalert 00ff00 2\nelse\ncard BUILD | FAILED | exit {exit} |\nalert ff0000\nend", r, shell_ok=True)
+assert r.log == ["exec make test", "card 'BUILD' 'passed' 'line one' 'done'", "alert 00ff00 x2"], r.log
+r = Rec2(); r.code = 2
+sc.run("exec make test\nif var exit == 0\nalert 00ff00\nelse\ncard BUILD | FAILED | exit {exit} |\nalert ff0000\nend", r, shell_ok=True)
+assert r.log[-2:] == ["card 'BUILD' 'FAILED' 'exit 2' ''", "alert ff0000 x3"], r.log
+fails("exec ls", "shell commands")
+vr = Rec2(); sc.run("set n = 7\nif var n > 5\ntext big\nend\nif var n < 5\ntext small\nend\nif var n != 7\ntext no\nend\nif not var n == 8\ntext not8\nend\nset s = Hello World\nif var s contains world\ntext has\nend\nif var missing == \ntext empty\nend", vr)
+assert [x for x in vr.log if x.startswith("type")] == ["type 'big'", "type 'not8'", "type 'has'", "type 'empty'"], vr.log
+r = Rec2(); sc.run("layout save work\nlayout work\nhttp POST https://x.example/h {{\"a\": 1}}\nask Summarize {clipboard}\ntext {answer}\nhttp GET https://y.example\ntext {http}\ntranslate de\ntext {translated}\n"
+                   "moveto 100 200\nclickat 5 6 right\nclickat 7 8\ndo dnd on\ndo shot default", r, ctx={"clipboard": "CLIP"})
+assert r.log == ["layout save work", "layout work", 'http POST https://x.example/h {"a": 1}', "ask 'Summarize CLIP'", "type '42'", "http GET https://y.example", "type '200'", "translate de",
+                 "type 'hallo'", "move the pointer to 100,200", "click right at 5,6", "click left at 7,8", "dnd on", "shot default"], r.log
+for src, needle in (("alert zzz", "alert needs"), ("alert ff0000 11", "alert needs"), ("card", "card needs"), ("card a|b|c|d|e", "card needs"), ("moveto 1", "moveto needs"), ("moveto 1 2 left", "moveto needs"),
+                    ("clickat a b", "clickat needs"), ("do fly high", "do needs"), ("do dnd", "do needs"), ("translate german", "translate needs"), ("wait 5 jitter", "wait needs"),
+                    ("if var x ~ 1\nend", "unknown condition"), ("exec", "needs an argument"), ("http", "needs an argument")):
+    fails(src, needle)
+assert sc.dry_run("exec ls\nif var exit == 0\ntext fine\nend", now=NOW) == ["exec ls", "type 'fine'", "(2 commands)"], "a dry run answers (exit 0, '(dry run)') and walks on"
 print("ALL SCRIPTING TESTS PASSED")

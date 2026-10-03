@@ -46,7 +46,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, padextras, presets, recorder, scheduler, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
+from desk_lib import activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, netactions, padextras, presets, recorder, scheduler, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
@@ -283,6 +283,8 @@ def normalize_config(cfg):
     cfg.setdefault("led_cpu", False)             # the pad's LED follows this computer's CPU load
     cfg.setdefault("tray", False)                # keep running in the system tray when the window is closed
     cfg.setdefault("counters", {})               # {counter:name} values used by snippets
+    if not isinstance(cfg.get("script_history"), dict):
+        cfg["script_history"] = {}               # earlier versions of scripts {name: [{"t","src"}]}
     sc = cfg.get("scripts")                      # macro scripts: {name: source}
     cfg["scripts"] = {str(k)[:32]: str(v)[:scripting.MAX_SCRIPT_CHARS] for k, v in sc.items() if str(k).strip()} if isinstance(sc, dict) else {}
     good = []                                    # scheduled actions: drop anything that no longer validates
@@ -1826,6 +1828,13 @@ class KeySender:
     def mouse(self, spec):
         raise ValueError("mouse actions are not available on this system")
 
+    def moveto(self, x, y):
+        raise ValueError("moving the pointer to a screen position is not available on this system")
+
+    def clickat(self, x, y, btn="left"):
+        self.moveto(x, y)
+        self.mouse({"btn": btn, "act": "click"})
+
     def host(self, spec):
         if self.host_cb:
             self.host_cb(spec)
@@ -1968,6 +1977,10 @@ class WinKeys(KeySender):
         if self.u.SendInput(1, arr, ctypes.sizeof(INPUT)) != 1:
             raise OSError("Windows refused the mouse input")
 
+    def moveto(self, x, y):
+        if not self.u.SetCursorPos(int(x), int(y)):
+            raise OSError("Windows refused to move the pointer")
+
     def mouse(self, spec):
         if "wheel" in spec:
             self._mouse_event(0x800, int(spec["wheel"]) * 120)
@@ -2014,6 +2027,9 @@ class PynputKeys(KeySender):
         self.kb, self.Key = Controller(), Key
         self.ms, self.Button = _mouse.Controller(), _mouse.Button
         self.mac = platform.system() == "Darwin"
+
+    def moveto(self, x, y):
+        self.ms.position = (int(x), int(y))
 
     def mouse(self, spec):
         if "wheel" in spec:
@@ -5174,6 +5190,36 @@ class App(ctk.CTk):
 
         def window(self): return self.app.active_win.get()
         def clipboard(self): return self.app._clipboard_text()
+
+        def exec(self, cmd):
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)           # noqa: S602 - the user's own script, shell switch checked by the interpreter
+            return r.returncode, r.stdout
+
+        def card(self, label, title, a, b):
+            self.app.set_custom_card(label, title, a, b)
+
+        def alert(self, hex_, times):
+            if self.app.dev.connected and self.app._pad_cap("ledfx"):
+                self.app.dev.request({"cmd": "led", "alert": hex_, "times": times})
+
+        def http(self, arg):
+            return netactions.webhook(arg, self.app.hostact.net_fetch)
+
+        def ask(self, prompt):
+            ai = self.app.cfg["ai"]
+            return netactions.ask_ai(prompt, ai.get("key", ""), ai.get("model") or "claude-haiku-4-5-20251001", self.app.hostact.net_fetch)
+
+        def translate(self, lang):
+            return netactions.translate(self.app._clipboard_text(), lang, self.app.hostact.net_fetch)
+
+        def moveto(self, x, y): self._impl().moveto(x, y)
+        def clickat(self, x, y, btn): self._impl().clickat(x, y, btn)
+
+    def set_custom_card(self, label, title, a, b):
+        """The pad's Info screen custom card (also used by the local API and by scripts)."""
+        info = self.cfg["info"]
+        info.update(custom=any((label, title, a, b)), c_label=label, c_t=title, c_a=a, c_b=b)
+        self._info_sent = (None, 0.0)
 
     def script_ctx(self):
         return {"counter": self._next_counter}
