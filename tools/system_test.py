@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from desk_lib import autobackup, autostart, padextras, tray   # noqa: E402
+from desk_lib import autobackup, autostart, padconst, tray   # noqa: E402
 
 tmp = Path(tempfile.mkdtemp(prefix="dcsys_"))
 
@@ -58,14 +58,14 @@ assert autobackup.AutoBackup(ro / "sub").maybe({"layers": []}) is None, "an unwr
 print("autobackup OK")
 
 # ---------------------------------------------------------------- start with the computer
-argv = autostart.launch_command(frozen=False, exe="/usr/bin/python3", script="/opt/dc/companion_app.py")
-assert argv == ["/usr/bin/python3", "/opt/dc/companion_app.py", "--minimized"]
+argv = autostart.launch_command(frozen=False, exe="/usr/bin/python3", script="/opt/dc/companion_qt.py")
+assert argv == ["/usr/bin/python3", "/opt/dc/companion_qt.py", "--minimized"]
 assert autostart.launch_command(frozen=True, exe="/Apps/DeskCompanion") == ["/Apps/DeskCompanion", "--minimized"]
 home = tmp / "home"
 assert not autostart.is_enabled("Linux", home)
-where = autostart.enable(["/usr/bin/python3", "/path with space/companion_app.py", "--minimized"], "Linux", home)
+where = autostart.enable(["/usr/bin/python3", "/path with space/companion_qt.py", "--minimized"], "Linux", home)
 d = Path(where).read_text()
-assert Path(where) == home / ".config/autostart/deskcompanion.desktop" and 'Exec=/usr/bin/python3 "/path with space/companion_app.py" --minimized' in d and autostart.is_enabled("Linux", home)
+assert Path(where) == home / ".config/autostart/deskcompanion.desktop" and 'Exec=/usr/bin/python3 "/path with space/companion_qt.py" --minimized' in d and autostart.is_enabled("Linux", home)
 autostart.disable("Linux", home); assert not autostart.is_enabled("Linux", home); autostart.disable("Linux", home)   # twice is fine
 where = autostart.enable(["/Apps/Desk & Co/dc", "--minimized"], "Darwin", home)
 pl = Path(where).read_text()
@@ -133,7 +133,7 @@ img = tray.make_icon(32); assert img.size == (32, 32) and img.getpixel((16, 16))
 print("tray OK")
 
 # ---------------------------------------------------------------- CPU colour
-c = padextras.cpu_color
+c = padconst.cpu_color
 assert c(0) == (0, 96, 0) and c(100) == (96, 0, 0), (c(0), c(100))
 mid = c(50); assert mid[0] > 80 and mid[1] > 80 and mid[2] == 0, mid
 assert c(-5) == c(0) and c(500) == c(100) and c("30") == c(30)

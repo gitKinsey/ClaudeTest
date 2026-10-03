@@ -1,6 +1,5 @@
 """Interface language. English is the source text; `tr(text)` returns the translation when a language is active and the text is known,
-otherwise the English text unchanged. The widgets are patched (see ui._patch_widgets) so existing screens translate without edits.
-Covers the navigation, common buttons and main headings - not every sentence. Takes effect after a restart."""
+otherwise the English text unchanged. Covers the navigation, common buttons and main headings - not every sentence. Takes effect after a restart."""
 
 LANGS = {"en": "English", "de": "Deutsch", "es": "Español", "fr": "Français"}
 _lang = "en"
@@ -43,6 +42,16 @@ T = {
         "Layer": "Couche", "Upload": "Envoyer", "Apply": "Appliquer", "Test": "Tester", "Dry run": "Simulation", "Settings": "Réglages",
     },
 }
+
+
+def _merge_pages():
+    from desk_lib.i18n_pages import merged
+    for lang, table in merged().items():
+        for en, tr_ in table.items():
+            T[lang].setdefault(en, tr_)
+
+
+_merge_pages()
 
 
 def set_language(code):

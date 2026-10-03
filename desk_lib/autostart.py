@@ -8,12 +8,12 @@ NAME = "DeskCompanion"
 
 
 def launch_command(frozen=None, exe=None, script=None):
-    """argv that starts the app minimised: the packaged app itself, or python + companion_app.py."""
+    """argv that starts the app minimised: the packaged app itself, or python + companion_qt.py."""
     frozen = getattr(sys, "frozen", False) if frozen is None else frozen
     exe = exe or sys.executable
     if frozen:
         return [exe, "--minimized"]
-    return [exe, str(script or (Path(__file__).resolve().parent.parent / "companion_app.py")), "--minimized"]
+    return [exe, str(script or (Path(__file__).resolve().parent.parent / "companion_qt.py")), "--minimized"]
 
 
 def _quote(argv):

@@ -166,7 +166,7 @@ app.recovery("nodisp"); assert pump(40, lambda: sim.nodisp is True); app.recover
 app.upload_all(); assert pump(200, lambda: "Uploaded to the pad" in status())
 assert all(len(sim.layers[n]) == 7 for n in range(3))
 app.recovery("keys"); assert pump(40, lambda: all(not sim.layers[n] for n in range(3)))
-assert all(not app.cfg["pushed_layers"][n] for n in range(3)), "after a pad reset nothing is known to be on it"
+assert pump(40, lambda: all(not app.cfg["pushed_layers"][n] for n in range(3))), "after a pad reset nothing is known to be on it"
 sim.gifs = {0: 100, 1: 200}; app.recovery("gifs"); assert pump(40, lambda: sim.gifs == {0: 60000}), sim.gifs
 texts = []
 app.on("safe_text", lambda t, kind: texts.append((t, kind)))

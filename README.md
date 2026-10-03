@@ -2,8 +2,8 @@
 
 A round-screen macro pad: 5 keys + a rotary encoder, GC9A01 1.28" display, USB keyboard / mouse / media keys, and a desktop
 companion app. The firmware works standalone; the app is only needed to remap keys, build macros, pick / upload a GIF
-(built-in library, your own folder, or Tenor / GIPHY search), mirror your PC's volume on the pad, and for the **Dev tab**
-(bring-up and diagnostics).
+(built-in library, your own folder, or Tenor / GIPHY search), mirror your PC's volume on the pad, and for **Pad & App → Diagnostics**
+(bring-up and diagnostics, shown with the Advanced switch).
 
 **Version 1.5 / firmware 1.5 (branch `overkill`)** adds, on top of everything in 1.4: computer actions (per-program volume, Do-Not-Disturb, audio output, microphone, screenshots, translate, AI, web calls, window layouts, clipboard history, plugins), scripts with more commands, smarter profiles, new Info cards (quotes, birthdays, ping / website checks, lyrics, progress bars, rings), a sound-reactive LED, accent colours / languages / update check in the app, and on the pad: colour themes, display rotation, key chords, triple tap, key repeat, pad functions (sticky modifiers, popup menu, window switcher on the dial), eight more screens (Pong, Breakout, Flappy, Life, pixel pet, Simon, diagnostics, sound bars), more clock faces and screensavers (see `docs/FEATURES.md`; protocol in `docs/PROTOCOL.md`).
 
@@ -16,8 +16,8 @@ website / program, type the clipboard), **4 GIF slots with rotation**, a key-pre
 ```
 CoreBringup/CoreBringup.ino    STEP 1  tiny sketch, no libraries: LED + USB serial link + wiring test
 DeskCompanion/DeskCompanion.ino STEP 2  the full firmware (display, keys, macros, GIFs, ...)
-companion_app.py                desktop app (pages: Home, Pad, Macros, Profiles, GIFs, Info, Device, Diagnostics)
-desk_lib/                       the app's logic split into testable modules (feeds, backup, OTA client, profiles, recorder, theme, wizards)
+companion_qt.py                 desktop app, PySide6 / Qt (pages: Overview, Keys, Display, Rules, Scripts, Pad & App); ui_qt/ = widgets, core/ = the toolkit-free engine
+desk_lib/                       the app's logic split into testable modules (feeds, backup, OTA client, profiles, recorder, scripting, i18n)
 packaging/build.py              builds a double-click app (PyInstaller);  .github/workflows: CI (tests, compile matrix, QEMU) + release
 firmware/                       prebuilt images (CoreBringup.bin, DeskCompanion.bin) + flash.py - no Arduino IDE needed
 User_Setup.h, platformio.ini    TFT_eSPI pin setup / PlatformIO alternative
@@ -34,7 +34,7 @@ The idea: prove each layer on its own, so when something is wrong you know *whic
 | 0 | Flash **CoreBringup** | board, USB cable, driver, Arduino settings, the onboard LED |
 | 1 | Run the app, open the **Dev** tab | the PC <-> pad link (JSON over USB serial), pins, keys, HID |
 | 2 | Flash **DeskCompanion** (full firmware) | display, filesystem, key actions, GIFs |
-| 3 | Dev tab -> *Full self-test* | everything, with a PASS/FAIL list |
+| 3 | Pad & App → Diagnostics → *Full self-test* | everything, with a PASS/FAIL list |
 
 ### Step 0 - Arduino IDE setup (Waveshare ESP32-S3-Zero)
 
@@ -57,7 +57,7 @@ The idea: prove each layer on its own, so when something is wrong you know *whic
 4. **Download mode** (needed for the first flash, and whenever the sketch is not running): hold **BOOT**, plug in USB
    (or tap RESET while holding BOOT), release BOOT. A *new* COM port appears (Espressif, `303A:1001`) - select it and upload.
    After the upload, unplug / re-plug (or press RESET): the port number usually **changes** again.
-   Once a pad runs this firmware you can skip the button: Dev tab -> *Reboot into download mode*.
+   Once a pad runs this firmware you can skip the button: Pad & App → Diagnostics → *Reboot into download mode*.
 
 ### Step 0a (alternative) - flash prebuilt images, no Arduino IDE at all
 
@@ -72,7 +72,7 @@ python firmware/flash.py --image full     # DeskCompanion (step 2) - cable-only 
 python firmware/flash.py --image wifi     # same firmware built with DC_ENABLE_WIFI=1 (NTP + Wi-Fi update); only if you want those
 ```
 Put the board in download mode first (hold BOOT while plugging in USB). If the pad already runs one of these firmwares the
-script reboots it into download mode by itself. The same thing is a button in the app: **Dev tab -> 0. Flash firmware**.
+script reboots it into download mode by itself. The same thing is a button in the app: **Pad & App → Diagnostics → 0. Flash firmware** (or the *Firmware* tab).
 `python firmware/flash.py --list` shows the serial ports (the board in download mode is `303A:1001`).
 
 * Flashing an image rewrites the bootloader, partition table **and the settings area**, so saved key mappings are reset
@@ -102,8 +102,8 @@ No LED at all? -> the sketch did not run. See *Troubleshooting*.
 ### Step 1 - the app
 
 ```
-pip install customtkinter pyserial psutil pillow
-python companion_app.py
+pip install PySide6 pyserial psutil pillow
+python companion_qt.py
 ```
 Optional extras, each switches on one feature and is greyed out with the reason when missing: `pynput` (recording, global hotkey, typing text), `pystray` (tray icon), `qrcode` (QR codes on the pad), `sounddevice numpy` (sound-reactive LED / sound bars), `pycaw` (Windows volume), `esptool` (firmware update).
 Plug the pad in (before or after, any order). The app finds Espressif USB devices every second and connects by itself.
@@ -122,8 +122,8 @@ Open the **Dev** tab:
 * **Terminal**: every line on the wire in both directions, plus anything the pad prints that is not protocol JSON
   (boot text, panics). You can type raw JSON lines.
 
-No hardware yet? **Dashboard -> Simulate pad (no hardware)** connects the app to an in-process stand-in that speaks the
-same protocol, so the whole app (including the Dev tab) can be tried.
+No hardware yet? **Overview → Simulate pad (no hardware)** connects the app to an in-process stand-in that speaks the
+same protocol, so the whole app (including Diagnostics) can be tried.
 
 ### Step 2 - the full firmware
 
@@ -134,8 +134,8 @@ same protocol, so the whole app (including the Dev tab) can be tried.
 What the full firmware does differently from a plain sketch - **the core comes first**:
 
 1. LED purple -> blue (USB up; the PC sees the pad **before** any display / filesystem work happens) -> cyan (filesystem) -> amber (display) -> heartbeat.
-2. Every subsystem reports its own init result (`info` / Dev tab), a failed display or filesystem never takes the USB link down.
-3. **Safe mode**: three crashes / watchdog resets in a row boot the pad with the display and GIF engine disabled and a **red double blink**, so it stays reachable from the app (Dev tab shows `SAFE MODE`, the reset reason and the boot log). A power cycle or a clean reboot tries the full firmware again.
+2. Every subsystem reports its own init result (`info` / Diagnostics), a failed display or filesystem never takes the USB link down.
+3. **Safe mode**: three crashes / watchdog resets in a row boot the pad with the display and GIF engine disabled and a **red double blink**, so it stays reachable from the app (Diagnostics shows `SAFE MODE`, the reset reason and the boot log). A power cycle or a clean reboot tries the full firmware again.
 4. LED heartbeat colour: **green** = all good, **amber** = a subsystem failed, **red** = safe mode.
 
 ### Step 3 - GIFs, macros, PC volume (companion app)
@@ -150,8 +150,8 @@ What the full firmware does differently from a plain sketch - **the core comes f
   * *Select GIF file...* takes any file from disk; by default a copy is kept in My GIFs (switch it off with the checkbox).
   The app crops to a square, resizes to 240x240, masks the circle, shrinks colours / frames until it fits the pad's flash,
   shows the result on the round preview, and *Upload to pad* sends it with a progress bar and CRC check.
-* **Macro Creator** - up to 4 modifiers + a key, text snippets (US-layout ASCII), delays, and sequences of these.
-* **Device tab -> "Mirror this PC's volume / playback on the pad"** - the pad's media screen follows the real volume, mute and
+* **Keys → Build / Sequence** - up to 4 modifiers + a key, text snippets (US-layout ASCII), delays, and sequences of these.
+* **Pad & App → Behaviour → "Mirror this PC's volume / playback on the pad"** - the pad's media screen follows the real volume, mute and
   play state (every change, plus a refresh every 10 s). Linux: `pactl` or `amixer` (+ `playerctl`); macOS: built in;
   Windows: `pip install pycaw` (best effort, untested by the author - without it the switch is greyed out and the pad
   keeps counting the volume keys on its own).
@@ -164,18 +164,17 @@ dial = minutes), media dashboard, system telemetry, GIF.
 
 | Page | What it does |
 |---|---|
-| **Home** | Connection, pad health (firmware, layer, flash, last reset, display, keyboard, storage, temperature), live CPU / RAM telemetry, quick actions, a keyboard-friendly key table, usage statistics. A banner appears when the firmware is older than the app or the pad is in safe mode. |
-| **Pad** | The live twin of the device. Pick **Layer 1 / 2 / 3**, drag an action from the library onto a key or a dial arrow, double-click a key for a menu. *Show on pad* switches the physical pad to that layer. 70+ actions in 9 categories incl. *Layers & Pad*, *Mouse*, *Navigation*, *Computer*. |
-| **Macros** | Key combinations (4 modifiers + key), text snippets, **computer / mouse / layer actions**, sequences with delays, a **keystroke recorder**. Save to the library, assign to a key, or test on this PC. |
-| **Profiles** | Rules like "program contains `code` -> Layer 3". The app watches the focused program and switches the pad's layer. First matching rule wins, with a default for everything else. |
-| **GIFs** | Built-in (16), My GIFs (your folder), Online (Tenor / GIPHY, bring your own free key). Four slots on the pad, per-slot upload / delete, optional rotation. |
-| **Info** | Cards for the pad's 6th screen: now playing, weather (Open-Meteo, no key), next calendar event (.ics file or link), a custom text card, and notification badges that any script can set over `http://127.0.0.1`. |
-| **Device** | Brightness, mode, OS, keyboard layout, **firmware** (version check, one-click USB update, experimental Wi-Fi update), **backup / restore**, **recovery** (retry normal boot, boot without display, reset keys / settings / GIFs), Wi-Fi. |
-| **Diagnostics** | Bring-up tools: ports, LED, keys, display, keyboard test, GPIO, terminal, full self-test, report. |
+| **Overview** | Connection (port list, Connect / Disconnect, auto-connect, *Simulate pad*), pad health (firmware, layer, flash, last reset, display, keyboard, storage, temperature), live CPU / RAM telemetry, quick actions (upload everything, setup wizard, hardware test, GIF, palette) and usage statistics. Banners appear when the firmware is older than the app, the pad is in safe mode, it cannot be reached, or there is a tip for you. |
+| **Keys** | The live twin of the device (drag and drop, wheel and click the dial, right-click a key), **Layer 1 / 2 / 3**, *Upload to pad*, undo / redo. The action library (search, 9 categories) and an inspector with **Key map** (keyboard-friendly rows, share codes, macro export / import), **Build** (key combinations, text snippets, computer / mouse / layer actions), **Sequence** (with delays and a keystroke recorder), **Gestures** (hold, double / triple tap, chords, dial clicks, alternating / random keys) and **Test** (run on this PC, delay, sandbox, virtual screen). |
+| **Display** | **GIFs** (built-in 16, My GIFs, Online via Tenor / GIPHY with your own free key; four pad slots, rotation), **Info** (now playing, weather, calendar, custom card, more cards, notification badges over `http://127.0.0.1`, preview), **Screens** (which of the 20 screens the dial visits, three reminders, five habits) and **Look** (brightness, mode, themes, rotation, dial, clock, screensaver, night dimming, dim while locked, LED effects). |
+| **Rules** | **Programs** (the pad's layer follows the program in front; rules with time / days / game mode; ready-made layouts), **Schedules**, **Computer** (AI key, screenshots, clipboard history, window layouts) and, with *Advanced*, **API & CLI** and **Plugins**. |
+| **Scripts** (Advanced) | Macro scripts with loops, conditions, variables and sub-scripts: check, dry run, run, ten saved versions, templates, import from an address, assign to a key. |
+| **Pad & App** | **Behaviour** (host OS, keyboard layout, sync time, autostart, tray, shell commands), **Firmware** (version check, one-click USB update, experimental Wi-Fi update), **Recovery**, **Backup** (zip, automatic backups, macros, share codes), **This app** (light / dark / system, accent colour, size, language, reduce motion, Advanced switch, hotkey, updates, tips, latency), **Diagnostics** (Advanced: ports, LED, keys, display, keyboard test, GPIO, terminal, full self-test, report) and the activity **Log**. |
 
-Everywhere: **Ctrl+K** opens the command palette (jump to a page, upload, switch layer / screen, run the wizards). The sidebar footer
-toggles the light theme. *Home -> Setup wizard* walks a new pad through connect / firmware / LED + display check / GIF choice, and
-*Home -> Guided hardware test* checks LED, display, the five keys, the dial, USB keyboard output and the self-test, then saves an HTML report
+Everywhere: **Ctrl+K** opens the command palette (jump to a page, upload, switch layer / screen, toggle Advanced, open the mini pad, run the wizards). The rail on the
+left is a full sidebar on wide windows, icons when narrower and a top bar on narrow ones; the window can be any size from 640 x 520 and the
+pages rearrange (columns, then chip tabs) instead of scrolling. The **mini pad** is a small always-on-top twin of the device. *Overview -> Setup wizard* walks a new pad through connect / firmware / LED + display check / GIF choice, and
+*Overview -> Guided hardware test* checks LED, display, the five keys, the dial, USB keyboard output and the self-test, then saves an HTML report
 you can print.
 
 ### Layers, in short
@@ -221,13 +220,13 @@ build was built and started headless here; the Windows and macOS builds are prod
 |---|---|---|
 | Upload fails / no port | not in download mode | hold BOOT while plugging in; try another cable (charge-only cables have no data lines) |
 | Port appears as `303A:1001` and stays there | board is in the ROM bootloader, or the sketch uses *Hardware CDC and JTAG* | re-plug without BOOT. For the keyboard use *USB Mode = USB-OTG (TinyUSB)* |
-| App says "found on COMx ... does not answer" | wrong USB settings, a different sketch, or the port is held by the Serial Monitor | close the Serial Monitor; Dev tab -> *Probe all ports*; check *USB CDC On Boot = Enabled* |
+| App says "found on COMx ... does not answer" | wrong USB settings, a different sketch, or the port is held by the Serial Monitor | close the Serial Monitor; Diagnostics → *Probe all ports*; check *USB CDC On Boot = Enabled* |
 | No LED, nothing happens after upload | sketch is boot-looping (often PSRAM = OPI/QSPI selected by mistake) or the upload was not completed | set PSRAM = Disabled, re-upload; watch the port list - a port that appears / disappears every few seconds = boot loop |
 | LED blue but the app does not connect | serial link fine, but another program holds the port, or Windows needs the CDC driver | Device Manager -> Ports: *USB Serial Device*; close other terminals |
-| LED works, screen stays dark | display wiring / `User_Setup.h` not installed / wrong colour setup | Dev tab -> Display tests; check `User_Setup.h` was copied into the TFT_eSPI library; try `USE_HSPI_PORT` there |
+| LED works, screen stays dark | display wiring / `User_Setup.h` not installed / wrong colour setup | Diagnostics → Display tests; check `User_Setup.h` was copied into the TFT_eSPI library; try `USE_HSPI_PORT` there |
 | Screen colours inverted / red-blue swapped | panel variant | uncomment `TFT_INVERSION_ON/OFF` or `TFT_RGB_ORDER TFT_BGR` in `User_Setup.h` |
-| Keys do nothing | wiring, or HID not enumerated | Dev tab -> Keys: indicators must light up; Keyboard test must type. HID needs *USB Mode = TinyUSB* |
-| Red double-blink | safe mode (3 crashes in a row) | Dev tab -> *Device info*: look at `reset`, `boot`; usually a bad display / wiring or wrong board settings |
+| Keys do nothing | wiring, or HID not enumerated | Diagnostics → Keys: indicators must light up; Keyboard test must type. HID needs *USB Mode = TinyUSB* |
+| Red double-blink | safe mode (3 crashes in a row) | Diagnostics → *Device info*: look at `reset`, `boot`; usually a bad display / wiring or wrong board settings |
 | `'File' does not name a type`, or "TFT_eSPI is not configured for the GC9A01" while compiling | the TFT_eSPI library still has its default `User_Setup.h` (it enables `SMOOTH_FONT`, which hides the global `File` type) | copy this project's `User_Setup.h` over `<sketchbook>/libraries/TFT_eSPI/User_Setup.h` (Step 2). The firmware also uses `fs::File` explicitly, so it compiles either way - but without our `User_Setup.h` the display is configured for the wrong panel |
 | Online tab: "the server answered HTTP 401/403" / "enter your ... API key first" | missing or wrong Tenor / GIPHY key | create a free key with *Get a free key*, paste it, search again. A key from the other provider will not work - pick the matching provider in the menu |
 | Online tab: "no connection" | no internet / a firewall or proxy blocks `tenor.googleapis.com` or `api.giphy.com` | the Built-in and My GIFs views work offline |
@@ -275,11 +274,11 @@ Error codes include `json`, `unknown_cmd`, `key`, `spec`, `too_long`, `nvs_full`
 `tools/` contains an emulator test-suite: the real firmware (compiled with `-DDC_SIM`) runs inside Espressif's QEMU
 ESP32-S3 and 21 test groups drive the protocol, the screens (with PNG screenshots), the filesystem / GIF path,
 persistence, a fuzz run and safe mode. See `tools/README.md`. The app's *Simulate pad* uses a Python model of the same protocol.
-App tests (run headless with `xvfb-run -a python3 tools/<name>.py`): `lib_test.py` (the `desk_lib` modules: OTA client against a fake
-device, backups incl. hostile zips, feeds, active-window rules, host-action safety, recorder), `app_selftest.py` (connection, Dev tab, key
-upload + read-back), `macro_test.py` (macro creator + the 50-action library + the "virtual key waits 200 s" regression), `giflib_test.py` (GIF
-library, GIF slots, PC-volume mirroring), `layers_test.py`, `profiles_test.py`, `info_test.py`, `compat_test.py` (the new app against a pad that still runs firmware 1.1), `features_test.py` (computer / mouse actions,
-recorder, firmware status, recovery, backup / restore, hardware-test and setup wizards, command palette). The same suites run on every push in
+App tests (all headless; the Qt tests use the offscreen platform): `lib_test.py` and the other `tools/*_test.py` (the `desk_lib` modules: OTA client against a fake
+device, backups incl. hostile zips, feeds, active-window rules, host-action safety, recorder, scripting), `tools/engine/*_test.py` (the whole app logic - connection, Diagnostics,
+key upload + read-back, macros, GIF library, layers, profiles, Info, compatibility with a pad on firmware 1.1, computer / mouse actions, recovery, backup / restore, schedules, API, plugins - driven
+without any widget against the simulated pad), `tools/qt/*_test.py` (the real Qt widgets against the simulated pad: shell, rail, palette, wizards, every page, plus a monkey test that clicks every control and fails on any exception) and `tools/qt_layout_test.py` (every page at five window sizes in four languages, light and dark:
+no clipped text, no overflow, no page scrolling). The same suites run on every push in
 `.github/workflows/ci.yml`, together with a firmware compile matrix and the QEMU suite (`tools/run_emulator_suite.sh`); `tools/run_app_tests.sh` runs everything but the QEMU suite. `docs/FEATURES.md` maps every requirement to the code and the test that covers it,
 and lists what only real hardware can prove.
 
@@ -296,7 +295,7 @@ and lists what only real hardware can prove.
 | Onboard RGB LED | 21 | | BOOT button | 0 |
 
 Keys and the encoder switch go to GND (internal pull-ups). GPIO 19/20 are the USB pins, 0/3/45/46 are strapping pins.
-If a pin you wired is not exposed on your board revision the Dev tab's *Keys* / *GPIO* tools show it immediately.
+If a pin you wired is not exposed on your board revision the Diagnostics's *Keys* / *GPIO* tools show it immediately.
 
 ## Notes
 

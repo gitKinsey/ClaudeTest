@@ -60,7 +60,7 @@ from desk_lib import autostart    # noqa: E402
 if sys.platform.startswith("linux"):
     assert app.autostart_set(True) and autostart.is_enabled() and "will start minimised" in status()
     desk = (Path(tmp) / ".config/autostart/deskcompanion.desktop").read_text()
-    assert "--minimized" in desk and ("companion_app.py" in desk or "companion_qt.py" in desk)
+    assert "--minimized" in desk and "companion_qt.py" in desk
     assert app.autostart_set(False) and not autostart.is_enabled() and "no longer starts" in status()
     import shutil
     shutil.rmtree(Path(tmp) / ".config")

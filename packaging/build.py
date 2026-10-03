@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a double-click Desk Companion with PyInstaller (Windows .exe / macOS .app / Linux binary), zipped into dist/.
 
-    pip install pyinstaller customtkinter pyserial psutil pillow pynput esptool qrcode pystray
+    pip install pyinstaller PySide6 pyserial psutil pillow pynput esptool qrcode pystray
     python packaging/build.py
 """
 import os
@@ -21,14 +21,15 @@ def main():
         shutil.rmtree(d, ignore_errors=True)
     sep = ";" if platform.system() == "Windows" else ":"
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--name", NAME,
-           "--collect-data", "customtkinter", "--collect-all", "esptool", "--add-data", f"firmware{sep}firmware",
-           "--hidden-import", "desk_lib.ui", "--hidden-import", "desk_lib.wizards", "--hidden-import", "desk_lib.recorder",
+           "--collect-all", "esptool", "--add-data", f"firmware{sep}firmware",
+           "--hidden-import", "core.engine", "--hidden-import", "ui_qt.app", "--hidden-import", "desk_lib.recorder",
            "--hidden-import", "desk_lib.feeds", "--hidden-import", "desk_lib.activewin", "--hidden-import", "desk_lib.hostactions",
            "--hidden-import", "desk_lib.backup", "--hidden-import", "desk_lib.espota",
-           "--hidden-import", "pynput.keyboard", "--hidden-import", "pynput.mouse", "--hidden-import", "PIL._tkinter_finder"]
+           "--hidden-import", "pynput.keyboard", "--hidden-import", "pynput.mouse",
+           "--exclude-module", "tkinter", "--exclude-module", "customtkinter"]
     if platform.system() == "Linux":
         cmd += ["--hidden-import", "pynput.keyboard._xorg", "--hidden-import", "pynput.mouse._xorg"]
-    cmd.append("companion_app.py")
+    cmd.append("companion_qt.py")
     print("running:", " ".join(cmd))
     subprocess.check_call(cmd)
     plat = {"Windows": "windows", "Darwin": "macos"}.get(platform.system(), "linux")

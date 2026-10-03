@@ -16,6 +16,9 @@ def isolate(prefix="dceng_"):
     return tmp
 
 
+isolate("dceng_")          # at import time: core.base reads its paths when it is first imported, which must never be the real home folder
+
+
 class Kit:
     def __init__(self, prefix="dceng_", simulate=True, start_threads=True, frontend=None, fresh=True):
         self.tmp = isolate(prefix) if fresh else os.environ["HOME"]

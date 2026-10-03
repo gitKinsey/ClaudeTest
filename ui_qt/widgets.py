@@ -220,19 +220,33 @@ class ToggleRow(QWidget):
 
 
 class CheckBox(QCheckBox):
-    """A checkbox with a drawn tick (the style sheet cannot draw one)."""
+    """A checkbox with a drawn tick (the style sheet cannot draw one). Long texts wrap onto more lines."""
 
     def __init__(self, text="", checked=False, parent=None):
         super().__init__(tr(text), parent)
         self.setChecked(checked)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        pol = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        pol.setHeightForWidth(True)
+        self.setSizePolicy(pol)
+
+    def _text_rect_w(self, width):
+        return max(30, width - theme.px(18) - 10)
 
     def sizeHint(self):
         fm = QFontMetrics(self.font())
         return QSize(theme.px(26) + fm.horizontalAdvance(self.text()) + 6, max(theme.px(22), fm.height() + 6))
 
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, w):
+        fm = QFontMetrics(self.font())
+        r = fm.boundingRect(0, 0, self._text_rect_w(w), 10000, int(Qt.TextFlag.TextWordWrap), self.text())
+        return max(theme.px(22), r.height() + 6)
+
     def minimumSizeHint(self):
-        return self.sizeHint()
+        return QSize(min(self.sizeHint().width(), theme.px(150)), max(theme.px(22), QFontMetrics(self.font()).height() + 6))
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -258,7 +272,7 @@ class CheckBox(QCheckBox):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(-2, -2, 2, 2), 6, 6)
         p.setPen(QColor(theme.c("TEXT") if self.isEnabled() else theme.c("FAINT")))
-        p.drawText(QRectF(s + 10, 0, self.width() - s - 10, self.height()), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.text())
+        p.drawText(QRectF(s + 10, 0, self.width() - s - 10, self.height()), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap), self.text())
 
 
 class Segmented(QWidget):
@@ -416,6 +430,10 @@ class Card(QFrame):
         if not title:
             self.title_lbl.hide()
         self.setMinimumHeight(theme.px(90))
+
+    def min_content_width(self):
+        """Narrowest width at which nothing inside is cut off (the box itself scrolls vertically only)."""
+        return self.content.minimumSizeHint().width() + 28
 
     def natural_height(self, width):
         """Height this card needs to show everything at the given width (used to share a column's height sensibly)."""
@@ -635,6 +653,9 @@ class TabbedPanel(Card):
         self.body.addWidget(self.strip)
         self.body.addWidget(self.stackw, 1)
         self.show_tab(current or self.keys[0])
+
+    def min_content_width(self):
+        return max(sc.widget().minimumSizeHint().width() for sc in self.scrolls.values()) + 28
 
     def show_tab(self, key):
         if key in self.scrolls:

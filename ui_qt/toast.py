@@ -1,7 +1,7 @@
 """Notification toasts: small always-on-top cards in the bottom-right corner that slide in, stack, and close on click or after a few seconds."""
 from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QTimer, Qt
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout
 
 from ui_qt.theme import theme
 
@@ -51,5 +51,19 @@ class Toast(QFrame):
         super().closeEvent(e)
 
 
+def play_event_sound(kind):
+    """Windows 'device connected / disconnected' sound (falls back to the system bell elsewhere)."""
+    try:
+        import winsound
+        alias = {"ok": "DeviceConnect", "off": "DeviceDisconnect"}.get(kind, "SystemExclamation")
+        winsound.PlaySound(alias, winsound.SND_ALIAS | winsound.SND_ASYNC)
+    except Exception:                                   # noqa: BLE001 - not on Windows, or no sound device
+        try:
+            QApplication.beep()
+        except Exception:                               # noqa: BLE001
+            pass
+
+
 def show_toast(title, text, kind="ok"):
+    play_event_sound(kind)
     return Toast(title, text, kind)

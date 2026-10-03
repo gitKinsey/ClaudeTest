@@ -114,6 +114,30 @@ def hbox(parent=None, margins=(0, 0, 0, 0), spacing=8):
     return l
 
 
+def fit_widths(total, weights, mins):
+    """Column widths in proportion to the weights, but never below a column's minimum (the others give way)."""
+    n = len(weights)
+    fixed = [False] * n
+    out = [0] * n
+    for _ in range(n):
+        room = total - sum(mins[i] for i in range(n) if fixed[i])
+        wsum = sum(weights[i] for i in range(n) if not fixed[i]) or 1
+        again = False
+        for i in range(n):
+            if fixed[i]:
+                out[i] = mins[i]
+                continue
+            out[i] = int(room * weights[i] / wsum)
+            if out[i] < mins[i]:
+                fixed[i], again = True, True
+        if not again:
+            break
+    for i in range(n):
+        if fixed[i]:
+            out[i] = mins[i]
+    return out
+
+
 class PageGrid(QWidget):
     """Lays panels out for the page width: wide = columns (+ splitters), medium = fewer columns, narrow = one panel at a time with a tab strip.
     plans: {"wide": [[(name, weight), ...], ...columns], "medium": [...]}; order: tab order for the narrow mode."""
@@ -167,14 +191,16 @@ class PageGrid(QWidget):
         cols = self.plans[self.mode]
         weights = [max(w for _n, w in col) for col in cols]
         total, w = sum(weights), self.width() - 8 * (len(cols) - 1)
+        mins = [min(int(w * 0.6), max(getattr(self.panels[n], "min_content_width", self.panels[n].minimumSizeHint().width)() for n, _w in col)) for col in cols]
+        widths = fit_widths(w, weights, mins)
         for key, sp in self._splitters:
             if key == f"{self.mode}:root":
-                sp.setSizes([int(w * x / total) for x in weights])
+                sp.setSizes(widths)
         avail = max(100, self.height() - 8)
         for ci, col in enumerate(cols):
             for key, sp in self._splitters:
                 if key == f"{self.mode}:col{ci}" and f"{self.mode}:col{ci}" not in self._saved:
-                    colw = int(w * weights[ci] / total)
+                    colw = widths[ci]
                     nat = []
                     for name, wt in col:
                         pnl = self.panels[name]

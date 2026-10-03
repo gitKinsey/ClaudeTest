@@ -21,10 +21,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Linux: Tk
+      - name: Linux: Qt runtime libraries
         if: matrix.name == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y python3-tk xvfb
-      - run: pip install customtkinter pyserial psutil pillow pynput esptool pyinstaller qrcode pystray
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libdbus-1-3 libfontconfig1
+      - run: pip install PySide6 pyserial psutil pillow pynput esptool pyinstaller qrcode pystray
       - name: Windows: volume mirroring
         if: matrix.name == 'windows'
         run: pip install pycaw
