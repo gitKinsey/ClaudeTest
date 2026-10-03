@@ -150,6 +150,7 @@ static void sceneClockAlt(const struct tm& t);
 static void sceneSaver();
 static void cmdSettings(JsonDocument& doc);
 static void cmdGestureTest(JsonDocument& doc);
+static void cmdKeyTest(JsonDocument& doc);
 static void panicNow();
 static void fmtTime(char* b, size_t n, uint32_t ms);
 static uint32_t swElapsed();
@@ -335,13 +336,13 @@ static void popupKey(int i);
 static void scenePopup();
 static void fxToast(const char* t);
 static void popupClose();
-static void keyDispatch(int i, uint32_t now, bool down);
 static uint32_t dayNumber();
 static void drawParty();
 static void konamiFeed(uint8_t code);
 static void encMulti(uint8_t n);
 static void encClickRegister(uint32_t now);
 static void onChord(uint8_t p);
+static void onKeyHoldEnd(int i);
 static void clearLayerKeys(uint8_t l);
 static void sinInit();
 static bool gameBusy();
@@ -464,6 +465,7 @@ uint8_t  latchMods = 0;                          // sticky modifiers for the nex
 bool     swAltHeld = false; uint32_t swAltAt = 0;        // dial window switcher (Alt+Tab held between detents)
 bool     popupOpen = false; uint8_t popupSel = 0; uint32_t popupAt = 0;
 uint8_t  konamiPos = 0; uint16_t konamiCount = 0; uint32_t partyUntil = 0; uint8_t partyPrevLed = 0;
+int8_t    momentaryKey = -1, gestureKeyNow = -1; uint8_t momentaryPrev = 0;   // a hold action "layer while held": which key holds it, which layer to return to
 uint8_t  dcCount = 0; uint32_t dcAt = 0;         // dial click counter for double / triple click actions
 uint8_t  SIN8[256];                              // one sine period 0..255 (plasma saver), filled by sinInit()
 Ball     bl; float padX = 120; uint16_t pgScore = 0, pgBest[2] = {0, 0}; uint8_t pgState = 0, pgLives = 3, brk[4]; uint32_t pgAt = 0;       // Pong / Breakout
@@ -856,7 +858,12 @@ static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out) {
   if (!strcmp(type, "text")) { Step s; s.t = ST_TEXT; s.text = val.as<const char*>() ? val.as<const char*>() : ""; out.push_back(s); return true; }
   if (!strcmp(type, "layer")) {                                  // "next" | "prev" | 0..2
     Step s; s.t = ST_LAYER;
-    if (val.is<const char*>()) { String v = val.as<const char*>(); if (v == "next") s.val = 100; else if (v == "prev") s.val = 101; else return false; }
+    if (val.is<const char*>()) {
+      String v = val.as<const char*>();
+      if (v == "next") s.val = 100; else if (v == "prev") s.val = 101;
+      else if (v.length() == 5 && v.startsWith("hold") && v[4] >= '1' && v[4] < '1' + LAYERS) s.val = (uint16_t)(200 + (v[4] - '1'));     // "hold2": layer 2 while the key is held
+      else return false;
+    }
     else if (val.is<int>() && val.as<int>() >= 0 && val.as<int>() < LAYERS) s.val = (uint16_t)val.as<int>();
     else return false;
     out.push_back(s); return true;
@@ -1000,7 +1007,7 @@ static void macroTick() {
         macroIdx++; macroWake = millis() + 8; break;
       case ST_MEDIA: sendMedia(s.val); macroIdx++; macroWake = millis() + 5; break;
       case ST_DELAY: macroIdx++; macroWake = millis() + s.val; break;
-      case ST_LAYER: setLayer(s.val == 100 ? (curLayer + 1) % LAYERS : s.val == 101 ? (curLayer + LAYERS - 1) % LAYERS : (uint8_t)s.val); macroIdx++; macroWake = millis() + 5; break;
+      case ST_LAYER: setLayer(s.val == 100 ? (curLayer + 1) % LAYERS : s.val == 101 ? (curLayer + LAYERS - 1) % LAYERS : s.val >= 200 ? (uint8_t)(s.val - 200) : (uint8_t)s.val); macroIdx++; macroWake = millis() + 5; break;
       case ST_HOST: evtHost(s); macroIdx++; macroWake = millis() + 5; break;
       case ST_MOUSE: mouseDo(s); macroIdx++; macroWake = millis() + 8; break;
       case ST_PANIC: panicNow(); return;
@@ -1052,6 +1059,13 @@ static void runSpecJson(const String& js, const char* fallback, uint8_t sid) {
   JsonVariantConst spec = d.as<JsonVariantConst>();
   const char* t = spec["type"] | "";
   if (!strcmp(t, "panic")) { panicNow(); return; }
+  if (!strcmp(t, "layer") && spec["val"].is<const char*>() && gestureKeyNow >= 0) {          // "layer while held" as a hold action: the layer returns when the key is released
+    String v = spec["val"].as<const char*>();
+    if (v.length() == 5 && v.startsWith("hold") && v[4] >= '1' && v[4] < '1' + LAYERS) {
+      if (momentaryKey < 0) momentaryPrev = curLayer;
+      momentaryKey = gestureKeyNow; setLayer((uint8_t)(v[4] - '1')); return;
+    }
+  }
   if (!strcmp(t, "toggle") && spec["val"].is<JsonArrayConst>() && spec["val"].size() == 2) {
     uint8_t half = tglState[sid % sizeof tglState] ? 1 : 0;
     tglState[sid % sizeof tglState] = half ? 0 : 1;
@@ -2392,7 +2406,7 @@ static void menuClick() {
 // DOUBLE-TAP action decides on release: tap = released before G_HOLD_MS (and, with a double-tap action, not followed by a second press
 // within G_DBL_MS); hold = still down after G_HOLD_MS; double = second press within G_DBL_MS. Pure state machine, driven with explicit
 // timestamps so it can be tested with synthetic timing (see cmdGestureTest).
-enum : uint8_t { G_TAP = 1, G_HOLD = 2, G_DOUBLE = 4, G_TRIPLE = 8 };
+enum : uint8_t { G_TAP = 1, G_HOLD = 2, G_DOUBLE = 4, G_TRIPLE = 8, G_HOLD_END = 16 };       // G_HOLD_END: a key whose hold action fired was let go
 static const uint32_t G_HOLD_MS = 450, G_DBL_MS = 260;
 struct GestureFsm {
   bool down = false, holdFired = false, consumed = false, pending = false;
@@ -2415,6 +2429,7 @@ struct GestureFsm {
       } else taps = 0;
     } else if (!isDown && down) {                               // release
       down = false; upAt = now;
+      if (holdFired) m |= G_HOLD_END;
       if (!consumed && !holdFired) { if (hasDbl || hasTri) { pending = true; if (hasTri && taps == 0) taps = 1; } else m |= G_TAP; }
       consumed = false; holdFired = false;
     }
@@ -2426,7 +2441,57 @@ struct GestureFsm {
     return 0;
   }
 };
-static GestureFsm gFsm[5];
+// ---- the five keys together: gestures per key plus chords (two neighbouring keys pressed within CHORD_MS of each other). Pure and driven with explicit
+// timestamps, like GestureFsm, so the timing can be tested without hardware (see cmdKeyTest).
+enum : uint8_t { KE_TAP, KE_HOLD, KE_DOUBLE, KE_TRIPLE, KE_CHORD, KE_HOLD_END };
+static const uint32_t CHORD_MS = 45;
+struct KeyEvents { uint8_t n = 0, kind[16], idx[16]; void add(uint8_t k, uint8_t i) { if (n < 16) { kind[n] = k; idx[n] = i; n++; } } };
+struct KeyPipeline {
+  GestureFsm fsm[5];
+  uint8_t cst[5] = {0, 0, 0, 0, 0};                              // chord state per key: 0 idle, 1 waiting for a partner, 2 forwarded as a normal press, 3 used by a chord / ignored until released
+  uint32_t cat[5] = {0, 0, 0, 0, 0};
+  uint8_t eff = 0;                                               // bit i: key i is (still) counted as pressed by its gesture machine after the last step
+  void prime(int i, uint32_t now) { fsm[i].down = true; fsm[i].consumed = true; fsm[i].downAt = now; cst[i] = 3; }
+  void dispatch(int i, uint32_t now, bool down, bool hh, bool dd, bool tt, KeyEvents& ev) {
+    uint8_t m = fsm[i].step(down, now, hh, dd, tt);
+    if (m & G_TAP) ev.add(KE_TAP, i);
+    if (m & G_HOLD) ev.add(KE_HOLD, i);
+    if (m & G_DOUBLE) ev.add(KE_DOUBLE, i);
+    if (m & G_TRIPLE) ev.add(KE_TRIPLE, i);
+    if (m & G_HOLD_END) ev.add(KE_HOLD_END, i);
+  }
+  void step(const bool* raw, uint32_t now, uint8_t chordMask, uint8_t hold, uint8_t dbl, uint8_t tri, KeyEvents& ev) {
+    eff = 0;
+    for (int i = 0; i < 5; i++) {
+      bool involved = chordMask && ((i > 0 && ((chordMask >> (i - 1)) & 1)) || (i < 4 && ((chordMask >> i) & 1)));
+      if (!involved) cst[i] = 0;
+      bool e = raw[i];
+      if (involved) {
+        switch (cst[i]) {
+          case 0:
+            if (raw[i]) {
+              int j = -1;                                        // a neighbour that is waiting right now, with a chord for that pair
+              if (i > 0 && cst[i - 1] == 1 && ((chordMask >> (i - 1)) & 1)) j = i - 1;
+              else if (i < 4 && cst[i + 1] == 1 && ((chordMask >> i) & 1)) j = i + 1;
+              if (j >= 0) { cst[i] = cst[j] = 3; ev.add(KE_CHORD, (uint8_t)(i < j ? i : j)); e = false; }
+              else { cst[i] = 1; cat[i] = now; e = false; }
+            }
+            break;
+          case 1:
+            if (!raw[i]) { dispatch(i, now, true, (hold >> i) & 1, (dbl >> i) & 1, (tri >> i) & 1, ev); cst[i] = 0; e = false; }   // a short tap: deliver press and release together
+            else if ((uint32_t)(now - cat[i]) >= CHORD_MS) { cst[i] = 2; e = true; }
+            else e = false;
+            break;
+          case 2: if (!raw[i]) cst[i] = 0; break;
+          default: e = false; if (!raw[i]) cst[i] = 0; break;
+        }
+      }
+      dispatch(i, now, e, (hold >> i) & 1, (dbl >> i) & 1, (tri >> i) & 1, ev);
+      if (e) eff |= (1 << i);
+    }
+  }
+};
+static KeyPipeline kPipe;
 static void gestureKey(uint8_t lay, uint8_t i, char g, char* out) {          // NVS key of a hold ('h') / double-tap ('d') action: "hs3", "dL1s3"
   char b[8]; slotKey(lay, i, b); out[0] = g; strcpy(out + 1, b);
 }
@@ -2454,7 +2519,9 @@ static void runGesture(uint8_t i, char g) {
   char k[10]; gestureKey(curLayer, i, g, k);
   String js = prefs.getString(k, "");
   if (!js.length()) return;
+  gestureKeyNow = (g == 'h') ? (int8_t)i : (int8_t)-1;
   runSpecJson(js, nullptr, (curLayer * 15 + i) * 4 + (g == 'h' ? 1 : g == 'd' ? 2 : 3));
+  gestureKeyNow = -1;
 }
 // ---- dial acceleration: the faster the dial turns, the more often the action (volume ...) repeats
 static uint8_t accelMult(uint32_t dtPerDetent, uint8_t level) {
@@ -2582,6 +2649,9 @@ static void konamiFeed(uint8_t code) {
     partyUntil = millis() + 6000; partyPrevLed = ledMode; ledMode = LM_RAINBOW; needRedraw = true;
   }
 }
+static void onKeyHoldEnd(int i) {                                 // a key whose hold action fired was released
+  if (momentaryKey == i) { momentaryKey = -1; setLayer(momentaryPrev); }
+}
 static void onChord(uint8_t p) {                                  // keys p+1 and p+2 pressed together
   flashAt = millis(); needRedraw = true; activity();
   if (menuOpen) { uiTouch(); return; }
@@ -2606,59 +2676,40 @@ static void IRAM_ATTR encISR() {
   encLastUs = now;
   encAccum += (gpio_get_level((gpio_num_t)PIN_ENC_A) != gpio_get_level((gpio_num_t)PIN_ENC_B)) ? 1 : -1;   // IRAM-safe reads
 }
-static const uint32_t CHORD_MS = 45, REPEAT_DELAY_MS = 400, REPEAT_EVERY_MS = 90;
-static void keyDispatch(int i, uint32_t now, bool down) {         // one step of the key's gesture state machine + what it fires
-  bool hh = (gHold[curLayer] >> i) & 1, dd = (gDbl[curLayer] >> i) & 1, tt = (gTri[curLayer] >> i) & 1;
-  uint8_t m = gFsm[i].step(down, now, hh, dd, tt);
-  if (m & G_TAP) onKey(i);
-  if (m & G_HOLD) onKeyGesture(i, 'h');
-  if (m & G_DOUBLE) onKeyGesture(i, 'd');
-  if (m & G_TRIPLE) onKeyGesture(i, 't');
-}
+static const uint32_t REPEAT_DELAY_MS = 400, REPEAT_EVERY_MS = 90;
 static void inputsService() {
   uint32_t now = millis();
   static bool gInit = false;
-  static uint8_t cst[5] = {0, 0, 0, 0, 0};                      // chord state per key: 0 idle, 1 waiting for a partner, 2 forwarded as a normal press, 3 used by a chord
-  static uint32_t cat[5] = {0, 0, 0, 0, 0}, repAt[5] = {0, 0, 0, 0, 0};
+  static uint32_t repAt[5] = {0, 0, 0, 0, 0};
   if (!gInit) {                                                 // a key already held at power-up must not count as a press
     gInit = true;
-    for (int i = 0; i < 5; i++) if (keyBtn[i].read() == LOW) { gFsm[i].down = true; gFsm[i].consumed = true; gFsm[i].downAt = now; cst[i] = 3; }
+    for (int i = 0; i < 5; i++) if (keyBtn[i].read() == LOW) kPipe.prime(i, now);
   }
+  bool raw[5];
   for (int i = 0; i < 5; i++) {
     keyBtn[i].update();
     if (keyBtn[i].fell()) { evtKey(i + 1, 1); flashAt = now; needRedraw = true; activity(); }
     if (keyBtn[i].rose()) evtKey(i + 1, 0);
+    raw[i] = keyBtn[i].read() == LOW;                           // INPUT_PULLUP: pressed = LOW
   }
-  for (int i = 0; i < 5; i++) {
-    bool raw = keyBtn[i].read() == LOW;                         // INPUT_PULLUP: pressed = LOW
-    uint8_t cm = gChord[curLayer];
-    bool involved = cm && ((i > 0 && ((cm >> (i - 1)) & 1)) || (i < 4 && ((cm >> i) & 1)));
-    if (!involved) cst[i] = 0;
-    bool eff = raw;
-    if (involved) {
-      switch (cst[i]) {
-        case 0:
-          if (raw) {
-            int j = -1;                                          // a neighbour that is waiting right now, and a chord for that pair
-            if (i > 0 && cst[i - 1] == 1 && ((cm >> (i - 1)) & 1)) j = i - 1;
-            else if (i < 4 && cst[i + 1] == 1 && ((cm >> i) & 1)) j = i + 1;
-            if (j >= 0) { cst[i] = cst[j] = 3; onChord((uint8_t)min(i, j)); eff = false; }
-            else { cst[i] = 1; cat[i] = now; eff = false; }
-          }
-          break;
-        case 1:
-          if (!raw) { keyDispatch(i, now, true); cst[i] = 0; eff = false; }       // a short tap: deliver press and release together
-          else if ((uint32_t)(now - cat[i]) >= CHORD_MS) { cst[i] = 2; eff = true; }
-          else eff = false;
-          break;
-        case 2: if (!raw) cst[i] = 0; break;
-        default: eff = false; if (!raw) cst[i] = 0; break;
-      }
+  KeyEvents ev;
+  kPipe.step(raw, now, gChord[curLayer], gHold[curLayer], gDbl[curLayer], gTri[curLayer], ev);
+  for (uint8_t n = 0; n < ev.n; n++) {
+    uint8_t i = ev.idx[n];
+    switch (ev.kind[n]) {
+      case KE_TAP: onKey(i); break;
+      case KE_HOLD: onKeyGesture(i, 'h'); break;
+      case KE_DOUBLE: onKeyGesture(i, 'd'); break;
+      case KE_TRIPLE: onKeyGesture(i, 't'); break;
+      case KE_HOLD_END: onKeyHoldEnd(i); break;
+      default: onChord(i); break;
     }
-    keyDispatch(i, now, eff);
-    if (eff && raw && ((repeatMask >> i) & 1) && gFsm[i].consumed && !menuOpen && !popupOpen && !((gHold[curLayer] | gDbl[curLayer] | gTri[curLayer]) >> i & 1)) {
-      if ((uint32_t)(now - gFsm[i].downAt) >= REPEAT_DELAY_MS && repAt[i] <= gFsm[i].downAt) repAt[i] = now;
-      else if (repAt[i] > gFsm[i].downAt && (uint32_t)(now - repAt[i]) >= REPEAT_EVERY_MS) { repAt[i] = now; runSlot((uint8_t)i); }
+  }
+  for (int i = 0; i < 5; i++) {                                 // key repeat: a held key with only a tap action runs it again every 90 ms after 400 ms
+    bool plain = !(((gHold[curLayer] | gDbl[curLayer] | gTri[curLayer]) >> i) & 1);
+    if (((kPipe.eff >> i) & 1) && raw[i] && ((repeatMask >> i) & 1) && kPipe.fsm[i].consumed && plain && !menuOpen && !popupOpen) {
+      if ((uint32_t)(now - kPipe.fsm[i].downAt) >= REPEAT_DELAY_MS && repAt[i] <= kPipe.fsm[i].downAt) repAt[i] = now;
+      else if (repAt[i] > kPipe.fsm[i].downAt && (uint32_t)(now - repAt[i]) >= REPEAT_EVERY_MS) { repAt[i] = now; runSlot((uint8_t)i); }
     }
   }
   encBtn.update();
@@ -3132,6 +3183,7 @@ static void cmdInput(JsonDocument& doc) {               // virtual key presses: 
     if (k < 1 || k > 5) { nack("key"); return; }
     const char* g = doc["g"] | "tap";
     if (!strcmp(g, "hold") || !strcmp(g, "double") || !strcmp(g, "triple")) { evtKey(k, 1); onKeyGesture(k - 1, g[0] == 'h' ? 'h' : g[0] == 'd' ? 'd' : 't'); evtKey(k, 0); ack("input"); return; }
+    if (!strcmp(g, "release")) { onKeyHoldEnd(k - 1); ack("input"); return; }                      // tests: the key that held a "layer while held" action is let go
     if (strcmp(g, "tap")) { nack("gesture"); return; }
     evtKey(k, 1); onKey(k - 1); evtKey(k, 0);
   } else if (!doc["turn"].isNull()) {
@@ -3336,6 +3388,27 @@ static void cmdGestureTest(JsonDocument& doc) {
   for (int guard = 0; guard < 4; guard++) { uint32_t dl = f.deadline(hh); if (!dl) break; emit(f.step(f.down, dl, hh, dd, tt), dl); }
   sendDoc(out);
 }
+// ---- {"cmd":"key_test","chords":mask,"hold":mask,"dbl":mask,"tri":mask,"seq":[[keymask,ms],...]}: replays the state of all five keys (bit i = K(i+1) down) through the key
+// pipeline (gestures + chords) with 1 ms steps, like the real loop, and answers with what it would fire: [[ms,"tap|hold|double|triple|chord",n],...]. Runs no action.
+static void cmdKeyTest(JsonDocument& doc) {
+  int cm = doc["chords"] | 0, hm = doc["hold"] | 0, dm = doc["dbl"] | 0, tm = doc["tri"] | 0;
+  if (cm < 0 || cm > 15 || hm < 0 || hm > 31 || dm < 0 || dm > 31 || tm < 0 || tm > 31) { nack("mask"); return; }
+  JsonArrayConst seq = doc["seq"].as<JsonArrayConst>();
+  if (seq.isNull() || seq.size() == 0 || seq.size() > 24) { nack("seq"); return; }
+  JsonDocument out; out["ok"] = true; out["evt"] = "key_test"; JsonArray fired = out["fired"].to<JsonArray>();
+  static const char* const KN[5] = {"tap", "hold", "double", "triple", "chord"};
+  KeyPipeline kp; bool raw[5] = {false, false, false, false, false};
+  uint32_t t = 0, last = 0; size_t i = 0; uint32_t end = 0;
+  for (JsonVariantConst ev : seq) { if (ev.size() != 2) { nack("seq"); return; } uint32_t at = ev[1].as<uint32_t>(); if (at < last) { nack("seq"); return; } last = at; end = at; }
+  if (end > 5000) { nack("seq"); return; }
+  end += 1500;                                                      // let pending multi-tap windows close
+  for (t = 0; t <= end; t++) {
+    while (i < seq.size() && seq[i][1].as<uint32_t>() <= t) { int km = seq[i][0].as<int>(); for (int k = 0; k < 5; k++) raw[k] = (km >> k) & 1; i++; }
+    KeyEvents e; kp.step(raw, t, (uint8_t)cm, (uint8_t)hm, (uint8_t)dm, (uint8_t)tm, e);
+    for (uint8_t n = 0; n < e.n; n++) { if (e.kind[n] == KE_HOLD_END) continue; JsonArray a = fired.add<JsonArray>(); a.add(t); a.add(KN[e.kind[n]]); a.add(e.idx[n] + 1); }
+  }
+  sendDoc(out);
+}
 // ---- {"cmd":"screens"}: state of the optional screens (for the app and for tests); {"habit"} / {"reminders"} have their own commands
 static void cmdScreens(JsonDocument& doc) {
   (void)doc;
@@ -3499,6 +3572,7 @@ static void handleLine(const String& line) {
   else if (!strcmp(cmd, "habits")) cmdHabits(doc);
   else if (!strcmp(cmd, "reminders")) cmdReminders(doc);
   else if (!strcmp(cmd, "gesture_test")) cmdGestureTest(doc);
+  else if (!strcmp(cmd, "key_test")) cmdKeyTest(doc);
   else if (!strcmp(cmd, "dim")) cmdDim(doc);
   else if (!strcmp(cmd, "labels")) cmdLabels(doc);
   else if (!strcmp(cmd, "boot_log")) cmdBootLog(doc);

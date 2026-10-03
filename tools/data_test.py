@@ -87,7 +87,7 @@ def down(u):
 c = extras.http_card("", "https://nope.invalid", fetch=down)
 check("http down", c["t"] == "DOWN", c)
 check("http validation", raises(lambda: extras.validate({"type": "http", "arg": "ftp://x"}), "http") and extras.validate({"type": "http", "arg": "https://x.y"})["arg"] == "https://x.y")
-check("new kinds are all registered", all(k in extras.TTL for k in extras.KINDS) and len(extras.KINDS) == 14)
+check("new kinds are all registered", all(k in extras.TTL for k in extras.KINDS) and len(extras.KINDS) == 20)
 b = extras.build({"type": "birthday", "label": "", "arg": "Z 06-01"}, today=today)
 check("build dispatches", b["t"] == "Z")
 
@@ -127,6 +127,54 @@ check("disk error", raises(lambda: extras.disk_card("", "/nope", lambda p: (_ fo
 c = extras.load_card("", 37.4, 55.2)
 check("load ring", c["k"] == "r" and c["t"] == "37" and c["b"] == "RAM 55%", c)
 check("real psutil cards work", extras.load_card("")["k"] == "r" and extras.disk_card("", "/")["k"] == "r")
+
+# ---------------------------------------------------------------- moon, sun, network, goal, rain, window
+c = extras.moon_card("", dt.datetime(2000, 1, 6, 18, 14))
+check("new moon", c["t"] == "0" and c["a"] == "New moon" and c["k"] == "r", c)
+c = extras.moon_card("", dt.datetime(2000, 1, 21, 4, 40))
+check("full moon", int(c["t"]) >= 98 and c["a"] == "Full moon", c)
+c = extras.moon_card("", dt.datetime(2000, 1, 14, 13, 34))
+check("first quarter", 45 <= int(c["t"]) <= 55 and c["a"] == "First quarter", c)
+check("waning", extras.moon_card("", dt.datetime(2000, 2, 1, 0, 0))["a"] in ("Waning gibbous", "Last quarter", "Waning crescent"))
+rise, sset = extras.sun_times(47.37, 8.54, dt.date(2026, 6, 21), 2)
+check("sun times Zurich midsummer", abs(rise.hour * 60 + rise.minute - (5 * 60 + 29)) <= 8 and abs(sset.hour * 60 + sset.minute - (21 * 60 + 31)) <= 10, (rise, sset))
+rise, sset = extras.sun_times(0.0, 0.0, dt.date(2026, 3, 20), 0)
+check("equator at the equinox: about 06:00 / 18:00", abs(rise.hour * 60 + rise.minute - 360) <= 15 and abs(sset.hour * 60 + sset.minute - 1080) <= 15, (rise, sset))
+check("polar day / night", extras.sun_times(80, 0, dt.date(2026, 6, 21), 0) == (None, None) and extras.sun_times(80, 0, dt.date(2026, 12, 21), 0) == (None, None))
+c = extras.sun_card("", (80, 0), dt.datetime(2026, 6, 21, 12, 0), 0)
+check("polar day card", c["t"] == "polar day", c)
+check("polar night card", extras.sun_card("", (80, 0), dt.datetime(2026, 12, 21, 12, 0), 0)["t"] == "polar night")
+check("southern summer is polar day in December", extras.sun_card("", (-80, 0), dt.datetime(2026, 12, 21, 12, 0), 0)["t"] == "polar day")
+c = extras.sun_card("", (47.37, 8.54), dt.datetime(2026, 6, 21, 12, 0), 2)
+check("sun card", c["a"] == "the sun is up" and "-" in c["t"] and c["b"].startswith("daylight 15h") or c["b"].startswith("daylight 16h"), c)
+check("sun is down at night", extras.sun_card("", (47.37, 8.54), dt.datetime(2026, 6, 21, 2, 0), 2)["a"] == "the sun is down")
+check("latlon parsing", extras.parse_latlon("47.37, 8.54") == (47.37, 8.54) and extras.parse_latlon("-33.9 151.2") == (-33.9, 151.2) and raises(lambda: extras.parse_latlon("95, 0"), "latitude")
+      and raises(lambda: extras.parse_latlon("zurich"), "latitude"))
+check("sun needs a place", raises(lambda: extras.build({"type": "sun", "label": "", "arg": ""}, latlon=(None, None)), "enter a place") and extras.build({"type": "sun", "label": "", "arg": "47.37, 8.54"})["label"] == "SUN")
+
+
+class Cnt:
+    def __init__(self, r, s):
+        self.bytes_recv, self.bytes_sent = r, s
+
+
+extras._NET_LAST.clear()
+check("network: the first call only measures", extras.network_card("", Cnt(0, 0), 10.0)["a"] == "measuring")
+c = extras.network_card("", Cnt(5_000_000, 200_000), 12.0)
+check("network speeds", c["t"] == "D 2.5 MB/s" and c["a"] == "U 100 KB/s", c)
+check("network same instant", extras.network_card("", Cnt(5_000_000, 200_000), 12.0)["a"] == "measuring")
+check("goal ring", extras.goal_card("", "water:8", {"water": 3}) == {"k": "p", "label": "WATER", "t": "37", "a": "3 of 8", "b": "5 to go"} and extras.goal_card("Steps", "steps:10", {"steps": 12})["b"] == "done!"
+      and extras.goal_card("", "x:5", {})["t"] == "0")
+check("goal validation", raises(lambda: extras.validate({"type": "goal", "arg": "water"}), "counter-name") and extras.validate({"type": "goal", "arg": "water:8"})["arg"] == "water:8")
+times = [f"2026-10-03T{h:02d}:00" for h in range(24)] + [f"2026-10-04T{h:02d}:00" for h in range(24)]
+probs = [0] * 10 + [10, 20, 55, 80, 30, 5] + [0] * 32
+c = extras.rain_card("", (47.0, 8.0), lambda u: {"hourly": {"time": times, "precipitation_probability": probs}}, dt.datetime(2026, 10, 3, 9, 30))
+check("rain ring", c["k"] == "r" and c["t"] == "80" and c["b"] == "peak at 13:00", c)
+check("rain without data", raises(lambda: extras.rain_card("", (1, 1), lambda u: {"hourly": {"time": [], "precipitation_probability": []}}), "no forecast")
+      and raises(lambda: extras.build({"type": "rain", "label": "", "arg": ""}, latlon=(None, None)), "city"))
+c = extras.build({"type": "window", "label": "", "arg": ""}, window=("code", "main.py - Visual Studio Code"))
+check("window card", c["t"] == "code" and c["a"] == "main.py - Visual Studio Code" and c["label"] == "ACTIVE", c)
+check("window card without a window", raises(lambda: extras.build({"type": "window", "label": "", "arg": ""}, window=("", "")), "no program"))
 
 # ---------------------------------------------------------------- lyrics
 LRC = "[00:05.00] First line\n[00:10.50] Second line\n[00:20.00]\n[00:25.00][01:00.00] Chorus\n[bad] x\nno stamp"

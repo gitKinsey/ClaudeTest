@@ -47,13 +47,13 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import appcard, audio, hotkey, ledfx, padimage, history, i18n, plugins, tips, updates, activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, netactions, padextras, presets, recorder, scheduler, screenstate, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
+from desk_lib import appcard, audio, diag, sharecode, hotkey, ledfx, padimage, history, i18n, plugins, tips, updates, activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, netactions, padextras, presets, recorder, scheduler, screenstate, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
 from desk_lib.ui import (CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 ACCENT = ui.ACCENT                                                   # rebound in App.__init__ when the user picked another accent colour
 
 APP_NAME = "Desk Companion"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 PAGES = [("Control", [("Dashboard", "Home", "Connection, health and quick actions"),
                       ("Virtual Pad", "Pad", "Your keys on three layers, with a live twin of the device"),
                       ("Macro Creator", "Macros", "Key combinations, text, delays, mouse, computer actions"),
@@ -182,6 +182,7 @@ ACTIONS = {
         ("Panic: stop all macros", ("panic", None)),
         ("Next Layer", ("layer", "next")), ("Previous Layer", ("layer", "prev")),
         ("Layer 1", ("layer", 0)), ("Layer 2", ("layer", 1)), ("Layer 3", ("layer", 2)),
+        ("Layer 2 while the key is held (use as 'hold')", ("layer", "hold2")), ("Layer 3 while the key is held (use as 'hold')", ("layer", "hold3")),
         ("Lock / unlock the dial", ("fx", "dial_lock")), ("Next colour theme", ("fx", "theme_next")), ("Rotate the display", ("fx", "rot_next")),
         ("Next screen", ("fx", "mode_next")), ("Previous screen", ("fx", "mode_prev")), ("Display brighter", ("fx", "bright_up")), ("Display dimmer", ("fx", "bright_down")),
         ("Sticky Ctrl (for the next key)", ("fx", "latch_ctrl")), ("Sticky Shift (for the next key)", ("fx", "latch_shift")),
@@ -257,7 +258,7 @@ def valid_key(k):
 
 # ============================================================================ config
 INFO_DEFAULTS = {"music": True, "weather": False, "event": False, "custom": False, "city": "", "lat": None, "lon": None, "label": "",
-                 "fahrenheit": False, "ics": "", "rot": 6, "c_label": "", "c_t": "", "c_a": "", "c_b": ""}
+                 "fahrenheit": False, "ics": "", "rot": 6, "c_label": "", "c_t": "", "c_a": "", "c_b": "", "c_k": "c"}
 
 
 def load_config():
@@ -943,7 +944,7 @@ def spec_ok(spec):
     """Same acceptance rules as the firmware's parseSpec() - used by the simulated pad (and by the UI before it uploads)."""
     t, v = spec.get("type", "none"), spec.get("val")
     def layer_ok(x):
-        return x in ("next", "prev") or (isinstance(x, int) and not isinstance(x, bool) and 0 <= x < LAYERS)
+        return x in ("next", "prev", "hold1", "hold2", "hold3") or (isinstance(x, int) and not isinstance(x, bool) and 0 <= x < LAYERS)
     def host_ok(o):
         return (isinstance(o, dict) and o.get("op") in HOST_OPS and len(str(o.get("arg", ""))) <= 400
                 and (o.get("op") == "clipboard" or bool(o.get("arg"))))
@@ -1042,6 +1043,7 @@ class SimFirmware:
         self.reminders = [{"m": 0, "t": ""} for _ in range(3)]
         self.dim = 0                          # temporary dim level (0 = off) set by {"cmd":"dim"}
         self.viz, self.viz_at = [0] * 8, 0.0
+        self._momentary = None                # the layer to return to when the key that held "layer while held" is released
         self.labels = [[""] * 7 for _ in range(LAYERS)]
         self.rst_counts = [1, 0, 0, 0, 0, 0]
         self.settings15 = dict(SETTINGS15_DEFAULT)
@@ -1117,7 +1119,12 @@ class SimFirmware:
                 self._run_fx(st["fx"])
             elif "layer" in st:
                 x = st["layer"]
-                self.layer = (self.layer + 1) % LAYERS if x == "next" else (self.layer - 1) % LAYERS if x == "prev" else int(x)
+                if isinstance(x, str) and x.startswith("hold"):                    # "layer while held": back again on {"input","g":"release"}
+                    if self._momentary is None:
+                        self._momentary = self.layer
+                    self.layer = int(x[4]) - 1
+                else:
+                    self.layer = (self.layer + 1) % LAYERS if x == "next" else (self.layer - 1) % LAYERS if x == "prev" else int(x)
                 self._send({"evt": "layer", "n": self.layer})
             elif "host" in st:
                 self.host_log.append(st["host"])
@@ -1319,7 +1326,11 @@ class SimFirmware:
                     self._send({"evt": "key", "k": k, "v": 1})
                     self._send({"evt": "key", "k": k, "v": 0})
                 g = msg.get("g", "tap") if not self.fw12 else "tap"
-                if g == "tap":
+                if g == "release" and self._fw15():
+                    if self._momentary is not None:
+                        self.layer, self._momentary = self._momentary, None
+                        self._send({"evt": "layer", "n": self.layer})
+                elif g == "tap":
                     self._run_spec(self._spec_for(self.layer, k))
                 elif g in self._gestures()[1:]:
                     sp = self.gest.get((self.layer, k, g))
@@ -2017,7 +2028,8 @@ def describe_spec(spec):
     if t == "macro":
         return f"macro, {len(v)} steps"
     if t == "layer":
-        return "switch to the next layer" if v == "next" else "switch to the previous layer" if v == "prev" else f"switch to layer {int(v) + 1}"
+        return ("switch to the next layer" if v == "next" else "switch to the previous layer" if v == "prev" else f"layer {v[4]} while the key is held" if str(v).startswith("hold")
+                else f"switch to layer {int(v) + 1}")
     if t == "panic":
         return "panic: release all keys and stop every macro"
     if t == "toggle":
@@ -3476,7 +3488,7 @@ class DevTab:
         self.state_lbl = ctk.CTkLabel(top, text="Not connected", text_color=WARN, anchor="w")
         self.state_lbl.pack(side="left", padx=12, pady=8)
         for text, cmd in (("Ping x5", self.ping), ("Device info", self.show_info), ("Full self-test", self.full_selftest),
-                          ("Copy diagnostic report", self.report)):
+                          ("Copy diagnostic report", self.report), ("Export report .zip", self.export_zip)):
             ctk.CTkButton(top, text=text, width=130, command=cmd).pack(side="right", padx=4, pady=8)
 
         left = ctk.CTkScrollableFrame(tab)
@@ -4018,7 +4030,7 @@ class DevTab:
             self.refresh_state()
         self.app.bg(work, done, "Self-test failed")
 
-    def report(self):
+    def _report_text(self):
         d = self.app.dev
         out = [f"DeskCompanion diagnostic report  {time.strftime('%Y-%m-%d %H:%M:%S')}",
                f"app: {APP_NAME}  python {platform.python_version()}  {platform.platform()}",
@@ -4028,7 +4040,10 @@ class DevTab:
         out += ["", f"connected: {d.connected}  port: {d.port}  rx {d.rx_bytes} B  tx {d.tx_bytes} B", "hello:", f"  {d.info}", "info:"]
         out += ["  " + ln for ln in info_lines(self.last_info)] if self.last_info else ["  (not fetched - press 'Device info')"]
         out += ["", "last terminal lines:"] + ["  " + ln for ln in self.lines[-150:]]
-        text = "\n".join(out)
+        return "\n".join(out)
+
+    def report(self):
+        text = self._report_text()
         self.app.clipboard_clear()
         self.app.clipboard_append(text)
         path = Path.home() / "deskcompanion_diag.txt"
@@ -4039,6 +4054,26 @@ class DevTab:
             where = ""
         self.app.set_status(f"Diagnostic report copied to the clipboard {where} - paste it to whoever is helping you")
         self.sys("diagnostic report copied")
+
+    def export_zip(self, path=None):
+        """report.txt + the settings with every secret removed + (firmware 1.5) the pad's boot log, in one .zip to attach to a bug report."""
+        from tkinter import filedialog                          # noqa: PLC0415
+        path = path or filedialog.asksaveasfilename(title="Save the diagnostic report", defaultextension=".zip", initialfile="deskcompanion_report.zip",
+                                                    filetypes=[("Zip file", "*.zip")])
+        if not path:
+            return
+        d = self.app.dev
+
+        def work():
+            files = {"report.txt": self._report_text(), "settings_redacted.json": json.dumps(diag.redact(self.app.cfg), indent=1, default=str)}
+            if d.connected and self.app._pad_cap("bootlog"):
+                try:
+                    files["pad_boot_log.json"] = json.dumps(d.request({"cmd": "boot_log"}), indent=1)
+                except DeviceError as e:
+                    files["pad_boot_log.json"] = f"unavailable: {e}"
+            Path(path).write_bytes(diag.build_zip(files))
+            return path
+        self.app.bg(work, lambda p: self.app.set_status(f"Report saved to {p} (settings are included with passwords, tokens and API keys removed)"), "Could not save the report")
 
 
 class _PluginApi:
@@ -5564,7 +5599,7 @@ class App(ctk.CTk):
             return {}
         if k == "card":
             info = self.cfg["info"]
-            info.update(custom=any(r[x] for x in ("label", "title", "a", "b")), c_label=r["label"], c_t=r["title"], c_a=r["a"], c_b=r["b"])
+            info.update(custom=any(r[x] for x in ("label", "title", "a", "b")), c_label=r["label"], c_t=r["title"], c_a=r["a"], c_b=r["b"], c_k=r.get("k", "c"))
             return {}
         if not self.dev.connected:
             raise bridge.ApiError(409, "the pad is not connected")
@@ -5754,10 +5789,10 @@ class App(ctk.CTk):
         def moveto(self, x, y): self._impl().moveto(x, y)
         def clickat(self, x, y, btn): self._impl().clickat(x, y, btn)
 
-    def set_custom_card(self, label, title, a, b):
-        """The pad's Info screen custom card (also used by the local API and by scripts)."""
+    def set_custom_card(self, label, title, a, b, kind="c"):
+        """The pad's Info screen custom card (also used by the local API and by scripts). kind: c plain, r ring, p progress bar, s scrolling text (firmware 1.5)."""
         info = self.cfg["info"]
-        info.update(custom=any((label, title, a, b)), c_label=label, c_t=title, c_a=a, c_b=b)
+        info.update(custom=any((label, title, a, b)), c_label=label, c_t=title, c_a=a, c_b=b, c_k=kind if kind in ("c", "r", "p", "s") else "c")
         self._info_sent = (None, 0.0)
 
     def script_ctx(self):
@@ -5970,6 +6005,8 @@ class App(ctk.CTk):
         ctk.CTkButton(adv, text="Add media key", width=120, command=self.seq_add_media).pack(side="left", padx=(0, 16))
         self.rec_btn = ui.secondary_button(adv, "Record keystrokes", self.rec_toggle, width=150)
         self.rec_btn.pack(side="left")
+        self.rec_mouse_var = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(adv, text="also the mouse", variable=self.rec_mouse_var, width=110).pack(side="left", padx=(8, 0))
         fin = ctk.CTkFrame(sq, fg_color="transparent", border_width=0)
         fin.grid(row=6, column=0, columnspan=3, sticky="w", padx=12, pady=(4, 14))
         self.name_var = tk.StringVar(value="My macro")
@@ -6061,7 +6098,7 @@ class App(ctk.CTk):
         self._guard(lambda: self.test_spec(self._action_spec(), "Action"))
 
     # ---- keystroke recorder (needs pynput)
-    def rec_toggle(self, listener_factory=None):
+    def rec_toggle(self, listener_factory=None, mouse_factory=None):
         if self._rec:
             return self._rec_stop()
         if listener_factory is None:
@@ -6080,16 +6117,33 @@ class App(ctk.CTk):
         self._recorder = recorder.MacroRecorder()
         self._rec = listener_factory(lambda n: self._recorder.key_down(n, time.monotonic()), lambda n: self._recorder.key_up(n, time.monotonic()))
         self._rec.start()
+        self._rec_mouse = None
+        if self.rec_mouse_var.get():                                   # pointer movement, clicks and the wheel as well
+            if mouse_factory is None:
+                try:
+                    from pynput import mouse as ms
+
+                    def mouse_factory(move, button, scroll):
+                        return ms.Listener(on_move=move, on_click=lambda x, y, b, p: button(str(b), p), on_scroll=lambda x, y, dx, dy: scroll(dy))
+                except Exception:                                      # noqa: BLE001
+                    mouse_factory = None
+            if mouse_factory is not None:
+                r = self._recorder
+                self._rec_mouse = mouse_factory(lambda x, y: r.mouse_move(x, y, time.monotonic()), lambda b, p: r.mouse_button(b, p, time.monotonic()),
+                                                lambda dy: r.mouse_scroll(dy, time.monotonic()))
+                self._rec_mouse.start()
         self.rec_btn.configure(text="Stop recording", fg_color=ui.ERR_FILL)
         self.set_status("Recording keystrokes ... press 'Stop recording' when done")
         self._rec_job = self.after(60000, lambda: self._rec and self._rec_stop())
 
     def _rec_stop(self):
         rec, self._rec = self._rec, None
-        try:
-            rec.stop()
-        except Exception:                                      # noqa: BLE001
-            pass
+        for lst in (rec, getattr(self, "_rec_mouse", None)):
+            try:
+                lst.stop()
+            except Exception:                                  # noqa: BLE001
+                pass
+        self._rec_mouse = None
         try:
             self.after_cancel(self._rec_job)
         except (AttributeError, ValueError, tk.TclError):
@@ -7053,7 +7107,8 @@ class App(ctk.CTk):
                    "ci": "owner/name (public repository)", "crypto": "bitcoin  or  ethereum:eur",
                    "quote": "(empty)  or a text file of  quote | author  lines", "birthday": "Anna 03-14, Max 1990-07-02",
                    "ping": "example.com  or  192.168.1.1:22", "http": "https://example.com", "lyrics": "(nothing to enter)",
-                   "progress": "year, month, week, day or work", "battery": "(nothing to enter)", "disk": "folder or drive, e.g. C:\\  or  /", "load": "(nothing to enter)"}
+                   "progress": "year, month, week, day or work", "moon": "(nothing to enter)", "sun": "47.37, 8.54  (empty = your weather city)", "network": "(nothing to enter)",
+                   "goal": "water:8  (a {counter:water} counter and its target)", "rain": "(uses your weather city)", "window": "(nothing to enter)", "battery": "(nothing to enter)", "disk": "folder or drive, e.g. C:\\  or  /", "load": "(nothing to enter)"}
 
     def _extra_kind_changed(self):
         key = next(k for k, v in extras.KINDS.items() if v == self.extra_kind.get())
@@ -7188,11 +7243,11 @@ class App(ctk.CTk):
                 errs["weather"] = f"weather problem: {e}"
         if info.get("custom") and any(info.get(k) for k in ("c_label", "c_t", "c_a", "c_b")):
             f = feeds.ascii_fold
-            cards.append({"k": "c", "label": f(info.get("c_label", ""), 24) or "NOTE", "t": f(info.get("c_t", ""), 24), "a": f(info.get("c_a", ""), 40), "b": f(info.get("c_b", ""), 40)})
+            cards.append({"k": info.get("c_k", "c") if info.get("c_k") in ("c", "r", "p", "s") else "c", "label": f(info.get("c_label", ""), 24) or "NOTE", "t": f(info.get("c_t", ""), 24), "a": f(info.get("c_a", ""), 40), "b": f(info.get("c_b", ""), 40)})
         for i, item in enumerate(info.get("extras") or []):
             key = f"x{i}"
             try:
-                card = cached(key + json.dumps(item, sort_keys=True), extras.TTL[item["type"]], lambda it=item: extras.build(it))
+                card = cached(key + json.dumps(item, sort_keys=True), extras.TTL[item["type"]], lambda it=item: extras.build(it, **self._extras_ctx()))
                 cards.append(card)
                 if item["type"] == "ci":
                     snap[key.replace("x", "ci")] = card.get("t", "").lower()
@@ -7209,6 +7264,11 @@ class App(ctk.CTk):
                         c["t"] = c["t"] + "%"
                     c["k"] = "c"
         return cards[:4], badges, errs
+
+    def _extras_ctx(self):
+        """What some Info cards need from the app: the weather place, the snippet counters, the program in front."""
+        i = self.cfg["info"]
+        return {"latlon": (i.get("lat"), i.get("lon")), "counter_values": self.cfg["counters"], "window": self.active_win.get()}
 
     def _led_alerts(self):
         """Compare the latest snapshot with the previous one; blink the LED for what is new (only when the switch is on)."""
@@ -7725,6 +7785,12 @@ class App(ctk.CTk):
         ui.secondary_button(row, "Export one macro...", self.macro_export).pack(side="left", padx=6)
         ui.secondary_button(row, "Import macros...", self.macro_import).pack(side="left", padx=6)
         ui.secondary_button(row, "Automatic backups...", lambda: wizards.AutoBackupDialog(self)).pack(side="left", padx=6)
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(anchor="w", pady=(8, 0))
+        ui.secondary_button(row, "Copy a share code of this layer", self._share_copy, width=210).pack(side="left", padx=6)
+        self.share_entry = ctk.CTkEntry(row, width=300, placeholder_text="paste a share code (DC1:...)")
+        self.share_entry.pack(side="left", padx=6)
+        ui.secondary_button(row, "Replace this layer with it", self._share_import, width=190).pack(side="left", padx=6)
 
         # ---- recovery + safety
         box = self._card(sc, "Recovery and safety", "If the pad boots into safe mode (red double-blink) or misbehaves.")
@@ -7769,6 +7835,72 @@ class App(ctk.CTk):
         ui.heading(c, "Activity").pack(anchor="w", padx=16, pady=(12, 4))
         self.log_box = ctk.CTkTextbox(c, height=220, state="disabled")
         self.log_box.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+    # ---- share codes: one layer as a short text
+    def layer_share_code(self, layer=None):
+        layer = self.edit_layer if layer is None else layer
+        lm = self.cfg["layers"][layer]
+        custom = {m["action"]: self.cfg["custom"][m["action"]] for m in lm.values() if m["cat"] == "Custom" and m["action"] in self.cfg["custom"]}
+        gestures = {k.split(":", 1)[1]: v for k, v in self.cfg.get("gestures", {}).items() if k.startswith(f"{layer}:")}
+        for v in gestures.values():
+            if v["cat"] == "Custom" and v["action"] in self.cfg["custom"]:
+                custom[v["action"]] = self.cfg["custom"][v["action"]]
+        return sharecode.encode({"v": 1, "layer": layer + 1, "map": {k: dict(v) for k, v in lm.items()}, "custom": custom, "gestures": gestures})
+
+    def import_layer_share_code(self, code, layer=None):
+        """Replace one layer with the contents of a share code. Every action is validated first; nothing changes if anything is wrong. Returns a summary."""
+        layer = self.edit_layer if layer is None else layer
+        p = sharecode.decode(code)
+        custom_in = p.get("custom") if isinstance(p.get("custom"), dict) else {}
+        for name, c in custom_in.items():
+            if not (isinstance(name, str) and 0 < len(name) <= 48 and isinstance(c, dict) and spec_ok({"type": c.get("type"), "val": c.get("val")})):
+                raise ValueError(f"the code contains an action ('{str(name)[:30]}') this app does not accept")
+
+        def resolves(m):
+            if not (isinstance(m, dict) and isinstance(m.get("cat"), str) and isinstance(m.get("action"), str)):
+                return False
+            if m["cat"] == "Custom":
+                return m["action"] in custom_in or m["action"] in self.cfg["custom"]
+            return (m["cat"], m["action"]) in ACTION_INDEX
+        new_map = p.get("map")
+        if not isinstance(new_map, dict) or set(new_map) != {str(i) for i in range(1, 8)} or not all(resolves(m) for m in new_map.values()):
+            raise ValueError("the code does not hold a complete, valid key map")
+        gest = {}
+        for k, m in (p.get("gestures") or {}).items():
+            if not (isinstance(k, str) and re.fullmatch(r"([1-5]:(hold|double|triple)|([89]|1[0-5]):press)", k) and resolves(m)):
+                raise ValueError("the code contains a gesture this app does not accept")
+            gest[f"{layer}:{k}"] = {"cat": m["cat"], "action": m["action"]}
+        for name, c in custom_in.items():
+            self.cfg["custom"][name] = {"type": c["type"], "val": c["val"]}
+        lm = self.cfg["layers"][layer]
+        lm.clear()
+        lm.update({k: {"cat": m["cat"], "action": m["action"]} for k, m in new_map.items()})
+        self.cfg["gestures"] = {k: v for k, v in self.cfg.get("gestures", {}).items() if not k.startswith(f"{layer}:")}
+        self.cfg["gestures"].update(gest)
+        self.history.record(self._edit_snapshot())
+        save_config(self.cfg)
+        self.refresh_library()
+        self.refresh_action_lists()
+        self.padview.refresh()
+        self.recompute_pending()
+        return f"layer {layer + 1}: 7 keys, {len(custom_in)} custom action(s), {len(gest)} gesture(s)"
+
+    def _share_copy(self):
+        code = self.layer_share_code()
+        self.clipboard_clear()
+        self.clipboard_append(code)
+        self.set_status(f"Share code of layer {self.edit_layer + 1} copied ({len(code)} characters) - paste it into a message")
+
+    def _share_import(self):
+        code = self.share_entry.get().strip()
+        if not code:
+            return self.set_status("Paste a share code first", error=True)
+        if not messagebox.askyesno("Share code", f"Replace layer {self.edit_layer + 1} with the contents of this code?\n(you can undo it with Ctrl+Z)"):
+            return
+        try:
+            self.set_status("Imported: " + self.import_layer_share_code(code) + "  - upload to send it to the pad")
+        except ValueError as e:
+            self.set_status(f"Not imported: {e}", error=True)
 
     def boot_report(self):
         """How the pad's last start-up went, its reset statistics and USB link events (firmware 1.5)."""

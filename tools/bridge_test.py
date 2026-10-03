@@ -14,7 +14,15 @@ v = bridge.validate
 assert v("/v1/layer", {"n": 2}) == {"kind": "layer", "val": 1} and v("/v1/layer", {"n": "next"}) == {"kind": "layer", "val": "next"}
 assert v("/v1/mode", {"n": 6}) == {"kind": "mode", "val": 6} and v("/v1/brightness", {"n": 200}) == {"kind": "brightness", "val": 200}
 assert v("/v1/led", {"hex": "#FF8800"}) == {"kind": "led", "hex": "ff8800"} and v("/v1/led", {"mode": "off"}) == {"kind": "led", "mode": "off"}
-assert v("/v1/card", {"label": "BUILD", "title": "x" * 99}) == {"kind": "card", "label": "BUILD", "title": "x" * 40, "a": "", "b": ""}
+assert v("/v1/card", {"label": "BUILD", "title": "x" * 99}) == {"kind": "card", "k": "c", "label": "BUILD", "title": "x" * 40, "a": "", "b": ""}
+assert v("/v1/card", {"label": "CPU", "title": "73", "kind": "ring"})["k"] == "r" and v("/v1/card", {"title": "250.9", "kind": "progress"})["title"] == "100" and v("/v1/card", {"title": "-4", "kind": "ring"})["title"] == "0"
+assert v("/v1/card", {"title": "a long line", "kind": "scroll"})["k"] == "s"
+for bad in ({"kind": "sparkle"}, {"title": "many", "kind": "ring"}):
+    try:
+        v("/v1/card", bad)
+        raise SystemExit(f"accepted {bad}")
+    except bridge.ApiError as e:
+        assert e.status == 400
 assert v("/v1/badge", {"name": "mail", "n": 3}) == {"kind": "badge", "name": "mail", "n": 3} and v("/v1/press", {"key": 7}) == {"kind": "press", "key": 7}
 assert v("/v1/notify", {"text": " hi "}) == {"kind": "notify", "text": "hi"}
 for path, body, code in (("/v1/layer", {"n": 4}, 400), ("/v1/layer", {"n": True}, 400), ("/v1/layer", {}, 400), ("/v1/mode", {"n": 0}, 400),
@@ -67,9 +75,9 @@ print("bridge OK")
 br = cli.build_request
 assert br(["status"]) == ("GET", "/v1/status", None) and br(["layer", "2"]) == ("POST", "/v1/layer", {"n": 2}) and br(["layer", "next"])[2] == {"n": "next"}
 assert br(["led", "off"])[2] == {"mode": "off"} and br(["led", "ff8800"])[2] == {"hex": "ff8800"} and br(["brightness", "90"])[2] == {"n": 90}
-assert br(["card", "A", "B"])[2] == {"label": "A", "title": "B"} and br(["card"])[2] == {} and br(["badge", "mail", "3"])[2] == {"name": "mail", "n": 3}
+assert br(["card", "A", "B"])[2] == {"label": "A", "title": "B"} and br(["card", "CPU", "73", "x", "y", "ring"])[2]["kind"] == "ring" and br(["card"])[2] == {} and br(["badge", "mail", "3"])[2] == {"name": "mail", "n": 3}
 assert br(["notify", "build", "done"])[2] == {"text": "build done"} and br(["press", "5"])[2] == {"key": 5}
-for bad in ([], ["layer"], ["layer", "x"], ["nope"], ["badge", "a"], ["notify"], ["card"] + ["x"] * 5):
+for bad in ([], ["layer"], ["layer", "x"], ["nope"], ["badge", "a"], ["notify"], ["card"] + ["x"] * 6):
     try:
         br(bad); raise SystemExit(f"cli accepted {bad}")
     except ValueError:

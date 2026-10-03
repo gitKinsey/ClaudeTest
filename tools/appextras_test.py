@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from desk_lib import diag, hotkey, history, i18n, plugins, tips, updates   # noqa: E402
+from desk_lib import diag, hotkey, history, i18n, plugins, recorder, tips, updates   # noqa: E402
 
 FAILS = []
 
@@ -140,6 +140,42 @@ check("hotkey stop", not made[0].started)
 check("latency", "n=4" in diag.latency_summary([1, 2, 3, 4]) and diag.latency_summary([]) == "no samples")
 check("power", diag.power_estimate(255, "auto") > diag.power_estimate(10, "auto") > diag.power_estimate(10, "off") and diag.power_estimate(200, wifi=True) > diag.power_estimate(200))
 check("power text", "mA" in diag.power_text(120))
+
+# ---- mouse recording (relative moves, clicks, wheel) mixed with typing
+r = recorder.MacroRecorder()
+for i, (x, y) in enumerate([(100, 100), (150, 120), (260, 120), (260, 130)]):
+    r.mouse_move(x, y, i * 0.01)
+r.mouse_button("Button.left", True, 0.1); r.mouse_button("Button.left", False, 0.15)
+r.key_down("h", 0.2); r.key_down("i", 0.25)
+r.mouse_move(255, 130, 0.3)
+r.mouse_scroll(-3, 0.35)
+r.mouse_button("Button.right", True, 0.4); r.mouse_button("Button.right", False, 1.2)
+steps = r.finish()
+check("mouse moves are relative and split at 100 per axis", steps[:2] == [{"mouse": {"move": [100, 30]}}, {"mouse": {"move": [60, 0]}}], steps[:3])
+check("click, typing, small move, wheel in order", steps[2:6] == [{"mouse": {"btn": "left", "act": "click"}}, {"text": "hi"}, {"mouse": {"move": [-5, 0]}}, {"mouse": {"wheel": -3}}], steps[2:7])
+check("a long press becomes down / wait / up", steps[6:] == [{"mouse": {"btn": "right", "act": "down"}}, {"delay": 800}, {"mouse": {"btn": "right", "act": "up"}}], steps[6:])
+r = recorder.MacroRecorder(); r.mouse_button("Button.unknown", True, 0); r.mouse_button("Button.unknown", False, 0.1); r.mouse_scroll(0, 0.2)
+check("unknown buttons and zero scrolls are ignored", r.finish() == [])
+r = recorder.MacroRecorder()
+for i in range(200):
+    r.mouse_move(i * 3, 0, i * 0.01)
+    r.mouse_button("Button.left", True, i * 0.01); r.mouse_button("Button.left", False, i * 0.01 + 0.005)
+check("recording is capped at 64 steps", len(r.finish()) == 64 and r.truncated)
+import companion_app as _m   # noqa: E402
+check("recorded mouse steps are valid pad macros", all(_m.spec_ok({"type": "macro", "val": [st]}) for st in steps), steps)
+
+# ---- diagnostic export: secrets never leave the app
+cfg = {"ai": {"key": "sk-ant-secret", "model": "m"}, "api": {"on": True, "port": 8765, "token": "tok123"}, "online_keys": {"tenor": "TENORKEY", "giphy": ""}, "info": {"token": "badge", "city": "Zurich"},
+       "scripts": {"a": "x" * 5000}, "usage": {"K1": 5}, "wifi_pass": "pw", "layers": [{"1": {"cat": "Editing", "action": "Copy"}}], "mine": [{"password": "p", "n": 1}]}
+red = diag.redact(cfg)
+check("secrets removed", red["ai"]["key"] == "***" and red["ai"]["model"] == "m" and red["api"]["token"] == "***" and red["api"]["port"] == 8765 and red["api"]["on"] is True
+      and red["online_keys"]["tenor"] == "***" and red["online_keys"]["giphy"] == "" and red["info"]["token"] == "***" and red["info"]["city"] == "Zurich" and red["wifi_pass"] == "***"
+      and red["mine"][0]["password"] == "***" and red["mine"][0]["n"] == 1, red)
+check("ordinary settings and long texts survive", red["layers"] == cfg["layers"] and red["usage"] == {"K1": 5} and red["scripts"]["a"].endswith("...(cut)") and "sk-ant" not in json.dumps(red) and "TENORKEY" not in json.dumps(red))
+check("the original is untouched", cfg["ai"]["key"] == "sk-ant-secret")
+import io, zipfile   # noqa: E401,E402
+z = zipfile.ZipFile(io.BytesIO(diag.build_zip({"report.txt": "hello", "a/b.json": "{}", "..\\evil": "x"})))
+check("zip with flat names", sorted(z.namelist()) == [".._evil", "a_b.json", "report.txt"] and z.read("report.txt") == b"hello", z.namelist())
 
 # ---- client against a fake serial port
 sys.path.insert(0, str(ROOT))

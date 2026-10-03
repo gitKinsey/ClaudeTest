@@ -22,7 +22,7 @@ a list of feature names. Check `caps` before using a newer command; do not compa
 | layers, mouse, host, info, gifslots, factory | firmware 1.2 basics |
 | hostx, gestures, dialaccel, clockstyle, saver, nightdim | 1.3: hold/double key gestures, `settings` command |
 | screens, pressturn, toggle, wheelmods, ledfx, reminders, habits | 1.4: extra screens, dial press+turn, `screens` / `habits` / `reminders` commands |
-| hostx2, dimcmd | 1.5: more host ops, `dim` command |
+| hostx2, dimcmd, themes, fx, chords, tapdance, dialclicks, keyrepeat, games, pet, diag, viz, labels, bootlog, rollback, cards2, saver2, clock2, display2, konami | 1.5: see below |
 
 ## Commands (all answered with an `ok` reply unless noted)
 
@@ -40,12 +40,19 @@ a list of feature names. Check `caps` before using a newer command; do not compa
 | `os` | `val` `"win"`/`"mac"` | modifier mapping |
 | `layout` | `val` e.g. `"us"`, `"de"` | keyboard layout for typed text |
 | `getkeys` | optional `layer` | key map of a layer |
-| `remap` | `key` 1..11, `type`, `val`, optional `layer` | set one key. `type`: `combo` (list of key names), `text`, `media`, `macro` (list of steps), `mouse`, `host` (`{"op","arg"}`), `toggle`, `random`, `panic`, `none` |
+| `remap` | `key` 1..15, `type`, `val`, optional `layer`, optional `gesture` (`hold`, `double`, `triple`; keys 1-5 only), `clear:true` | set one key. 1-5 = K1..K5, 6 / 7 = dial right / left, 8 / 9 = dial pressed + turned, **10-13 = chords K1+K2 ... K4+K5, 14 / 15 = dial double / triple click** (1.5). `type`: `combo` (list of key names), `text`, `media`, `macro` (list of steps), `mouse`, `host` (`{"op","arg"}`), `toggle`, `random`, `panic`, **`fx`** (`val` = a pad function name, below), `none` |
 | `reset_keys` | optional `layer` | restore default key map |
 | `run` | same `type`/`val` | perform an action now |
-| `input` | `k` 1..5, or `turn` +1/-1, or `hold`/`press` | simulate a physical input |
+| `input` | `k` 1..5 (+ optional `g`: `tap` / `hold` / `double` / `triple`), or `turn` +-1..20 (+ `press`, `dt`), or `click` / `hold`, or `chord` 1..4, or `dclick` 1..3 | simulate a physical input |
 | `led` | `mode` `auto|off|breathe|fire|solid`, `r g b` or `hex` | the RGB LED |
-| `settings` | any of `dial_accel`, `clock_style`, `saver_min`, `night_dim`, `mode_mask`, ... | persistent pad settings (reply echoes all) |
+| `settings` | any of `dial_accel`, `clock_style` 0-5, `saver_s`, `saver_style` 1-7, `night_on/from/to/level`, `mode_mask` (20 bits), and from 1.5 `theme` 0-6, `tint`, `rotation` 0-3, `pixel_shift`, `fade`, `boot_anim`, `splash` (12 chars), `detent_led`, `key_toast`, `repeat_mask` (bit per key), `dial_lock` | persistent pad settings (the reply echoes all, plus `host_dim`, `pomo_today`). All fields are validated before any is applied |
+| `dim` | `level` 0 (off) or 5..255, or `on` true/false | the host dims the pad (lock screen, fullscreen video). Not saved; ends by itself when the host is silent for 8 s |
+| `labels` | `layer`, `l`: 7 strings of up to 8 printable ASCII characters (K1..K5, dial right, dial left); no `l` = read | key names for the key toast / popup menu |
+| `boot_log` | optional `clear:true` | `log` (start-up notes), `reset`, `crashes`, `counts` (power-on, software, panic, watchdog, brownout, other), `usb_connects`, `usb_drops`, `heap`, `heap_min` |
+| `rollback` | `confirm:true` | boot the previous firmware (other OTA slot); `no_previous` when none is stored |
+| `viz` | `v`: 8 integers 0..100 | spectrum bars for screen 20 (**no reply**, send up to ~10 times a second) |
+| `key_test` | `seq`: `[[keymask, ms], ...]`, optional `chords`, `hold`, `dbl`, `tri` masks | replays key states through the gesture + chord state machine and returns what it would fire (tests; runs nothing) |
+| `gesture_test` | `seq`: `[[down, ms], ...]`, `hold`, `dbl`, `tri` | the same for one key |
 | `screens` / `habits` / `reminders` | see FEATURES.md | 1.4 optional screens |
 | `info_cards` | `cards` list | the Info screen content |
 | `gif_list`, `gif_begin`, `gif_chunk`, `gif_end`, `gif_abort`, `gif_delete`, `gif_cfg` | | GIF slots (chunked upload, base64) |
@@ -69,3 +76,19 @@ Error codes (`err`): `bad_json`, `unknown_cmd`, `bad_arg`, `busy`, `no_fs`, `too
 
 `url`, `app`, `file`, `shell` (needs the user's opt-in), `clipboard`, `snippet`, `clip`, `notify`, `script`, and from firmware 1.5 (`hostx2`):
 `appvol`, `dnd`, `audio_out`, `mic`, `shot`, `translate`, `ai`, `webhook`, `layout`, `cliphist`, `plugin`.
+
+## Pad functions (`fx`)
+
+`dial_lock`, `theme_next`, `rot_next`, `mode_next`, `mode_prev`, `bright_up`, `bright_down`, `latch_ctrl`, `latch_shift`, `latch_alt`, `latch_gui`
+(the next key combo gets that modifier), `popup` (menu of the layer's keys), `switch_next` / `switch_prev` (window switcher; put them on the dial).
+`{"type":"fx","val":"popup"}`, or inside a macro `{"fx":"popup"}`.
+
+## Screens
+
+1 clock, 2 focus, 3 media, 4 system, 5 GIF, 6 info, 7 stopwatch, 8 breathing, 9 dice, 10 reaction, 11 snake, 12 habits, **13 pong, 14 breakout, 15 flappy, 16 life,
+17 pet, 18 simon, 19 diagnostics, 20 sound bars**. `mode_mask` decides which ones the dial menu / long press visit.
+
+## Info card kinds (`info_cards`, field `k`)
+
+`c` plain, `m` music, `w` weather, `e` event (colours differ only); from 1.5: `r` ring (`t` = 0..100), `p` progress bar (`t` = 0..100), `s` scrolling text (`t`).
+

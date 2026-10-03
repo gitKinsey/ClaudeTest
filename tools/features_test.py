@@ -110,6 +110,24 @@ app.rec_toggle()
 assert holder["l"].stopped and app.rec_btn.cget("text") == "Record keystrokes"
 assert app.macro_steps == [{"combo": ["CTRL", "c"]}, {"text": "hi"}] or (len(app.macro_steps) == 3 and app.macro_steps[1].get("delay") is not None), app.macro_steps
 print("recorder OK")
+# ---- the same with the mouse switched on
+class FakeMouse:
+    def __init__(self, move, button, scroll):
+        self.move, self.button, self.scroll, self.started, self.stopped = move, button, scroll, False, False
+    def start(self): self.started = True
+    def stop(self): self.stopped = True
+mh = {}
+def mfactory(move, button, scroll):
+    mh["l"] = FakeMouse(move, button, scroll); return mh["l"]
+app.seq_clear()
+app.rec_mouse_var.set(True)
+app.rec_toggle(listener_factory=factory, mouse_factory=mfactory)
+assert mh["l"].started
+mh["l"].move(10, 10); mh["l"].move(40, 10); mh["l"].button("Button.left", True); time.sleep(0.02); mh["l"].button("Button.left", False); mh["l"].scroll(2)
+app.rec_toggle()
+assert mh["l"].stopped and app.macro_steps[0] == {"mouse": {"move": [30, 0]}} and {"mouse": {"btn": "left", "act": "click"}} in app.macro_steps and {"mouse": {"wheel": 2}} in app.macro_steps, app.macro_steps
+app.rec_mouse_var.set(False)
+print("mouse recorder OK")
 
 # ---------------------------------------------------------------- firmware status
 app.tabs.set("Device")

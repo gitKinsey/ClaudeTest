@@ -5,7 +5,7 @@ companion app. The firmware works standalone; the app is only needed to remap ke
 (built-in library, your own folder, or Tenor / GIPHY search), mirror your PC's volume on the pad, and for the **Dev tab**
 (bring-up and diagnostics).
 
-**Version 1.4 / firmware 1.4 (branch `overkill`)** adds macro scripts (loops, conditions, variables), ready-made layouts for popular programs, automatic backups, a tray icon, six more pad screens (stopwatch, breathing, dice, reaction test, snake, habits), reminders, dial press+turn, alternating / random / panic keys, LED effects - and, from firmware 1.3,  snippets with variables, 21 clipboard transforms, scheduled actions, a local API + `deskcompanion_cli.py`, five more Info cards, hold / double-tap key actions, dial acceleration, four clock faces, a screensaver and night dimming - all without extra hardware (see `docs/FEATURES.md`).
+**Version 1.5 / firmware 1.5 (branch `overkill`)** adds, on top of everything in 1.4: computer actions (per-program volume, Do-Not-Disturb, audio output, microphone, screenshots, translate, AI, web calls, window layouts, clipboard history, plugins), scripts with more commands, smarter profiles, new Info cards (quotes, birthdays, ping / website checks, lyrics, progress bars, rings), a sound-reactive LED, accent colours / languages / update check in the app, and on the pad: colour themes, display rotation, key chords, triple tap, key repeat, pad functions (sticky modifiers, popup menu, window switcher on the dial), eight more screens (Pong, Breakout, Flappy, Life, pixel pet, Simon, diagnostics, sound bars), more clock faces and screensavers (see `docs/FEATURES.md`; protocol in `docs/PROTOCOL.md`).
 
 **Version 1.3 / firmware 1.2** adds: **3 key layers**, **per-program profiles** (the layer follows the program you use), a 6th screen
 (**Info**: now playing, weather, next calendar event, notification badges), **mouse and computer actions** (click, scroll, open a
@@ -105,6 +105,7 @@ No LED at all? -> the sketch did not run. See *Troubleshooting*.
 pip install customtkinter pyserial psutil pillow
 python companion_app.py
 ```
+Optional extras, each switches on one feature and is greyed out with the reason when missing: `pynput` (recording, global hotkey, typing text), `pystray` (tray icon), `qrcode` (QR codes on the pad), `sounddevice numpy` (sound-reactive LED / sound bars), `pycaw` (Windows volume), `esptool` (firmware update).
 Plug the pad in (before or after, any order). The app finds Espressif USB devices every second and connects by itself.
 Open the **Dev** tab:
 

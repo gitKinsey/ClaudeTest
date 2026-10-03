@@ -7,7 +7,7 @@
     GET  /v1/status
     POST /v1/layer       {"n": 1|2|3|"next"|"prev"}      POST /v1/mode        {"n": 1..6}
     POST /v1/brightness  {"n": 5..255}                    POST /v1/led         {"mode": "auto|off"}  or  {"hex": "ff8800"}
-    POST /v1/card        {"label","title","a","b"}  (a custom Info card; {} clears)       POST /v1/badge  {"name": "mail", "n": 3}
+    POST /v1/card        {"label","title","a","b","kind"}  (a custom Info card; kind text | ring | progress | scroll - ring / progress take a 0..100 value in "title"; {} clears)       POST /v1/badge  {"name": "mail", "n": 3}
     POST /v1/press       {"key": 1..7}  (a virtual key press: 1-5 keys, 6/7 dial turn)    POST /v1/notify {"text": "..."}
 Answers are JSON: {"ok": true, ...} or {"ok": false, "error": "..."} with a matching HTTP status."""
 import json
@@ -53,7 +53,15 @@ def validate(path, body):
         raise ApiError(400, "send {\"mode\": \"auto\"|\"off\"|\"breathe\"|\"fire\"} or {\"hex\": \"ff8800\"}")
     if path == "/v1/card":
         out = {k: str(body.get(k) or "")[:40] for k in ("label", "title", "a", "b")}
-        return {"kind": "card", **out}
+        kind = body.get("kind", "text")
+        if kind not in ("text", "ring", "progress", "scroll"):
+            raise ApiError(400, "'kind' must be text, ring, progress or scroll")
+        if kind in ("ring", "progress"):
+            try:
+                out["title"] = str(max(0, min(100, int(float(out["title"])))))      # the value goes in 'title' (0..100)
+            except ValueError:
+                raise ApiError(400, "for a ring / progress card 'title' is a number from 0 to 100") from None
+        return {"kind": "card", "k": {"text": "c", "ring": "r", "progress": "p", "scroll": "s"}[kind], **out}
     if path == "/v1/badge":
         name = str(body.get("name") or "").strip()[:8]
         if not name:

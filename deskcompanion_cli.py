@@ -52,8 +52,9 @@ def build_request(argv):
         return "POST", "/v1/" + c, {"n": num(a[0], c)}
     if c == "led" and len(a) == 1:
         return "POST", "/v1/led", {"mode": a[0]} if a[0] in ("auto", "off") else {"hex": a[0]}
-    if c == "card" and len(a) <= 4:
-        return "POST", "/v1/card", dict(zip(("label", "title", "a", "b"), a))
+    if c == "card" and len(a) <= 5:
+        body = dict(zip(("label", "title", "a", "b", "kind"), a))                # kind: text | ring | progress | scroll
+        return "POST", "/v1/card", body
     if c == "badge" and len(a) == 2:
         return "POST", "/v1/badge", {"name": a[0], "n": num(a[1], "count")}
     if c == "press" and len(a) == 1:

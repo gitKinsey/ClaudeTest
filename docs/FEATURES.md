@@ -116,7 +116,73 @@ Everything here needs **no extra hardware**. Items marked *firmware 1.3* are ign
 | **Mouse wheel with Ctrl / Shift / Alt, and sideways scroll** (*firmware 1.4*) -> zoom, horizontal scroll actions | `parseMouse` `mods` / `h` | Emulator `t_actions14` (accepted / refused specs, runs without a crash). **Whether the PC really zooms is untested.** |
 | **LED effects** breathe / fire and a notification **alert** flash (*firmware 1.4*); also via the local API and scheduled actions | `cmd:"led"` | Emulator `t_actions14`; `scheduler_test.py`, `bridge_test.py` |
 
-**Not built yet** (still on the idea list): key chords and tap-dance, sticky modifiers, dial as window switcher / per-app volume, per-layer wallpapers, theme packs, screen transitions, boot animation, display rotation, QR code / spectrum / album-art / lyrics screens, sound-reactive LED, localisation, multi-pad, accessibility pass, firmware rollback, latency monitor.
+## Batch 3 on `overkill` (app 1.5 / firmware 1.5)
+
+"Proof" says what ran here. **QEMU** = Espressif's ESP32-S3 emulator running the real firmware (no display, no real GPIO / USB). Everything that depends on real hardware or a real operating system is listed under *Not verified* below.
+
+### Computer actions (host ops, run by the app; the pad only asks)
+
+| Feature | Where | Proof |
+|---|---|---|
+| **Per-program volume** (the program in front, or `spotify:+5`), **Do Not Disturb**, **audio output** switch, **microphone mute** | `desk_lib/sysactions.py` | `tools/sysops_test.py` with canned `pactl` / `gsettings` / `osascript` / `reg` / `nircmd` output for Linux, macOS and Windows |
+| **Screenshot to a folder**, **translate the clipboard**, **ask the AI** (your own Anthropic key), **call a web address**, **window layouts** (save / restore positions), **clipboard history** (last 9, memory only) | `sysactions`, `netactions`, `winlayout`, `cliphist` | `sysops_test.py`, `sysapp_test.py` (whitelist, switches, errors), network calls with injected fetchers |
+| **Plugins**: a Python file in a folder adds a key action (`plugin` op, argument `name:arg`); off until switched on; only runs from a key you assigned | `desk_lib/plugins.py`, Device -> This app | `tools/appextras_test.py`, `appglue_test.py` (load errors reported per file, whitelist refuses an unassigned request) |
+| **Cover art / QR code on the pad** (ops `art` / `qr`): made on the PC, sent as a one-frame GIF into a spare slot | `desk_lib/padimage.py` | `tools/data_test.py` (crop, GIF bytes, QR image, upload through the simulated pad). Reading the cover needs `playerctl` (Linux) / Spotify (macOS) |
+
+### Scripts, profiles, automation
+
+| Feature | Where | Proof |
+|---|---|---|
+| **Script commands**: `exec`, `card`, `alert`, `layout`, `http`, `ask`, `translate`, `moveto` / `clickat`, `do <host action>`, `jitter`, `if var ...`; **templates**, **version history** (10 per script), **import from an address** | `desk_lib/scripting.py`, `scripts_page.py` | `scripting_test.py`, `scripts_test.py` |
+| **Profiles**: time windows, **game mode** (a fullscreen game switches the pad), **remembered layer per program**, site presets | `activewin.py`, `presets.py` | `profiles_test.py` |
+| **Dim on lock / fullscreen** (uses the pad's `dim` command; older pads: brightness) | `desk_lib/screenstate.py` | `profiles_test.py` |
+| **LED sources**: CPU load, **time-of-day mood**, **sound-reactive** (microphone / loopback input, `pip install sounddevice numpy`), **LED alerts** for new mail badges, a CI result, an event in 10 minutes | `desk_lib/ledfx.py`, `audio.py` | `data_test.py` (band separation with synthetic tones, mood curve, alert rules, thread with a fake input stream). The microphone itself is **not verified** |
+
+### Info cards and data
+
+| Feature | Where | Proof |
+|---|---|---|
+| **Quote of the day**, **birthdays / anniversaries**, **ping** (TCP connect time), **website up?**, **synced lyrics** (LRCLIB) | `desk_lib/extras.py`, `lyrics.py` | `data_test.py` (every builder with injected network / clock) |
+| **Progress bars** (year / month / week / day / working day, daily goal from a snippet counter), **battery**, **disk**, **CPU load**, **moon phase**, **rain chance (12 h)** as rings; **sunrise / sunset**, **network speed**, **the program in front**; long lines scroll (*firmware 1.5*, older pads get a plain card) | `extras.py`, firmware `sceneInfo` | `data_test.py` (moon phases against known dates, NOAA sun times against known cities, polar day / night, speeds from counter deltas, forecast peak); QEMU `t_fw15` (the three new card kinds render differently, scrolling text moves) |
+| **Local API cards with a kind**: `POST /v1/card {"kind":"ring"|"progress"|"scroll","title":"73"}` - a "single metric" or build-progress screen driven by any program | `desk_lib/bridge.py`, `deskcompanion_cli.py card LABEL 73 a b ring` | `bridge_test.py`, `automation_test.py` |
+
+### The app itself
+
+| Feature | Where | Proof |
+|---|---|---|
+| **Accent colour** (5), **UI size** (80-150 %), **dark / light / follow system**, **languages** (German, Spanish, French for navigation, buttons and headings; restart needed) | `desk_lib/ui.py`, `i18n.py`, `appcard.py` | `tools/appglue_test.py` (theme file carries the accent, widgets are translated, invalid values normalised) |
+| **Update check** (asks GitHub's releases API, never installs), **tips** on the Home page (one unused feature at a time), **global hotkey** for the command palette (`pynput`), **undo / redo** of key assignments (Ctrl+Z / Ctrl+Y), **live mirror** of the pad's real screen, **auto-heal** (an upload whose read-back differs is sent once more), **latency test**, **USB power estimate**, **boot report**, **rollback** button | `updates.py`, `tips.py`, `hotkey.py`, `history.py`, `diag.py`, `appcard.py` | `appextras_test.py`, `appglue_test.py` (auto-heal against a simulated pad that corrupts the first write; mirror shows a frame; hotkey with a fake backend), `fw15_test.py` |
+| **Several pads on one PC**: `--config pad2.json --port COM7 --api-port 8766` | `companion_app.py` | `appglue_test.py` (flag parsing). Not run with two real pads |
+| **Python client** `deskcompanion_client.py` and **protocol document** `docs/PROTOCOL.md` | repo root, docs | `appextras_test.py` talks to it through a fake serial port |
+| **Share codes**: one layer (keys, custom actions, gestures) as a `DC1:...` text; the importer decodes with a size cap and validates every action before touching your settings | `desk_lib/sharecode.py`, Device -> Backup | `appglue_test.py` (round trip, undo, 13 kinds of hostile / broken codes change nothing) |
+| **Mouse recorder** (pointer movement as relative steps, clicks, long presses, wheel) next to the keystroke recorder | `desk_lib/recorder.py`, Macro page "also the mouse" | `appextras_test.py`, `features_test.py` (fake listeners). The pad can only move the pointer relatively, so a recording replays from wherever the pointer is |
+| **Diagnostic .zip** (report + settings with all secrets removed + the pad's boot log) | `desk_lib/diag.py`, Diagnostics tab | `appextras_test.py`, `appglue_test.py` (an API key never appears in the zip) |
+
+### Firmware 1.5
+
+| Feature | Where | Proof |
+|---|---|---|
+| **Colour themes** (cyan, high contrast, night red, terminal green, amber, mono, **seasons** by month), **per-layer tint** | `themeOf()` / `applyTheme()`, `settings {"theme","tint"}` | QEMU `t_fw15`: the six fixed themes render differently, seasons differs from default, persists over a power cycle |
+| **Display rotation** (0 / 90 / 180 / 270), **pixel shift** against burn-in, **fade-in** after a screen change, **start-up animation + your own splash name** | `applyRotation()`, `pushScreen()`, `bootAnimRun()` | QEMU: settings round-trip and persistence, backlight ramps (`bl` 0 -> 200), boot animation runs on every boot of the suite. **Rotation / shift need a real panel to be seen** |
+| **Clock faces**: smooth analog sweep, words ("HALF PAST TEN"); **screensaver styles**: plasma, fire, lava lamp, Game of Life | `sceneClock*`, `sceneSaver` | QEMU `t_fw15`: seven saver styles and the clock faces render and all differ |
+| **Screens 13-20**: Pong, Breakout (3 lives, bricks), Flappy, Game of Life, **pixel pet** (food / fun / rest, saved), Simon, **diagnostics** (4 pages: start-up, resets, link + memory, storage + display), **sound bars** (the app sends the spectrum) | firmware `scene*`, `modeKey`, `modeDial`, `gamesTick`; 20-bit `mode_mask` | QEMU `t_fw15`: all eight render and differ; pong / breakout / flappy start, steer, end; life step / clear / glider / speed; pet feed / play / sleep / persists; Simon plays a real round (the test reads the sequence back); diagnostics pages differ; bars follow `viz` |
+| **Key chords** (two neighbouring keys within 45 ms), **triple tap**, **key repeat** (hold = repeat after 400 ms, every 90 ms), **dial double / triple click**, **dial lock** | `KeyPipeline`, `GestureFsm`, slots 10-15, `settings {"repeat_mask","dial_lock"}` | QEMU: `key_test` replays key timing through the same state machine with 1 ms steps (chord window edges, chord vs. hold / triple, plain keys unaffected, short taps still delivered); virtual chord / dial-click / triple presses run their actions. **The real GPIO timing of the buttons is not verified** |
+| **Layer while held**: assign "Layer 2 / 3 while the key is held" as a key's *hold* action; the layer returns when you let go | `ST_LAYER` value 200+, `G_HOLD_END` | QEMU `t_fw15` (hold -> layer 2, release -> back; release without hold does nothing; from layer 3 and back) |
+| **Pad functions** on any key (`fx`): lock the dial, next theme, rotate, next / previous screen, brighter / dimmer, **sticky Ctrl / Shift / Alt / Win for the next key**, **popup menu** of the layer's keys, **window switcher on the dial** (Alt/Cmd held between detents) | `parseFx()`, `fxRun()`, `switcherStep()`, `scenePopup()` | QEMU `t_fw15`: each runs, latch is consumed by the next combo, popup picks with dial / click / key and times out, switcher holds Alt and lets go. The keystrokes reaching a real computer are **not verified** |
+| **Key names** (`labels`): the pad shows the pressed key's name (toast) and names in the popup; the app derives them from the key map and sends them with every upload | `cmdLabels()`, `showToast()` | QEMU (validation, persistence, toast appears and disappears), `fw15_test.py` |
+| **`dim` command** (host dims the pad, not saved, ends by itself when the host goes silent for 8 s), **boot log** (start-up notes, reset counters by cause, USB link up / down counts, heap), **rollback** (boots the other OTA slot when one is stored) | `cmdDim`, `cmdBootLog`, `cmdRollback` | QEMU: all three; rollback is refused with `no_previous` on the emulator. **A real rollback after a Wi-Fi update is not verified** |
+| **Konami code** (dial right right left left, K1 K2 K1 K2 K5): rainbow ring and LED for 6 s, counter saved | `konamiFeed()` | QEMU `t_fw15` |
+| **Pomodoro statistics** ("TODAY n" on the focus screen, saved per day) | `pomoCredit()` | Counting is simple; a full 1-minute session was **not** run in QEMU (reads 0 in the tests) |
+
+### Not verified (no hardware / no real OS here)
+
+* Everything on a real Windows / macOS machine: the Windows registry and PowerShell calls, `pycaw`, Do-Not-Disturb, window layouts, tray icon, autostart, global hotkey, per-program volume.
+* The pad's real display: rotation, pixel shift, fade, seasonal colours, the boot animation's look, anything that depends on the real TFT driver.
+* The display-start-up deadline (cyan LED / no connection after flashing the prebuilt image) was fixed from the evidence we had; whether it cures every case on the user's board is unconfirmed.
+* USB HID from the pad to a real computer (the emulator has no USB).
+* Sound-reactive LED / sound bars with a real microphone.
+
+**Still not built**: per-layer wallpapers, theme *packs* (downloadable), an on-pad QR encoder (QR codes are made in the app and sent as a picture), voice features.
 
 ## Known limits (honest list)
 

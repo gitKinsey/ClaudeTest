@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a double-click Desk Companion with PyInstaller (Windows .exe / macOS .app / Linux binary), zipped into dist/.
 
-    pip install pyinstaller customtkinter pyserial psutil pillow pynput esptool
+    pip install pyinstaller customtkinter pyserial psutil pillow pynput esptool qrcode pystray
     python packaging/build.py
 """
 import os

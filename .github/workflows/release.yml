@@ -24,7 +24,7 @@ jobs:
       - name: Linux: Tk
         if: matrix.name == 'linux'
         run: sudo apt-get update && sudo apt-get install -y python3-tk xvfb
-      - run: pip install customtkinter pyserial psutil pillow pynput esptool pyinstaller
+      - run: pip install customtkinter pyserial psutil pillow pynput esptool pyinstaller qrcode pystray
       - name: Windows: volume mirroring
         if: matrix.name == 'windows'
         run: pip install pycaw

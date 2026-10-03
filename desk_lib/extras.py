@@ -3,6 +3,7 @@ Plain functions (network / git calls are injectable) so they are testable withou
 Every card is {"k","label","t","a","b"} like feeds.py; text is folded to ASCII for the pad's fonts."""
 import datetime as dt
 import json
+import math
 import re
 import subprocess
 import urllib.error
@@ -14,9 +15,11 @@ from desk_lib.feeds import ascii_fold
 KINDS = {"countdown": "Countdown to a date", "worldclock": "World clock", "git": "Git repository status",
          "ci": "GitHub Actions status", "crypto": "Crypto price", "quote": "Quote of the day", "birthday": "Birthdays / anniversaries",
          "ping": "Is a server up? (ping)", "http": "Is a website up? (HTTP)", "lyrics": "Lyrics of the playing song",
-         "progress": "Progress of the year / month / week / day (bar)", "battery": "Laptop battery (ring)", "disk": "Disk usage (ring)", "load": "CPU load (ring)"}
+         "progress": "Progress of the year / month / week / day (bar)", "battery": "Laptop battery (ring)", "disk": "Disk usage (ring)", "load": "CPU load (ring)",
+         "moon": "Moon phase (ring)", "sun": "Sunrise and sunset", "network": "Network speed", "goal": "Daily goal (counter ring)", "rain": "Rain chance, next 12 hours (ring)",
+         "window": "The program in front"}
 TTL = {"countdown": 30, "worldclock": 15, "git": 20, "ci": 120, "crypto": 120, "quote": 600, "birthday": 600, "ping": 20, "http": 30, "lyrics": 2,
-       "progress": 60, "battery": 30, "disk": 120, "load": 2}       # seconds between refreshes
+       "progress": 60, "battery": 30, "disk": 120, "load": 2, "moon": 600, "sun": 300, "network": 2, "goal": 5, "rain": 900, "window": 1}       # seconds between refreshes
 
 QUOTES = [
     ("Well begun is half done.", "Aristotle"), ("Simplicity is the ultimate sophistication.", "Leonardo da Vinci"),
@@ -79,8 +82,14 @@ def validate(item):
     elif t == "http":
         if not re.fullmatch(r"https?://[^\s]+", a):
             raise ValueError("enter a web address starting with http:// or https://")
-    elif t == "lyrics" or t in ("battery", "load"):
+    elif t == "lyrics" or t in ("battery", "load", "moon", "network", "window", "rain"):
         a = ""
+    elif t == "sun":
+        if a:
+            parse_latlon(a)
+    elif t == "goal":
+        if not re.fullmatch(r"[\w.\- ]{1,24}:\d{1,6}", a):
+            raise ValueError("enter  counter-name:target , e.g.  water:8  (the counter is the {counter:water} of a snippet key)")
     elif t == "progress":
         a = a.lower() or "year"
         if a not in ("year", "month", "week", "day", "work"):
@@ -351,6 +360,101 @@ def load_card(label, cpu=None, ram=None):
     return {"k": "r", "label": ascii_fold(label or "CPU", 24).upper(), "t": str(int(round(cpu))), "a": "CPU load", "b": f"RAM {int(round(ram or 0))}%"}
 
 
+# ---------------------------------------------------------------- moon, sun, network, goal, rain
+SYNODIC = 29.530588853
+_NEW_MOON = dt.datetime(2000, 1, 6, 18, 14)                        # a known new moon (UTC)
+PHASES = ("New moon", "Waxing crescent", "First quarter", "Waxing gibbous", "Full moon", "Waning gibbous", "Last quarter", "Waning crescent")
+
+
+def moon_card(label, now=None):
+    now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    age = ((now - _NEW_MOON).total_seconds() / 86400.0) % SYNODIC
+    illum = (1 - math.cos(2 * math.pi * age / SYNODIC)) / 2 * 100
+    name = PHASES[int((age / SYNODIC * 8) + 0.5) % 8]
+    return {"k": "r", "label": ascii_fold(label or "MOON", 24).upper(), "t": str(int(round(illum))), "a": name, "b": f"day {age:.0f} of 29.5"}
+
+
+def parse_latlon(text):
+    m = re.fullmatch(r"\s*(-?\d{1,2}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)\s*", str(text))
+    if not m or abs(float(m.group(1))) > 90 or abs(float(m.group(2))) > 180:
+        raise ValueError("enter the place as  47.37, 8.54  (latitude, longitude)")
+    return float(m.group(1)), float(m.group(2))
+
+
+def sun_times(lat, lon, day, utc_offset_h):
+    """NOAA's solar calculator -> (sunrise, sunset) as local datetime.time, or (None, None) for polar day / night."""
+    n = day.timetuple().tm_yday
+    g = 2 * math.pi / 365 * (n - 1)
+    eqt = 229.18 * (0.000075 + 0.001868 * math.cos(g) - 0.032077 * math.sin(g) - 0.014615 * math.cos(2 * g) - 0.040849 * math.sin(2 * g))
+    decl = 0.006918 - 0.399912 * math.cos(g) + 0.070257 * math.sin(g) - 0.006758 * math.cos(2 * g) + 0.000907 * math.sin(2 * g) - 0.002697 * math.cos(3 * g) + 0.00148 * math.sin(3 * g)
+    lat_r = math.radians(lat)
+    cos_ha = math.cos(math.radians(90.833)) / (math.cos(lat_r) * math.cos(decl)) - math.tan(lat_r) * math.tan(decl)
+    if cos_ha > 1 or cos_ha < -1:
+        return None, None
+    ha = math.degrees(math.acos(cos_ha))
+
+    def at(minutes_utc):
+        mins = (minutes_utc + utc_offset_h * 60) % 1440
+        return dt.time(int(mins // 60), int(mins % 60))
+    return at(720 - 4 * (lon + ha) - eqt), at(720 - 4 * (lon - ha) - eqt)
+
+
+def sun_card(label, latlon, now=None, utc_offset_h=None):
+    now = now or dt.datetime.now()
+    if utc_offset_h is None:
+        utc_offset_h = (now.astimezone().utcoffset() or dt.timedelta()).total_seconds() / 3600
+    rise, sset = sun_times(latlon[0], latlon[1], now.date(), utc_offset_h)
+    if rise is None:
+        polar = (latlon[0] > 0) == (now.month in (4, 5, 6, 7, 8, 9))                  # the sun stays up in the hemisphere's summer, stays down in its winter
+        return {"k": "c", "label": ascii_fold(label or "SUN", 24).upper(), "t": "polar day" if polar else "polar night", "a": "no sunrise or sunset today", "b": ""}
+    mins = now.hour * 60 + now.minute
+    r, s_ = rise.hour * 60 + rise.minute, sset.hour * 60 + sset.minute
+    up = r <= mins < s_
+    light = (s_ - r) % 1440
+    return {"k": "c", "label": ascii_fold(label or "SUN", 24).upper(), "t": f"{rise:%H:%M} - {sset:%H:%M}", "a": "the sun is up" if up else "the sun is down", "b": f"daylight {light // 60}h {light % 60:02d}m"}
+
+
+_NET_LAST = {}
+
+
+def network_card(label, counters=None, now=None):
+    """Download / upload speed since the previous call (the first call has nothing to compare with yet)."""
+    import time                                                    # noqa: PLC0415
+    if counters is None:
+        import psutil                                              # noqa: PLC0415
+        counters = psutil.net_io_counters()
+    t = now if now is not None else time.monotonic()
+    prev = _NET_LAST.get("v")
+    _NET_LAST["v"] = (t, counters.bytes_recv, counters.bytes_sent)
+    f = lambda b: f"{b / 1e6:.1f} MB/s" if b >= 1e6 else f"{b / 1e3:.0f} KB/s"   # noqa: E731
+    if not prev or t <= prev[0]:
+        return {"k": "c", "label": ascii_fold(label or "NETWORK", 24).upper(), "t": "...", "a": "measuring", "b": ""}
+    dt_ = t - prev[0]
+    return {"k": "c", "label": ascii_fold(label or "NETWORK", 24).upper(), "t": "D " + f((counters.bytes_recv - prev[1]) / dt_), "a": "U " + f((counters.bytes_sent - prev[2]) / dt_), "b": ""}
+
+
+def goal_card(label, arg, counters):
+    name, _, target = arg.rpartition(":")
+    value, target = int(counters.get(name.strip(), 0)), max(1, int(target))
+    pct = min(100, value * 100 // target)
+    return {"k": "p", "label": ascii_fold(label or name or "GOAL", 24).upper(), "t": str(pct), "a": f"{value} of {target}", "b": "done!" if value >= target else f"{target - value} to go"}
+
+
+def rain_card(label, latlon, fetch=None, now=None):
+    fetch = fetch or _fetch_json
+    d = fetch("https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(
+        {"latitude": latlon[0], "longitude": latlon[1], "hourly": "precipitation_probability", "forecast_days": 2, "timezone": "auto"}))
+    times, probs = (d.get("hourly") or {}).get("time") or [], (d.get("hourly") or {}).get("precipitation_probability") or []
+    now = now or dt.datetime.now()
+    cur = now.strftime("%Y-%m-%dT%H:00")
+    start = next((i for i, t in enumerate(times) if t >= cur), None)
+    if start is None or not probs:
+        raise ValueError("no forecast available")
+    window = [(p if p is not None else 0, times[start + i]) for i, p in enumerate(probs[start:start + 12])]
+    best = max(window)
+    return {"k": "r", "label": ascii_fold(label or "RAIN", 24).upper(), "t": str(int(best[0])), "a": "chance of rain, 12 h", "b": f"peak at {best[1][11:16]}"}
+
+
 _LYRICS = None
 
 
@@ -373,6 +477,27 @@ def build(item, **kw):
         return ping_card(label, arg, kw.get("connect"), kw.get("clock"))
     if t == "http":
         return http_card(label, arg, kw.get("fetch"), kw.get("clock"))
+    if t == "moon":
+        return moon_card(label, kw.get("now"))
+    if t == "sun":
+        ll = parse_latlon(arg) if arg else kw.get("latlon")
+        if not ll or ll[0] is None:
+            raise ValueError("enter a place (latitude, longitude) or set a city under Weather")
+        return sun_card(label, ll, kw.get("now"), kw.get("utc_offset_h"))
+    if t == "network":
+        return network_card(label, kw.get("counters"), kw.get("clock"))
+    if t == "goal":
+        return goal_card(label, arg, kw.get("counter_values") if kw.get("counter_values") is not None else {})
+    if t == "rain":
+        ll = kw.get("latlon")
+        if not ll or ll[0] is None:
+            raise ValueError("set a city under Weather first (the forecast needs a place)")
+        return rain_card(label, ll, kw.get("fetch"), kw.get("now"))
+    if t == "window":
+        w = kw.get("window") or ("", "")
+        if not w[0] and not w[1]:
+            raise ValueError("no program in front")
+        return {"k": "c", "label": ascii_fold(label or "ACTIVE", 24).upper(), "t": ascii_fold(w[0], 24), "a": ascii_fold(w[1], 40), "b": ""}
     if t == "progress":
         return progress_card(label, arg, kw.get("now"))
     if t == "battery":

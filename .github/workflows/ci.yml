@@ -19,7 +19,7 @@ jobs:
       - name: Python packages
         run: |
           python3 -m venv .venv
-          .venv/bin/pip install customtkinter pyserial psutil pillow pyflakes esptool
+          .venv/bin/pip install customtkinter pyserial psutil pillow pyflakes esptool qrcode
       - name: Lint, unit tests, headless GUI tests
         run: PYTHON=.venv/bin/python tools/run_app_tests.sh
 

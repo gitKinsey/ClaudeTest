@@ -208,6 +208,69 @@ pump(120, lambda: getattr(app.devtab, "_snap_img", None) is not None)
 assert getattr(app.devtab, "_snap_img", None) is not None, "mirror shows the pad's screen"
 app.devtab.mirror_var.set(False)
 
+
+# ---------------------------------------------------------------- share codes
+from desk_lib import sharecode   # noqa: E402
+app.cfg["custom"]["My snippet"] = {"type": "text", "val": "hello"}
+app.cfg["layers"][1]["3"] = {"cat": "Custom", "action": "My snippet"}
+app.cfg["layers"][1]["1"] = {"cat": "Editing", "action": "Cut"}
+app.cfg["gestures"]["1:2:hold"] = {"cat": "Media", "action": "Mute"}
+app.cfg["gestures"]["1:10:press"] = {"cat": "Custom", "action": "My snippet"}
+code = app.layer_share_code(1)
+assert code.startswith("DC1:") and len(code) < 3000 and "\n" not in code
+pl = sharecode.decode(code)
+assert pl["map"]["1"] == {"cat": "Editing", "action": "Cut"} and pl["custom"] == {"My snippet": {"type": "text", "val": "hello"}} and "2:hold" in pl["gestures"] and "10:press" in pl["gestures"]
+# into a different layer of a "fresh" config: everything arrives
+orig_custom = dict(app.cfg["custom"])
+del app.cfg["custom"]["My snippet"]
+for k in [k for k in app.cfg["gestures"] if k.startswith("2:")]:
+    del app.cfg["gestures"][k]
+prev2 = dict(app.cfg["layers"][2]["1"])
+msg = app.import_layer_share_code("  " + code[:40] + "\n" + code[40:] + "  ", layer=2)
+assert "layer 3" in msg and app.cfg["layers"][2]["1"] == {"cat": "Editing", "action": "Cut"} and app.cfg["custom"]["My snippet"] == {"type": "text", "val": "hello"}
+assert app.cfg["gestures"]["2:2:hold"] == {"cat": "Media", "action": "Mute"} and app.cfg["gestures"]["2:10:press"]["action"] == "My snippet" and "1:2:hold" in app.cfg["gestures"]
+assert app.cfg["map"] is app.cfg["layers"][app.edit_layer], "the editor still works on the same dict"
+app.edit_undo()
+assert app.cfg["layers"][2]["1"] == prev2, "undo brings the replaced layer back"
+# hostile / broken codes change nothing
+before = json.dumps(app.cfg["layers"], sort_keys=True) + json.dumps(app.cfg["custom"], sort_keys=True)
+import base64, zlib   # noqa: E401,E402
+def forge(obj): return sharecode.PREFIX + base64.urlsafe_b64encode(zlib.compress(json.dumps(obj).encode())).decode().rstrip("=")   # noqa: E704
+good = sharecode.decode(code)
+bad_codes = {
+    "not a code": "hello", "wrong prefix": "DC2:abcd", "bad characters": "DC1:abc$%&", "truncated": code[:len(code) // 2], "empty": "",
+    "bomb": sharecode.PREFIX + base64.urlsafe_b64encode(zlib.compress(b"[" + b"0," * 200000 + b"0]")).decode().rstrip("="),
+    "future version": forge(dict(good, v=2)),
+    "missing keys": forge(dict(good, map={"1": good["map"]["1"]})),
+    "unknown action": forge(dict(good, map=dict(good["map"], **{"4": {"cat": "Editing", "action": "Format C:"}}))),
+    "invalid custom spec": forge(dict(good, custom={"Evil": {"type": "banana", "val": 1}}, map=dict(good["map"], **{"4": {"cat": "Custom", "action": "Evil"}}))),
+    "custom without definition": forge(dict(good, custom={}, map=dict(good["map"], **{"4": {"cat": "Custom", "action": "Ghost"}}))),
+    "bad gesture key": forge(dict(good, gestures={"99:hold": {"cat": "Media", "action": "Mute"}})),
+    "gesture to nowhere": forge(dict(good, gestures={"2:hold": {"cat": "Media", "action": "Nope"}})),
+    "not an object": sharecode.PREFIX + base64.urlsafe_b64encode(zlib.compress(b"[1,2]")).decode().rstrip("="),
+}
+for name, bad in bad_codes.items():
+    try:
+        app.import_layer_share_code(bad, layer=0)
+        raise SystemExit(f"accepted a {name} code")
+    except ValueError:
+        pass
+assert json.dumps(app.cfg["layers"], sort_keys=True) + json.dumps(app.cfg["custom"], sort_keys=True) == before, "a refused code changed nothing"
+app.cfg["custom"] = orig_custom
+
+# ---------------------------------------------------------------- diagnostic zip
+import zipfile   # noqa: E402
+app.cfg["ai"]["key"] = "sk-secret-test-key"
+zp = os.path.join(tmp, "report.zip")
+app.devtab.export_zip(zp)
+assert pump(60, lambda: os.path.exists(zp)), "zip written"
+pump(10)
+z = zipfile.ZipFile(zp)
+assert {"report.txt", "settings_redacted.json"} <= set(z.namelist()), z.namelist()
+alltext = b"".join(z.read(n) for n in z.namelist())
+assert b"sk-secret-test-key" not in alltext and b"DeskCompanion diagnostic report" in alltext and b'"layers"' in alltext
+assert "Report saved" in app.status.cget("text")
+
 # ---------------------------------------------------------------- the card builds and shows values
 assert "mA" in app.app_card.power_lbl.cget("text")
 app.app_card.pl_refresh()

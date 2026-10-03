@@ -143,6 +143,10 @@ assert api("POST", "/v1/press", {"key": 1})[0] == 200
 assert api("POST", "/v1/card", {"label": "BUILD", "title": "green", "a": "main", "b": "42 tests"})[0] == 200
 assert app.cfg["info"]["custom"] and app.cfg["info"]["c_t"] == "green"
 assert api("POST", "/v1/card", {})[0] == 200 and not app.cfg["info"]["custom"]
+assert api("POST", "/v1/card", {"label": "DISK", "title": "63", "a": "of 500 GB", "kind": "ring"})[0] == 200 and app.cfg["info"]["c_k"] == "r"
+assert [c for c in app._info_collect()[0] if c["label"] == "DISK"][0]["k"] in ("r", "c")      # a pad without the 1.5 card kinds shows it as a plain card
+assert api("POST", "/v1/card", {"label": "X", "title": "oops", "kind": "ring"})[0] == 400
+api("POST", "/v1/card", {})
 assert api("POST", "/v1/badge", {"name": "mail", "n": 4})[0] == 200 and {"name": "mail", "n": 4} in app.badges.get()
 assert api("POST", "/v1/layer", {"n": 7})[0] == 400 and api("GET", "/v1/status", token="x" * 20)[0] == 401
 app.dev.disconnect(); app._on_disconnected()
