@@ -10,9 +10,10 @@ import subprocess
 import webbrowser
 from urllib.parse import urlparse
 
-from desk_lib import textops
+from desk_lib import netactions, sysactions, textops
 
 SAFE_URL_SCHEMES = ("http", "https", "mailto")
+NEW_OPS = ("appvol", "dnd", "audio_out", "mic", "shot", "translate", "ai", "webhook", "layout", "cliphist")
 
 
 def collect_allowed(layer_maps, customs, resolve):
@@ -43,11 +44,15 @@ def collect_allowed(layer_maps, customs, resolve):
 
 class HostActions:
     def __init__(self, allowed_fn, allow_shell_fn, type_clipboard=None, notify=None, opener=None, runner=None, system=None,
-                 type_text=None, read_clipboard=None, counter=None, script_runner=None):
+                 type_text=None, read_clipboard=None, counter=None, script_runner=None, sysact=None, layouts=None, layout_store=None, cliphist=None,
+                 cfg_get=None, focus_program=None, net_fetch=None):
         self.allowed_fn, self.allow_shell_fn = allowed_fn, allow_shell_fn
         self.type_clipboard, self.notify = type_clipboard, notify
         self.type_text, self.read_clipboard, self.counter = type_text, read_clipboard, counter   # snippets / clipboard transforms
         self.script_runner = script_runner                                                        # callable(name) -> message, for op "script"
+        self.sysact, self.layouts, self.layout_store, self.cliphist = sysact, layouts, layout_store, cliphist   # OS actions, window layouts, clipboard history
+        self.cfg_get = cfg_get or (lambda key, default=None: default)                              # app settings (AI key, screenshot folder)
+        self.focus_program, self.net_fetch = focus_program or (lambda: ""), net_fetch
         self.open_url = opener or webbrowser.open
         self.popen = runner or subprocess.Popen
         self.system = system or platform.system()
@@ -96,6 +101,8 @@ class HostActions:
                 if out:
                     self.type_text(out)
                 return True, f"typed {len(out)} characters"
+            if op in NEW_OPS:
+                return True, self._new_op(op, arg)
             if op == "script":
                 if not self.script_runner:
                     return False, "scripts are not available here"
@@ -107,6 +114,54 @@ class HostActions:
         except Exception as e:                             # noqa: BLE001
             return False, f"{op} failed: {e}"
         return False, f"unknown host action '{op}'"
+
+    def _new_op(self, op, arg):
+        sa = self.sysact or sysactions.SysActions()
+        if op == "appvol":
+            prog, _, amt = arg.rpartition(":") if ":" in arg else ("", "", arg)
+            return sa.app_volume(prog.strip() or self.focus_program(), sysactions.parse_volume_arg(amt))
+        if op == "dnd":
+            return sa.dnd(arg.strip().lower())
+        if op == "audio_out":
+            return sa.audio_output(arg.strip())
+        if op == "mic":
+            return sa.microphone(arg.strip().lower())
+        if op == "shot":
+            folder = "" if arg.strip().lower() in ("", "default", ".") else arg.strip()
+            return "screenshot saved: " + str(sa.screenshot(folder or self.cfg_get("shot_dir") or None))
+        if op == "translate":
+            if not self.type_text:
+                raise ValueError("typing text is not available here (pip install pynput)")
+            out = netactions.translate(self.read_clipboard() if self.read_clipboard else "", arg.strip(), self.net_fetch)
+            self.type_text(out)
+            return f"translated and typed {len(out)} characters"
+        if op == "ai":
+            if not self.type_text:
+                raise ValueError("typing text is not available here (pip install pynput)")
+            ai = self.cfg_get("ai") or {}
+            prompt = textops.expand(arg, {"clipboard": self.read_clipboard() if self.read_clipboard else "", "counter": self.counter})
+            out = netactions.ask_ai(prompt, ai.get("key", ""), ai.get("model") or "claude-haiku-4-5-20251001", self.net_fetch)
+            self.type_text(out)
+            return f"AI answer typed ({len(out)} characters)"
+        if op == "webhook":
+            return netactions.webhook(textops.expand(arg, {"clipboard": self.read_clipboard() if "{clipboard}" in arg and self.read_clipboard else "", "counter": self.counter}), self.net_fetch)
+        if op == "layout":
+            lay = self.layouts
+            store = self.layout_store() if callable(self.layout_store) else self.layout_store
+            if lay is None or store is None:
+                raise ValueError("window layouts are not available here")
+            word, _, name = arg.partition(" ")
+            if word.lower() == "save" and name.strip():
+                return f"layout '{name.strip()}' saved ({lay.save(store, name.strip())} windows)"
+            return f"layout '{arg.strip()}' restored ({lay.restore(store, arg.strip())} windows moved)"
+        if op == "cliphist":
+            if not self.cliphist or not self.type_text or not self.cfg_get("cliphist_on"):
+                raise ValueError("clipboard history is switched off (Device page -> Clipboard history)")
+            if not arg.strip().isdigit():
+                raise ValueError("cliphist needs a number: 1 = latest copy, 2 = the one before ...")
+            self.type_text(self.cliphist.get(int(arg)))
+            return "typed from the clipboard history"
+        raise ValueError(f"unknown action '{op}'")
 
     def _launch(self, arg):
         if self.system == "Windows":

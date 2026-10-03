@@ -488,3 +488,98 @@ class ChoicePanel:
         names = " / ".join(a for _c, a, _s in self.picks)
         label = (f"Alternate: {names}" if alt else f"Random: {names}")[:48]
         self.app.assign_spec(("toggle" if alt else "random", subs), label)
+
+
+class ComputerCard:
+    """Device page: settings for the computer-side actions (AI key, screenshot folder, clipboard history, window layouts)."""
+
+    def __init__(self, app, body):
+        self.app = app
+        cfg = app.cfg
+        ctk.CTkLabel(body, text="AI action", anchor="w", font=ui.font(13, "bold")).grid(row=0, column=0, columnspan=3, padx=6, pady=(2, 2), sticky="w")
+        r = ctk.CTkFrame(body, fg_color="transparent", border_width=0)
+        r.grid(row=1, column=0, columnspan=4, sticky="w", padx=6)
+        self.ai_key = ctk.CTkEntry(r, width=300, show="*", placeholder_text="Anthropic API key (sk-ant-...)")
+        self.ai_key.pack(side="left")
+        if cfg["ai"].get("key"):
+            self.ai_key.insert(0, cfg["ai"]["key"])
+        self.ai_model = ctk.CTkEntry(r, width=230, placeholder_text="model")
+        self.ai_model.pack(side="left", padx=6)
+        self.ai_model.insert(0, cfg["ai"].get("model", ""))
+        ctk.CTkButton(r, text="Save", width=70, command=self.save_ai).pack(side="left", padx=6)
+        ui.muted(body, "The 'Ask the AI' key action sends your prompt (and the clipboard, if you use {clipboard}) to the Claude API with YOUR key and types the answer. "
+                 "The key is stored in this app's settings file in plain text.", wraplength=860).grid(row=2, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 8))
+        ctk.CTkLabel(body, text="Screenshots", anchor="w", font=ui.font(13, "bold")).grid(row=3, column=0, padx=6, pady=(2, 2), sticky="w")
+        r = ctk.CTkFrame(body, fg_color="transparent", border_width=0)
+        r.grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 8))
+        self.shot_dir = ctk.CTkEntry(r, width=360, placeholder_text="folder (empty = your Pictures folder)")
+        self.shot_dir.pack(side="left")
+        if cfg.get("shot_dir"):
+            self.shot_dir.insert(0, cfg["shot_dir"])
+        ui.secondary_button(r, "Save", self.save_shot, width=70).pack(side="left", padx=6)
+        ui.secondary_button(r, "Take one now", self.shot_now, width=110).pack(side="left", padx=2)
+        ctk.CTkLabel(body, text="Clipboard history", anchor="w", font=ui.font(13, "bold")).grid(row=5, column=0, padx=6, pady=(2, 2), sticky="w")
+        r = ctk.CTkFrame(body, fg_color="transparent", border_width=0)
+        r.grid(row=6, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 8))
+        self.hist_var = tk.BooleanVar(value=bool(cfg.get("cliphist_on")))
+        ctk.CTkSwitch(r, text="Remember the last 9 copied texts (memory only, never saved)", variable=self.hist_var, command=self.hist_toggled).pack(side="left")
+        ui.secondary_button(r, "Forget them", lambda: app.cliphist.clear(), width=100).pack(side="left", padx=12)
+        ctk.CTkLabel(body, text="Window layouts", anchor="w", font=ui.font(13, "bold")).grid(row=7, column=0, padx=6, pady=(2, 2), sticky="w")
+        r = ctk.CTkFrame(body, fg_color="transparent", border_width=0)
+        r.grid(row=8, column=0, columnspan=4, sticky="w", padx=6)
+        self.layout_name = ctk.CTkEntry(r, width=170, placeholder_text="layout name, e.g. work")
+        self.layout_name.pack(side="left")
+        ctk.CTkButton(r, text="Save the current windows", width=170, command=self.save_layout).pack(side="left", padx=6)
+        ui.secondary_button(r, "Restore", self.restore_layout, width=80).pack(side="left", padx=2)
+        ui.secondary_button(r, "Delete", self.delete_layout, width=70).pack(side="left", padx=6)
+        self.layout_lbl = ui.muted(body, "", wraplength=860)
+        self.layout_lbl.grid(row=9, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 0))
+        self.refresh_layouts()
+
+    def save_ai(self):
+        self.app.cfg["ai"]["key"] = self.ai_key.get().strip()
+        self.app.cfg["ai"]["model"] = self.ai_model.get().strip() or "claude-haiku-4-5-20251001"
+        self.app.save_cfg()
+        self.app.set_status("AI settings saved")
+
+    def save_shot(self):
+        self.app.cfg["shot_dir"] = self.shot_dir.get().strip()
+        self.app.save_cfg()
+        self.app.set_status("Screenshot folder saved")
+
+    def shot_now(self):
+        self.save_shot()
+        self.app.bg(lambda: self.app.run_host("shot", "default"), lambda m: self.app.set_status(m), "Screenshot failed")
+
+    def hist_toggled(self):
+        self.app.cfg["cliphist_on"] = bool(self.hist_var.get())
+        self.app.save_cfg()
+        self.app.set_status("Clipboard history is on - copy something, then use the 'Type from clipboard history' action" if self.hist_var.get() else "Clipboard history is off and forgotten")
+
+    def refresh_layouts(self):
+        names = sorted(self.app.cfg["layouts"])
+        self.layout_lbl.configure(text="Saved: " + ", ".join(f"{n} ({len(self.app.cfg['layouts'][n])} windows)" for n in names) if names else
+                                  "No layouts yet. Arrange your windows, give the layout a name and press 'Save the current windows'. Then use the 'Window layout' key action.")
+
+    def _name(self):
+        n = self.layout_name.get().strip()
+        if not n or len(n) > 30:
+            self.app.set_status("Type a layout name (up to 30 characters)", error=True)
+        return n
+
+    def save_layout(self):
+        n = self._name()
+        if n:
+            self.app.bg(lambda: self.app.run_host("layout", f"save {n}"), lambda m: (self.app.save_cfg(), self.refresh_layouts(), self.app.set_status(m)), "Saving the layout failed")
+
+    def restore_layout(self):
+        n = self._name()
+        if n:
+            self.app.bg(lambda: self.app.run_host("layout", n), lambda m: self.app.set_status(m), "Restoring the layout failed")
+
+    def delete_layout(self):
+        n = self._name()
+        if n and self.app.cfg["layouts"].pop(n, None) is not None:
+            self.app.save_cfg()
+            self.refresh_layouts()
+            self.app.set_status(f"Layout '{n}' deleted")

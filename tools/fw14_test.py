@@ -25,7 +25,7 @@ assert ok("macro", [{"host": {"op": "notify", "arg": "a"}}, {"panic": True}])
 d = m.describe_spec
 assert d(("panic", None)).startswith("panic") and d(("toggle", [A, B])) == "alternate: notify: A  /  media key mute"
 assert d(("mouse", {"wheel": 2, "mods": ["CTRL"]})) == "scroll up 2 with Ctrl" and d(("mouse", {"wheel": 3, "h": True})) == "scroll left 3" and d(("random", [A, B])).startswith("random one of 2")
-assert len(m.MODE_CHOICES) == 12 and m.NUM_MODES == 12 and m.FW_BUNDLED == "1.4.0" and "ledfx" in m.NEW14_CAPS
+assert len(m.MODE_CHOICES) == 12 and m.NUM_MODES == 12 and m.FW_BUNDLED == "1.5.0" and "ledfx" in m.NEW14_CAPS
 for act in ("Panic: stop all macros",):
     assert ("Layers & Pad", act) in m.ACTION_INDEX
 assert ("Mouse", "Zoom In (Ctrl+Scroll)") in m.ACTION_INDEX and m.ACTION_INDEX[("Mouse", "Zoom In (Ctrl+Scroll)")][0][1]["mods"] == ["CTRL"]
@@ -38,7 +38,7 @@ assert px.gesture_text(8, "press") == "Dial pressed + turned right" and px.gestu
 
 # ---------------------------------------------------------------- the app
 def run(env):
-    for k in ("DESK_COMPANION_SIM_V12", "DESK_COMPANION_SIM_V13"):
+    for k in ("DESK_COMPANION_SIM_V12", "DESK_COMPANION_SIM_V13", "DESK_COMPANION_SIM_V14"):
         os.environ.pop(k, None)
     if env:
         os.environ[env] = "1"
@@ -57,7 +57,7 @@ def run(env):
     return app, app.dev.ser.sim, pump
 
 
-app, sim, pump = run(None)
+app, sim, pump = run("DESK_COMPANION_SIM_V14")
 notes = []
 app.notify = lambda t, msg, kind="ok": notes.append((t, msg))
 assert app.dev.info["fw"] == "1.4.0" and all(c in app.dev.info["caps"] for c in m.NEW14_CAPS) and app.dev.info["modes"] == 12

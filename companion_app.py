@@ -46,7 +46,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, automation, autobackup, autostart, backup, bridge, espota, extras, feeds, hostactions, padextras, presets, recorder, scheduler, scripting, scripts_page, textops, tray, wizards     # noqa: E402
+from desk_lib import activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, padextras, presets, recorder, scheduler, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
@@ -199,6 +199,12 @@ ACTION_KINDS = [("Open website", "url", "https://example.com", True), ("Start pr
                 ("Show notification", "notify", "message", True), ("Type the clipboard", "clipboard", "", False),
                 ("Type a snippet", "snippet", "text with {date} {time} {clipboard} {counter:name} {uuid} {random:1-6}", True),
                 ("Transform the clipboard", "clip", "", False),
+                ("Change this program's volume", "appvol", "up, down, +5, -10  or  spotify:+5", True), ("Do Not Disturb", "dnd", "on, off or toggle", True),
+                ("Switch audio output", "audio_out", "next, or part of a device name", True), ("Microphone mute", "mic", "toggle, mute or unmute", True),
+                ("Screenshot to a folder", "shot", "folder (empty = Device page setting / Pictures)", False),
+                ("Translate the clipboard", "translate", "language code: de, es, fr, ja ...", True),
+                ("Ask the AI", "ai", "prompt, e.g.  Summarize: {clipboard}", True), ("Call a web address", "webhook", "[GET|POST] https://address [body]", True),
+                ("Window layout", "layout", "save work   (or just: work  to restore it)", True), ("Type from clipboard history", "cliphist", "1 = latest copy ... 9", True),
                 ("Mouse click", "click", "left / right / middle / back / forward  (default: left)", False),
                 ("Mouse double click", "click", "left / right / middle  (default: left)", False),
                 ("Mouse scroll", "scroll", "amount: 1..20 up, -1..-20 down", True), ("Switch layer", "layer", "1, 2, 3, next or prev (default: next)", False)]
@@ -267,6 +273,13 @@ def normalize_config(cfg):
     for k, v in INFO_DEFAULTS.items():
         info.setdefault(k, v)
     cfg.setdefault("usage", {})                  # key press counters
+    cfg.setdefault("cliphist_on", False)         # remember the last copied texts (memory only)
+    cfg.setdefault("shot_dir", "")               # screenshot action folder ("" = Pictures)
+    ai = cfg.setdefault("ai", {})                # AI action: the user's own Anthropic API key (kept in this file in plain text) and model
+    ai.setdefault("key", "")
+    ai.setdefault("model", "claude-haiku-4-5-20251001")
+    if not isinstance(cfg.get("layouts"), dict):
+        cfg["layouts"] = {}                      # saved window layouts {name: [{process,title,x,y,w,h}]}
     cfg.setdefault("led_cpu", False)             # the pad's LED follows this computer's CPU load
     cfg.setdefault("tray", False)                # keep running in the system tray when the window is closed
     cfg.setdefault("counters", {})               # {counter:name} values used by snippets
@@ -833,9 +846,10 @@ def rgb565be_image(raw, w=240, h=240):
     return img
 
 
-FW_BUNDLED = "1.4.0"                     # version of firmware/DeskCompanion.bin shipped with this app
+FW_BUNDLED = "1.5.0"                     # version of firmware/DeskCompanion.bin shipped with this app
 LAYERS, GIF_SLOTS = 3, 4
-HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip", "script")
+HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip", "script",
+            "appvol", "dnd", "audio_out", "mic", "shot", "translate", "ai", "webhook", "layout", "cliphist")
 DEFAULT_LAYERS = [
     [{"type": "combo", "val": ["PRIMARY", "c"]}, {"type": "combo", "val": ["PRIMARY", "v"]}, {"type": "combo", "val": ["PRIMARY", "z"]},
      {"type": "media", "val": "PLAY_PAUSE"}, {"type": "media", "val": "MUTE"}, {"type": "media", "val": "VOL_UP"}, {"type": "media", "val": "VOL_DOWN"}],
@@ -916,6 +930,7 @@ def spec_ok(spec):
 
 NEW13_CAPS = ["hostx", "gestures", "dialaccel", "clockstyle", "saver", "nightdim"]       # firmware 1.3 additions (see hello "caps")
 NEW14_CAPS = ["screens", "pressturn", "toggle", "wheelmods", "ledfx", "reminders", "habits"]     # firmware 1.4 additions
+NEW15_CAPS = ["hostx2"]                                                                           # firmware 1.5 additions (more host ops; see hello "caps")
 SETTINGS_DEFAULT = {"dial_accel": 0, "clock_style": 0, "saver_s": 0, "saver_style": 1, "night_on": False, "night_from": 22, "night_to": 7, "night_level": 30, "mode_mask": 0x3F}
 SETTINGS_RANGE = {"dial_accel": (0, 2), "clock_style": (0, 3), "saver_s": (0, 3600), "saver_style": (1, 3), "night_from": (0, 23), "night_to": (0, 23), "night_level": (5, 255), "mode_mask": (1, 4095)}
 LEGACY_CMDS = {"layer", "info_cards", "gif_list", "gif_cfg", "factory", "boot_opt", "safe_retry", "ota"}   # unknown to firmware 1.1
@@ -934,6 +949,7 @@ class SimFirmware:
         self.wifi = bool(os.environ.get("DESK_COMPANION_SIM_WIFI"))        # firmware built with DC_ENABLE_WIFI=1 (default build: cable only)
         self.fw12 = bool(os.environ.get("DESK_COMPANION_SIM_V12"))          # behave like firmware 1.2.0 (layers, no gestures / settings / new host ops)
         self.fw13 = bool(os.environ.get("DESK_COMPANION_SIM_V13"))          # behave like firmware 1.3.0 (everything but the 1.4 screens / actions)
+        self.fw14 = bool(os.environ.get("DESK_COMPANION_SIM_V14"))          # behave like firmware 1.4.0 (everything but the 1.5 additions)
         self.reminders = [{"m": 0, "t": ""} for _ in range(3)]
         self.habits = {"names": ["WATER", "MOVE", "READ", "SLEEP", "FOCUS"], "today": [0] * 5}
         self._tgl = {}
@@ -960,7 +976,7 @@ class SimFirmware:
         self.display = None                   # (r, g, b) of an active "fill" test pattern, or a pattern name
 
     def fw_text(self):
-        return "1.2.0" if self.fw12 else "1.3.0" if self.fw13 else FW_BUNDLED
+        return "1.2.0" if self.fw12 else "1.3.0" if self.fw13 else "1.4.0" if self.fw14 else FW_BUNDLED
 
     def feed(self, data):
         self._buf += data
@@ -1084,7 +1100,7 @@ class SimFirmware:
             reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": self.fw_text(),
                    "layer": self.layer, "layers": LAYERS, "modes": 6 if (self.fw12 or self.fw13) else NUM_MODES, "gifs": len(self.gifs), "gif_rot": self.gif_rot,
                    "caps": ["layers", "mouse", "host", "info", "gifslots", "factory"] + ([] if self.fw12 else NEW13_CAPS) + ([] if self.fw12 or self.fw13 else NEW14_CAPS)
-                           + (["wifi", "ota"] if self.wifi else []),
+                           + ([] if self.fw12 or self.fw13 or self.fw14 else NEW15_CAPS) + (["wifi", "ota"] if self.wifi else []),
                    "mode": self.mode, "bright": self.bright, "os": self.osv, "gif": self.gif_present,
                    "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "synced": False, "layout": self.layout,
                    "hid": True, "disp": True, "fs": True, "fs_state": "ready", "safe": False, "led_pin": 21})
@@ -3774,6 +3790,7 @@ class App(ctk.CTk):
         self.dnd = DnD(self)
         self.edit_layer, self.pad_layer, self.hw_listener = 0, None, None   # layer shown in the app; layer the pad is on; hardware-test hook
         self.active_win, self.profile_poll, self._usage_dirty = activewin.ActiveWindow(), 1.0, False
+        self.cliphist = cliphist.ClipHistory()
         self.info_poll, self._info_cache, self._info_sent = 3.0, {}, (None, 0.0)
         try:
             self.badges = feeds.BadgeServer(token=self.cfg["info"].get("token"), port=int(self.cfg["info"].get("port", 0) or 0))
@@ -3788,6 +3805,8 @@ class App(ctk.CTk):
         self.hostact = hostactions.HostActions(self._allowed_host, lambda: bool(self.cfg.get("allow_shell")),
                                                type_clipboard=self._type_clipboard, type_text=self._type_text,
                                                read_clipboard=self._clipboard_text, counter=self._next_counter, script_runner=self.run_script,
+                                               sysact=sysactions.SysActions(), layouts=winlayout.WinLayouts(), layout_store=lambda: self.cfg["layouts"], cliphist=self.cliphist,
+                                               cfg_get=lambda k, d=None: self.cfg.get(k, d), focus_program=lambda: (self.active_win.get()[0] or ""),
                                                notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok")))
         if self.host.impl is not None:
             self.host.impl.host_cb = self._host_cb
@@ -3814,6 +3833,7 @@ class App(ctk.CTk):
         threading.Thread(target=self._profile_loop, daemon=True).start()
         threading.Thread(target=self._info_loop, daemon=True).start()
         threading.Thread(target=self._schedule_loop, daemon=True).start()
+        threading.Thread(target=self._clip_loop, daemon=True).start()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---------------------------------------------------------------- thread plumbing
@@ -5078,10 +5098,19 @@ class App(ctk.CTk):
         label = entry.get("name") or "Scheduled action"
         self.bg(work, lambda desc: self.set_status(f"{label}: {desc}"), f"{label} failed")
 
+    def run_host(self, op, arg=""):
+        """Run one of the user's own host actions from a button in the app (no whitelist needed: the user pressed it). Raises RuntimeError with the reason."""
+        ok, msg = self.hostact.run_trusted(op, arg)
+        if not ok:
+            raise RuntimeError(msg)
+        return msg
+
     def _host_cb(self, spec):
         ok, msg = self.hostact.run(spec.get("op"), spec.get("arg", ""))
         if not ok:
             raise RuntimeError(msg)
+        if spec.get("op") in hostactions.NEW_OPS:                       # OS / network actions say what they did
+            self.post(lambda m=msg: self.set_status(m))
 
     def _clipboard_text(self):
         ev, box = threading.Event(), {}
@@ -5099,12 +5128,25 @@ class App(ctk.CTk):
     def _type_text(self, txt):
         if self.host.impl is None:
             raise RuntimeError("typing needs the key sender (pip install pynput)")
-        self.host.impl.text(txt)
+        self.host.impl.run(("text", txt))
 
     def _type_clipboard(self):
         txt = self._clipboard_text()
         if txt:
             self._type_text(txt)
+
+    def _clip_loop(self):
+        """Clipboard history (opt-in): remember the last copied texts, in memory only."""
+        while not self.closing:
+            time.sleep(1.5)
+            if not self.cfg.get("cliphist_on"):
+                if self.cliphist.items:
+                    self.cliphist.clear()
+                continue
+            try:
+                self.cliphist.add(self._clipboard_text())
+            except Exception:                                  # noqa: BLE001
+                pass
 
     # ---- macro scripts (desk_lib/scripting.py)
     class _ScriptBackend(scripting.Backend):
@@ -5380,6 +5422,10 @@ class App(ctk.CTk):
             return ("host", {"op": op, "arg": arg})
         if op in ("snippet", "clip") and self.dev.connected and not self._pad_cap("hostx"):
             raise ValueError("Snippets and clipboard transforms need firmware 1.3 on the pad - update it (Device -> Firmware).")
+        if op in hostactions.NEW_OPS:
+            if self.dev.connected and not self._pad_cap("hostx2"):
+                raise ValueError("This action needs firmware 1.5 on the pad - update it (Device -> Firmware).")
+            return ("host", {"op": op, "arg": arg or "default"})
         if op == "snippet":
             return ("host", {"op": "snippet", "arg": arg})
         if op == "clip":
@@ -6948,6 +6994,8 @@ class App(ctk.CTk):
 
         box = self._card(sc, "Pad behaviour", "Dial acceleration, clock face, screensaver and night dimming - stored on the pad (firmware 1.3).")
         self.behaviour = padextras.BehaviourCard(self, box)
+        box = self._card(sc, "Computer actions", "Settings for the key actions that act on this PC: the AI action, screenshots, clipboard history and window layouts.")
+        self.computer_card = padextras.ComputerCard(self, box)
         box = self._card(sc, "Screens, reminders and habits", "Optional screens on the pad (stopwatch, breathing, dice, reaction test, snake, habits), which screens the dial cycles through, and nudges every N minutes (firmware 1.4).")
         self.screens_card = padextras.ScreensCard(self, box)
 
