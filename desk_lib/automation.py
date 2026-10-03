@@ -107,6 +107,75 @@ class AutomationPage:
         ctk.CTkButton(r3, text="Add rule", width=100, command=self.add).pack(side="left", padx=6)
         self._when_changed()
         self.refresh()
+        self._build_api(sc)
+
+    # ---- local API
+    def _build_api(self, sc):
+        app = self.app
+        box = ctk.CTkFrame(sc)
+        box.pack(fill="x", pady=5, padx=2)
+        ctk.CTkLabel(box, text="Local API and command line", font=ui.font(15, "bold"), anchor="w").pack(anchor="w", padx=16, pady=(14, 2))
+        ui.muted(box, "Lets scripts, shortcuts and other programs on THIS computer drive the pad while the app runs (switch layer, set the LED, "
+                 "show a custom card, press a key, send a notification). Off by default; protected by a secret token; never reachable from the "
+                 "network or from web pages.", wraplength=880).pack(anchor="w", padx=16, pady=(0, 6))
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=4)
+        self.api_on = tk.BooleanVar(value=bool(app.cfg["api"]["on"]))
+        ctk.CTkSwitch(row, text="Enable the local API", variable=self.api_on, command=self._api_toggled).pack(side="left")
+        ctk.CTkLabel(row, text="Port").pack(side="left", padx=(24, 6))
+        self.api_port = ctk.CTkEntry(row, width=80)
+        self.api_port.insert(0, str(app.cfg["api"]["port"]))
+        self.api_port.pack(side="left")
+        ui.secondary_button(row, "New token", self._api_newtoken, width=100).pack(side="left", padx=(16, 4))
+        ui.secondary_button(row, "Copy token", self._api_copy, width=100).pack(side="left", padx=4)
+        self.api_state = ui.muted(box, "", wraplength=880)
+        self.api_state.pack(anchor="w", padx=16, pady=(2, 4))
+        self.api_help = ctk.CTkLabel(box, text="", justify="left", anchor="w", font=ctk.CTkFont(family="Courier", size=12), wraplength=880)
+        self.api_help.pack(anchor="w", padx=16, pady=(0, 14))
+        self._api_refresh()
+
+    def _api_refresh(self):
+        app = self.app
+        a = app.cfg["api"]
+        if app.api:
+            self.api_state.configure(text=f"Running on http://127.0.0.1:{a['port']}  -  the token is saved with your settings. Use 'Copy token' to put it on the clipboard.", text_color=ui.OK)
+            self.api_help.configure(text="python deskcompanion_cli.py layer 2\npython deskcompanion_cli.py led ff8800\n"
+                                    f"curl -H \"Authorization: Bearer <token>\" -d '{{\"n\": 2}}' http://127.0.0.1:{a['port']}/v1/layer")
+        else:
+            self.api_state.configure(text=app.api_error or "Off.", text_color=ui.ERR if app.api_error else ui.MUTED)
+            self.api_help.configure(text="")
+
+    def _api_toggled(self):
+        app = self.app
+        if self.api_on.get():
+            try:
+                port = int(self.api_port.get())
+                if not 1024 <= port <= 65535:
+                    raise ValueError
+            except ValueError:
+                self.api_on.set(False)
+                return app.set_status("The port must be a number from 1024 to 65535", error=True)
+            app.cfg["api"]["port"] = port
+            if not app.api_start():
+                self.api_on.set(False)
+        else:
+            app.api_stop()
+            app.cfg["api"]["on"] = False
+        app.save_cfg()
+        self._api_refresh()
+
+    def _api_newtoken(self):
+        import secrets
+        self.app.cfg["api"]["token"] = secrets.token_urlsafe(18)
+        if self.app.api:
+            self.app.api_start()
+        self.app.save_cfg()
+        self.app.set_status("New API token created - scripts using the old one are locked out")
+
+    def _api_copy(self):
+        self.app.clipboard_clear()
+        self.app.clipboard_append(self.app.cfg["api"]["token"])
+        self.app.set_status("API token copied to the clipboard")
 
     # ---- form
     def _when_changed(self):

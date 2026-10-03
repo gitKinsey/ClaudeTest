@@ -114,5 +114,44 @@ cfg2 = m.load_config()
 assert [x["do"]["kind"] for x in cfg2["schedules"]] == ["host", "notify"]
 cfg2["schedules"].append({"when": {"kind": "daily", "time": "99:99"}, "do": {}}); cfg2["schedules"].append("junk")
 m.CONFIG_PATH.write_text(__import__("json").dumps(cfg2)); assert len(m.load_config()["schedules"]) == 2
+# ---- local API through the real app + simulated pad
+import http.client, json   # noqa: E401,E402
+assert not app.api and app.cfg["api"]["on"] is False and len(app.cfg["api"]["token"]) >= 16
+page.api_port.delete(0, "end"); page.api_port.insert(0, "80")
+page.api_on.set(True); page._api_toggled()
+assert not app.api and page.api_on.get() is False and "1024" in app.status.cget("text"), "privileged port refused"
+page.api_port.delete(0, "end"); page.api_port.insert(0, "0")
+app.cfg["api"]["port"] = 0
+assert app.api_start() and app.api.port
+app.cfg["api"]["port"] = app.api.port
+
+
+def api(method, path, body=None, token=None):
+    c = http.client.HTTPConnection("127.0.0.1", app.api.port, timeout=10)
+    c.request(method, path, body=None if body is None else json.dumps(body), headers={"Authorization": "Bearer " + (token or app.cfg["api"]["token"])})
+    r = c.getresponse(); out = json.loads(r.read()); c.close()
+    return r.status, out
+st, out = api("GET", "/v1/status"); assert st == 200 and out["connected"] is True and out["app"] == m.APP_VERSION, out
+assert api("POST", "/v1/layer", {"n": 2})[0] == 200 and sim.layer == 1
+assert api("POST", "/v1/layer", {"n": "next"})[0] == 200 and sim.layer == 2
+assert api("POST", "/v1/brightness", {"n": 77})[0] == 200 and sim.bright == 77
+assert api("POST", "/v1/mode", {"n": 4})[0] == 200 and sim.mode == 4
+assert api("POST", "/v1/led", {"hex": "ff8800"})[0] == 200 and (sim.led["r"], sim.led["g"], sim.led["b"]) == (255, 136, 0)
+assert api("POST", "/v1/led", {"mode": "off"})[0] == 200 and sim.led["mode"] == 1
+sim.host_log.clear()
+assert api("POST", "/v1/press", {"key": 1})[0] == 200
+assert api("POST", "/v1/card", {"label": "BUILD", "title": "green", "a": "main", "b": "42 tests"})[0] == 200
+assert app.cfg["info"]["custom"] and app.cfg["info"]["c_t"] == "green"
+assert api("POST", "/v1/card", {})[0] == 200 and not app.cfg["info"]["custom"]
+assert api("POST", "/v1/badge", {"name": "mail", "n": 4})[0] == 200 and {"name": "mail", "n": 4} in app.badges.get()
+assert api("POST", "/v1/layer", {"n": 7})[0] == 400 and api("GET", "/v1/status", token="x" * 20)[0] == 401
+app.dev.disconnect(); app._on_disconnected()
+st, out = api("POST", "/v1/layer", {"n": 1}); assert st == 409 and "not connected" in out["error"], (st, out)
+assert api("GET", "/v1/status")[1]["connected"] is False
+old = app.cfg["api"]["token"]
+page._api_newtoken()
+assert app.cfg["api"]["token"] != old and api("GET", "/v1/status", token=old)[0] == 401 and api("GET", "/v1/status")[0] == 200, "a new token locks out the old one"
+page.api_on.set(False); page._api_toggled()
+assert app.api is None and app.cfg["api"]["on"] is False
 app.destroy()
 print("ALL AUTOMATION TESTS PASSED")

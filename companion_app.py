@@ -26,6 +26,7 @@ import subprocess
 import sys
 import queue
 import re
+import secrets
 import shutil
 import threading
 import time
@@ -44,7 +45,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, automation, backup, espota, feeds, hostactions, recorder, scheduler, textops, wizards     # noqa: E402
+from desk_lib import activewin, automation, backup, bridge, espota, feeds, hostactions, recorder, scheduler, textops, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
@@ -241,6 +242,11 @@ def normalize_config(cfg):
         except (ValueError, TypeError):
             pass
     cfg["schedules"] = good
+    api = cfg.setdefault("api", {})              # local API for scripts (off unless switched on)
+    api.setdefault("on", False)
+    api.setdefault("port", 47651)
+    if not isinstance(api.get("token"), str) or len(api["token"]) < 16:
+        api["token"] = secrets.token_urlsafe(18)
     cfg.setdefault("wizard_done", False)
     return cfg
 
@@ -3556,6 +3562,7 @@ class App(ctk.CTk):
         if self.host.impl is not None:
             self.host.impl.host_cb = self._host_cb
         self.scheduler = scheduler.Scheduler(lambda: self.cfg["schedules"])
+        self.api, self.api_error = None, ""
         self.pad = VirtualPad(self.exec_slot, self.exec_media, self.on_pad_change)
         self.pad.mode, self.pad.brightness = int(self.cfg["twin_mode"]), int(self.cfg["twin_bright"])
         self._build()
@@ -3619,6 +3626,7 @@ class App(ctk.CTk):
 
     def _on_close(self):
         self.closing = True
+        self.api_stop()
         if self.badges:
             try:
                 self.badges.close()
@@ -3802,6 +3810,8 @@ class App(ctk.CTk):
         self._build_profiles(self.tabs.tab("Profiles"))
         self._build_info(self.tabs.tab("Info Screen"))
         self.automation = automation.AutomationPage(self, self.tabs.tab("Automation"))
+        if self.cfg["api"]["on"]:
+            self.api_start()
         self.devtab = DevTab(self, self.tabs.tab("Dev"))
         self.dev.on_line, self.dev.on_event = self.devtab.log, self._on_pad_event
         self.refresh_ports()
@@ -4635,6 +4645,62 @@ class App(ctk.CTk):
             if e["do"]["kind"] == "host":
                 allowed.add((e["do"]["op"], e["do"].get("arg", "")))
         return allowed
+
+    # ---- local API for scripts / the command line (desk_lib/bridge.py)
+    def api_start(self):
+        self.api_stop()
+        a = self.cfg["api"]
+        try:
+            self.api = bridge.Bridge(self._api_handle, token=a["token"], port=int(a["port"]), status=self._api_status)
+            self.api_error = ""
+        except OSError as e:
+            self.api, self.api_error = None, f"port {a['port']} is not available ({e.strerror or e})"
+        a["on"] = self.api is not None
+        return self.api is not None
+
+    def api_stop(self):
+        if getattr(self, "api", None):
+            try:
+                self.api.close()
+            except Exception:                                     # noqa: BLE001
+                pass
+        self.api = None
+
+    def _api_status(self):
+        i = self.dev.info if self.dev.connected else {}
+        return {"app": APP_VERSION, "connected": self.dev.connected, "firmware": i.get("fw", ""), "layer": self.pad_layer, "mode": i.get("mode")}
+
+    def _api_handle(self, r):
+        """Runs on the API server's thread."""
+        k = r["kind"]
+        if k == "notify":
+            self.post(lambda: self.notify("Desk Companion", r["text"], "ok"))
+            return {}
+        if k == "badge":
+            if not self.badges:
+                raise bridge.ApiError(503, "the badge service is not running")
+            self.badges.set(r["name"], r["n"])
+            return {}
+        if k == "card":
+            info = self.cfg["info"]
+            info.update(custom=any(r[x] for x in ("label", "title", "a", "b")), c_label=r["label"], c_t=r["title"], c_a=r["a"], c_b=r["b"])
+            return {}
+        if not self.dev.connected:
+            raise bridge.ApiError(409, "the pad is not connected")
+        try:
+            if k == "layer":
+                if not self._layers_supported():
+                    raise bridge.ApiError(409, "the pad's firmware has no layers")
+                self.dev.request({"cmd": "layer", "val": r["val"]})
+            elif k in ("mode", "brightness"):
+                self.dev.request({"cmd": k, "val": r["val"]})
+            elif k == "led":
+                self.dev.request({"cmd": "led", **{x: r[x] for x in ("mode", "hex") if x in r}})
+            elif k == "press":
+                self.dev.request({"cmd": "input", "k": r["key"]} if r["key"] <= 5 else {"cmd": "input", "turn": 1 if r["key"] == 6 else -1})
+        except DeviceError as e:
+            raise bridge.ApiError(502, str(e)) from None
+        return {}
 
     # ---- scheduled actions
     def _schedule_loop(self):
