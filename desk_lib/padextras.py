@@ -221,3 +221,11 @@ class GesturePanel:
             ctk.CTkLabel(row, text=f"Layer {layer + 1}  K{slot}  {_label(GESTURES, g)}", width=270, anchor="w", font=ui.font(13, "bold")).pack(side="left", padx=(12, 6), pady=8)
             ui.muted(row, f"{m['cat']}: {m['action']}", width=330).pack(side="left", padx=6)
             ui.secondary_button(row, "Remove", lambda k=k: self.remove(k), width=70).pack(side="right", padx=10)
+
+
+def cpu_color(cpu):
+    """CPU load 0..100 -> a calm RGB: green at idle, amber around 50 %, red at full load (about a third of full brightness)."""
+    import colorsys
+    c = max(0.0, min(100.0, float(cpu))) / 100.0
+    r, g, b = colorsys.hsv_to_rgb((1.0 - c) / 3.0, 1.0, 0.38)          # hue 120 deg (green) -> 0 deg (red)
+    return int(r * 255), int(g * 255), int(b * 255)

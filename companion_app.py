@@ -45,7 +45,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, automation, backup, bridge, espota, extras, feeds, hostactions, padextras, presets, recorder, scheduler, scripting, scripts_page, textops, wizards     # noqa: E402
+from desk_lib import activewin, automation, autobackup, autostart, backup, bridge, espota, extras, feeds, hostactions, padextras, presets, recorder, scheduler, scripting, scripts_page, textops, tray, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
@@ -262,6 +262,8 @@ def normalize_config(cfg):
     for k, v in INFO_DEFAULTS.items():
         info.setdefault(k, v)
     cfg.setdefault("usage", {})                  # key press counters
+    cfg.setdefault("led_cpu", False)             # the pad's LED follows this computer's CPU load
+    cfg.setdefault("tray", False)                # keep running in the system tray when the window is closed
     cfg.setdefault("counters", {})               # {counter:name} values used by snippets
     sc = cfg.get("scripts")                      # macro scripts: {name: source}
     cfg["scripts"] = {str(k)[:32]: str(v)[:scripting.MAX_SCRIPT_CHARS] for k, v in sc.items() if str(k).strip()} if isinstance(sc, dict) else {}
@@ -291,6 +293,17 @@ def normalize_config(cfg):
     return cfg
 
 
+_AUTOBACKUP = {}
+
+
+def autobackup_for(path=None):
+    """The rolling-backup helper that belongs to the config file (a '<name>.backups' folder next to it)."""
+    path = Path(path or CONFIG_PATH)
+    if path not in _AUTOBACKUP:
+        _AUTOBACKUP[path] = autobackup.AutoBackup(path.with_name(path.name + ".backups"))
+    return _AUTOBACKUP[path]
+
+
 def save_config(cfg):
     out = dict(cfg)
     if isinstance(out.get("layers"), list):          # "map" / "pushed" are aliases of the selected layer: store layer 1 there
@@ -299,7 +312,8 @@ def save_config(cfg):
     try:
         CONFIG_PATH.write_text(json.dumps(out, indent=1), encoding="utf-8")
     except OSError:
-        pass
+        return
+    autobackup_for().maybe(out)                      # throttled + only when something meaningful changed
 
 
 def resolve_spec(cfg, cat, name):
@@ -3672,6 +3686,7 @@ class App(ctk.CTk):
         if self.host.impl is not None:
             self.host.impl.host_cb = self._host_cb
         self._script_lock, self.script_stop = threading.Lock(), threading.Event()
+        self.tray_icon = None
         self.scheduler = scheduler.Scheduler(lambda: self.cfg["schedules"])
         self.api, self.api_error = None, ""
         self.pad = VirtualPad(self.exec_slot, self.exec_media, self.on_pad_change)
@@ -3735,8 +3750,47 @@ class App(ctk.CTk):
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
 
+    def autobackup(self):
+        return autobackup_for()
+
+    def show_window(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def tray_layer(self, n):
+        self.set_edit_layer(n)
+        self.show_layer_on_pad()
+
+    def quit_app(self):
+        self._really_close()
+
     def _on_close(self):
+        if self.cfg.get("tray") and self.tray_icon is not None and not self.closing:
+            self.withdraw()                                   # keep running (pad profiles, scheduler, API) in the tray
+            return
+        self._really_close()
+
+    def tray_enable(self, on):
+        """Switch the tray icon on / off. Returns '' or a reason it is not possible."""
+        if on:
+            if not tray.available():
+                return "the tray icon needs:  pip install pystray"
+            try:
+                self.tray_icon = self.tray_icon or tray.Tray(self)
+                self.tray_icon.start()
+            except Exception as e:                            # noqa: BLE001  (no tray on this desktop, ...)
+                self.tray_icon = None
+                return f"the tray icon could not start: {e}"
+        elif self.tray_icon is not None:
+            self.tray_icon.stop()
+            self.tray_icon = None
+        return ""
+
+    def _really_close(self):
         self.closing = True
+        if self.tray_icon is not None:
+            self.tray_icon.stop()
         self.api_stop()
         if self.badges:
             try:
@@ -3761,12 +3815,28 @@ class App(ctk.CTk):
             self.post(lambda c=cpu, r=ram: self._meters(c, r))
             if self.dev.connected and not self.dev.busy:
                 try:
+                    self._led_follow_cpu(cpu)
                     self.dev.send({"cmd": "stats", "cpu": round(cpu), "ram": round(ram)})
                     if not self.dev.info.get("core_only") and time.time() - last_sync > 60:
                         last_sync = time.time()                      # BEFORE the request: a pad that refuses it is asked again in a minute, not every second
                         self.dev.request(time_msg())
                 except DeviceError:
                     pass
+
+    def _led_follow_cpu(self, cpu):
+        """Optional: the pad's RGB LED goes green -> amber -> red with the CPU load (called once a second from the telemetry thread)."""
+        on, last = bool(self.cfg.get("led_cpu")), getattr(self, "_led_cpu_last", None)
+        if self.dev.info.get("core_only"):
+            return
+        if not on:
+            if last is not None:
+                self._led_cpu_last = None
+                self.dev.request({"cmd": "led", "mode": "auto"}, timeout=2)
+            return
+        rgb = padextras.cpu_color(cpu)
+        if last is None or max(abs(a - b) for a, b in zip(rgb, last[0])) > 14 or time.time() - last[1] > 30:
+            self.dev.request({"cmd": "led", "r": rgb[0], "g": rgb[1], "b": rgb[2]}, timeout=2)
+            self._led_cpu_last = (rgb, time.time())
 
     def _media_loop(self):
         """Mirror this PC's volume / mute / playing onto the pad's media screen: on change, and every 10 s as a keep-alive."""
@@ -4215,6 +4285,26 @@ class App(ctk.CTk):
         if not self._pad_cap("gestures"):
             return self.set_status("Hold / double-tap actions need firmware 1.3 - update the pad (Device -> Firmware). The setting is saved.", error=True)
         self.bg(self._sync_gestures, lambda n: self.set_status(f"{what or 'Gestures'} - sent to the pad"), "Sending the gesture failed")
+
+    def _autostart_toggled(self):
+        on = bool(self.autostart_var.get())
+        try:
+            autostart.enable(autostart.launch_command()) if on else autostart.disable()
+        except Exception as e:                                # noqa: BLE001  (read-only registry, no home folder ...)
+            self.autostart_var.set(not on)
+            return self.set_status(f"Could not change the start-up setting: {e}", error=True)
+        self.set_status("The app will start minimised when you log in" if on else "The app no longer starts with your computer")
+
+    def _tray_toggled(self):
+        on = bool(self.tray_var.get())
+        why = self.tray_enable(on)
+        if why:
+            self.tray_var.set(False)
+            self.cfg["tray"] = False
+            return self.set_status(f"Tray: {why}", error=True)
+        self.cfg["tray"] = on
+        save_config(self.cfg)
+        self.set_status("Closing the window now keeps the app running in the tray" if on else "Closing the window quits the app")
 
     def _core_only(self, what="that"):
         if self.dev.connected and self.dev.info.get("core_only"):
@@ -6723,6 +6813,17 @@ class App(ctk.CTk):
         hm.grid(row=6, column=0, columnspan=3, padx=6, pady=4, sticky="w")
         if not self.hostmedia.available:
             hm.configure(state="disabled", text="Mirror PC volume: not available here (Linux: pactl/amixer, macOS: built in, Windows: pip install pycaw)")
+        self.ledcpu_var = tk.BooleanVar(value=bool(self.cfg.get("led_cpu")))
+        ctk.CTkSwitch(box, text="Pad LED follows this PC's CPU load (green to red)", variable=self.ledcpu_var,
+                      command=lambda: (self.cfg.__setitem__("led_cpu", bool(self.ledcpu_var.get())), save_config(self.cfg))).grid(row=7, column=0, columnspan=3, padx=6, pady=4, sticky="w")
+        self.autostart_var = tk.BooleanVar(value=autostart.is_enabled())
+        ctk.CTkSwitch(box, text="Start this app when I log in (minimised)", variable=self.autostart_var, command=self._autostart_toggled).grid(
+            row=8, column=0, columnspan=3, padx=6, pady=4, sticky="w")
+        self.tray_var = tk.BooleanVar(value=bool(self.cfg.get("tray")))
+        self.tray_sw = ctk.CTkSwitch(box, text="Keep running in the system tray when the window is closed", variable=self.tray_var, command=self._tray_toggled)
+        self.tray_sw.grid(row=9, column=0, columnspan=3, padx=6, pady=4, sticky="w")
+        if not tray.available():
+            self.tray_sw.configure(state="disabled", text="Tray icon: not available (pip install pystray)")
 
         box = self._card(sc, "Pad behaviour", "Dial acceleration, clock face, screensaver and night dimming - stored on the pad (firmware 1.3).")
         self.behaviour = padextras.BehaviourCard(self, box)
@@ -6766,6 +6867,7 @@ class App(ctk.CTk):
         ui.secondary_button(row, "Restore from a backup...", self.backup_import).pack(side="left", padx=6)
         ui.secondary_button(row, "Export one macro...", self.macro_export).pack(side="left", padx=6)
         ui.secondary_button(row, "Import macros...", self.macro_import).pack(side="left", padx=6)
+        ui.secondary_button(row, "Automatic backups...", lambda: wizards.AutoBackupDialog(self)).pack(side="left", padx=6)
 
         # ---- recovery + safety
         box = self._card(sc, "Recovery and safety", "If the pad boots into safe mode (red double-blink) or misbehaves.")
@@ -6856,4 +6958,12 @@ def _flash_helper(argv):
 if __name__ == "__main__":
     if "--flash-helper" in sys.argv:
         sys.exit(_flash_helper([a for a in sys.argv[1:] if a != "--flash-helper"]))
-    App().mainloop()
+    app = App()
+    if autostart.wants_minimized():                           # started by "Start with my computer": go straight to the tray / taskbar
+        if app.cfg.get("tray") and not app.tray_enable(True):
+            app.withdraw()
+        else:
+            app.iconify()
+    elif app.cfg.get("tray"):
+        app.tray_enable(True)
+    app.mainloop()

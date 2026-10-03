@@ -435,3 +435,45 @@ class CommandPalette(_Window):
         fn = self.shown[sel[0]][1]
         self.destroy()
         self.app.after(60, fn)
+
+
+class AutoBackupDialog(_Window):
+    """The app keeps the last 15 versions of its settings by itself (after every meaningful change); pick one to go back to it."""
+
+    def __init__(self, app):
+        super().__init__(app, "Automatic backups", 560, 440)
+        ctk.CTkLabel(self, text="Automatic backups of your settings", font=ui.font(16, "bold")).pack(anchor="w", padx=18, pady=(16, 2))
+        ui.muted(self, "Made by the app after changes to key maps, macros, scripts, profiles and settings (at most one every two minutes, newest 15 kept). "
+                 "Restoring replaces the settings in this app; press 'Upload to pad' afterwards to send them to the device.", wraplength=520).pack(anchor="w", padx=18)
+        ctk.CTkButton(self, text="Back up now", width=120, command=self.now).pack(anchor="w", padx=18, pady=8)
+        self.box = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.box.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.refresh()
+
+    def refresh(self):
+        import time as _t
+        for w in self.box.winfo_children():
+            w.destroy()
+        files = self.app.autobackup().list()
+        if not files:
+            ui.muted(self.box, "No automatic backup yet - change something, or press 'Back up now'.").pack(anchor="w", padx=8, pady=10)
+        for path, mtime, size in files:
+            row = ctk.CTkFrame(self.box, fg_color=ui.CARD2, corner_radius=8, border_width=0)
+            row.pack(fill="x", pady=3)
+            ctk.CTkLabel(row, text=_t.strftime("%a %d %b %Y  %H:%M:%S", _t.localtime(mtime)), anchor="w", width=250).pack(side="left", padx=12, pady=8)
+            ui.muted(row, f"{size // 1024 + 1} KB").pack(side="left", padx=6)
+            ui.secondary_button(row, "Restore", lambda p=path: self.restore(p), width=80).pack(side="right", padx=10)
+
+    def now(self):
+        p = self.app.autobackup().maybe(self.app.cfg, force=True)
+        self.app.set_status("Backed up now" if p else "Nothing changed since the last backup")
+        self.refresh()
+
+    def restore(self, path):
+        try:
+            cfg = self.app.autobackup().read(path)
+        except ValueError as e:
+            return self.app.set_status(str(e), error=True)
+        self.app.restore_config(cfg)
+        self.app.set_status(f"Settings restored from {path.name} - press 'Upload to pad' to send them to the device")
+        self.destroy()
