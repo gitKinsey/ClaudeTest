@@ -5,7 +5,7 @@ companion app. The firmware works standalone; the app is only needed to remap ke
 (built-in library, your own folder, or Tenor / GIPHY search), mirror your PC's volume on the pad, and for the **Dev tab**
 (bring-up and diagnostics).
 
-**Version 1.4 / firmware 1.3 (branch `overkill`)** adds snippets with variables, 21 clipboard transforms, scheduled actions, a local API + `deskcompanion_cli.py`, five more Info cards, hold / double-tap key actions, dial acceleration, four clock faces, a screensaver and night dimming - all without extra hardware (see `docs/FEATURES.md`).
+**Version 1.4 / firmware 1.4 (branch `overkill`)** adds macro scripts (loops, conditions, variables), ready-made layouts for popular programs, automatic backups, a tray icon, six more pad screens (stopwatch, breathing, dice, reaction test, snake, habits), reminders, dial press+turn, alternating / random / panic keys, LED effects - and, from firmware 1.3,  snippets with variables, 21 clipboard transforms, scheduled actions, a local API + `deskcompanion_cli.py`, five more Info cards, hold / double-tap key actions, dial acceleration, four clock faces, a screensaver and night dimming - all without extra hardware (see `docs/FEATURES.md`).
 
 **Version 1.3 / firmware 1.2** adds: **3 key layers**, **per-program profiles** (the layer follows the program you use), a 6th screen
 (**Info**: now playing, weather, next calendar event, notification badges), **mouse and computer actions** (click, scroll, open a
