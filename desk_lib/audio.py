@@ -52,7 +52,7 @@ class Spectrum:
 
     def _callback(self, indata, frames, time_info, status):
         try:
-            samples = [float(x) for x in (indata[:, 0] if hasattr(indata, "shape") and len(indata.shape) > 1 else indata)]
+            samples = [float(x[0]) if hasattr(x, "__len__") else float(x) for x in indata]          # (frames, channels) array or plain list
         except Exception:                                            # noqa: BLE001
             return
         lv = band_levels(samples, self.rate)

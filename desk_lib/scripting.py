@@ -36,7 +36,7 @@ from desk_lib import textops
 MAX_REPEAT, MAX_COMMANDS, MAX_WAIT_MS, MAX_ONE_WAIT_MS, MAX_DEPTH, MAX_SCRIPT_CHARS = 100, 500, 60_000, 10_000, 5, 6000
 CMDS = {"key", "text", "wait", "click", "scroll", "media", "open", "app", "file", "notify", "shell", "run", "set", "stop",
         "exec", "card", "alert", "layout", "http", "ask", "translate", "moveto", "clickat", "do"}
-DO_OPS = {"appvol", "dnd", "audio_out", "mic", "shot", "layout", "cliphist", "plugin", "webhook", "translate", "ai", "url", "app", "file", "notify", "snippet", "clip"}
+DO_OPS = {"appvol", "dnd", "audio_out", "mic", "shot", "layout", "cliphist", "plugin", "art", "qr", "webhook", "translate", "ai", "url", "app", "file", "notify", "snippet", "clip"}
 MEDIA_NAMES = {"PLAY_PAUSE", "NEXT", "PREV", "STOP", "MUTE", "VOL_UP", "VOL_DOWN", "FF", "REWIND"}
 MODS = {"ctrl": "CTRL", "control": "CTRL", "shift": "SHIFT", "alt": "ALT", "option": "ALT", "gui": "GUI", "win": "GUI", "cmd": "GUI", "super": "GUI",
         "primary": "PRIMARY", "mod": "PRIMARY"}

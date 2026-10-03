@@ -47,7 +47,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import appcard, hotkey, history, i18n, plugins, tips, updates, activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, netactions, padextras, presets, recorder, scheduler, screenstate, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
+from desk_lib import appcard, audio, hotkey, ledfx, padimage, history, i18n, plugins, tips, updates, activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, netactions, padextras, presets, recorder, scheduler, screenstate, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
 from desk_lib.ui import (CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 ACCENT = ui.ACCENT                                                   # rebound in App.__init__ when the user picked another accent colour
@@ -225,6 +225,7 @@ ACTION_KINDS = [("Open website", "url", "https://example.com", True), ("Start pr
                 ("Ask the AI", "ai", "prompt, e.g.  Summarize: {clipboard}", True), ("Call a web address", "webhook", "[GET|POST] https://address [body]", True),
                 ("Window layout", "layout", "save work   (or just: work  to restore it)", True), ("Type from clipboard history", "cliphist", "1 = latest copy ... 9", True),
                 ("Run a plugin", "plugin", "name  or  name:argument  (Device page -> Plugins)", True),
+                ("Show the album cover on the pad", "art", "", False), ("Show a QR code on the pad", "qr", "text or link  (empty = the clipboard)", False),
                 ("Mouse click", "click", "left / right / middle / back / forward  (default: left)", False),
                 ("Mouse double click", "click", "left / right / middle  (default: left)", False),
                 ("Mouse scroll", "scroll", "amount: 1..20 up, -1..-20 down", True), ("Switch layer", "layer", "1, 2, 3, next or prev (default: next)", False)]
@@ -321,6 +322,10 @@ def normalize_config(cfg):
     ai.setdefault("model", "claude-haiku-4-5-20251001")
     if not isinstance(cfg.get("layouts"), dict):
         cfg["layouts"] = {}                      # saved window layouts {name: [{process,title,x,y,w,h}]}
+    cfg.setdefault("led_mood", False)            # the pad's LED follows the time of day
+    cfg.setdefault("led_audio", False)           # the pad's LED reacts to sound from the audio input
+    cfg.setdefault("led_alerts", False)          # the LED blinks for new mail badges, a CI change, an upcoming event
+    cfg.setdefault("image_slot", 3)              # GIF slot (0-based) that cover art / QR codes are written to
     cfg.setdefault("led_cpu", False)             # the pad's LED follows this computer's CPU load
     cfg.setdefault("tray", False)                # keep running in the system tray when the window is closed
     cfg.setdefault("counters", {})               # {counter:name} values used by snippets
@@ -892,7 +897,7 @@ def rgb565be_image(raw, w=240, h=240):
 FW_BUNDLED = "1.5.0"                     # version of firmware/DeskCompanion.bin shipped with this app
 LAYERS, GIF_SLOTS = 3, 4
 HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip", "script",
-            "appvol", "dnd", "audio_out", "mic", "shot", "translate", "ai", "webhook", "layout", "cliphist", "plugin")
+            "appvol", "dnd", "audio_out", "mic", "shot", "translate", "ai", "webhook", "layout", "cliphist", "plugin", "art", "qr")
 DEFAULT_LAYERS = [
     [{"type": "combo", "val": ["PRIMARY", "c"]}, {"type": "combo", "val": ["PRIMARY", "v"]}, {"type": "combo", "val": ["PRIMARY", "z"]},
      {"type": "media", "val": "PLAY_PAUSE"}, {"type": "media", "val": "MUTE"}, {"type": "media", "val": "VOL_UP"}, {"type": "media", "val": "VOL_DOWN"}],
@@ -3919,11 +3924,12 @@ class App(ctk.CTk):
                                                read_clipboard=self._clipboard_text, counter=self._next_counter, script_runner=self.run_script,
                                                sysact=sysactions.SysActions(), layouts=winlayout.WinLayouts(), layout_store=lambda: self.cfg["layouts"], cliphist=self.cliphist,
                                                cfg_get=lambda k, d=None: self.cfg.get(k, d), focus_program=lambda: (self.active_win.get()[0] or ""),
-                                               notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok")), plugin_runner=self._run_plugin)
+                                               notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok")), plugin_runner=self._run_plugin, pad_image=self.pad_image)
         self.plugins = plugins.PluginHost(CONFIG_PATH.parent / (CONFIG_PATH.name + ".plugins"), api=_PluginApi(self))
         if self.cfg.get("plugins_on"):
             self.plugins.load()
         self.hotkey_obj = None
+        self.spectrum, self.alerts, self._alert_snap = audio.Spectrum(), ledfx.AlertTracker(), {}
         self.history = history.EditHistory()
         if self.host.impl is not None:
             self.host.impl.host_cb = self._host_cb
@@ -3960,6 +3966,7 @@ class App(ctk.CTk):
         threading.Thread(target=self._info_loop, daemon=True).start()
         threading.Thread(target=self._schedule_loop, daemon=True).start()
         threading.Thread(target=self._clip_loop, daemon=True).start()
+        threading.Thread(target=self._audio_led_loop, daemon=True).start()
         threading.Thread(target=self._screen_loop, daemon=True).start()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -4078,18 +4085,53 @@ class App(ctk.CTk):
 
     def _led_follow_cpu(self, cpu):
         """Optional: the pad's RGB LED goes green -> amber -> red with the CPU load (called once a second from the telemetry thread)."""
-        on, last = bool(self.cfg.get("led_cpu")), getattr(self, "_led_cpu_last", None)
-        if self.dev.info.get("core_only"):
+        want_cpu, want_mood = bool(self.cfg.get("led_cpu")), bool(self.cfg.get("led_mood"))
+        on, last = (want_cpu or want_mood) and not self.cfg.get("led_audio"), getattr(self, "_led_cpu_last", None)
+        if self.dev.info.get("core_only") or (self.cfg.get("led_audio") and last is None):
             return
         if not on:
             if last is not None:
                 self._led_cpu_last = None
                 self.dev.request({"cmd": "led", "mode": "auto"}, timeout=2)
             return
-        rgb = padextras.cpu_color(cpu)
+        rgb = padextras.cpu_color(cpu) if want_cpu else ledfx.mood_color()
         if last is None or max(abs(a - b) for a, b in zip(rgb, last[0])) > 14 or time.time() - last[1] > 30:
             self.dev.request({"cmd": "led", "r": rgb[0], "g": rgb[1], "b": rgb[2]}, timeout=2)
             self._led_cpu_last = (rgb, time.time())
+
+    def _audio_led_loop(self):
+        """Sound-reactive LED: ~8 updates a second while 'react to sound' is on (needs sounddevice + numpy)."""
+        running, last = False, None
+        while not self.closing:
+            time.sleep(0.12)
+            want = bool(self.cfg.get("led_audio")) and self.dev.connected and not self.dev.info.get("core_only")
+            if not want:
+                if running:
+                    self.spectrum.stop()
+                    running = False
+                    if self.dev.connected:
+                        try:
+                            self.dev.request({"cmd": "led", "mode": "auto"}, timeout=2)
+                        except DeviceError:
+                            pass
+                last = None
+                continue
+            if not running:
+                try:
+                    self.spectrum.start()
+                    running = True
+                except ValueError as e:
+                    self.cfg["led_audio"] = False
+                    self.post(lambda e=e: (self.set_status(str(e), error=True), self.ledaudio_var.set(False)))
+                    continue
+            rgb = audio.color(self.spectrum.current())
+            if rgb != last and not self.dev.busy:
+                try:
+                    self.dev.send({"cmd": "led", "r": rgb[0], "g": rgb[1], "b": rgb[2]})
+                    last = rgb
+                except DeviceError:
+                    pass
+        self.spectrum.stop()
 
     def _media_loop(self):
         """Mirror this PC's volume / mute / playing onto the pad's media screen: on change, and every 10 s as a keep-alive."""
@@ -4294,6 +4336,22 @@ class App(ctk.CTk):
             self.hotkey_obj = None
             return f"the global hotkey is not possible here: {e}"
         return ""
+
+    def pad_image(self, kind, arg=""):
+        """Cover art of the playing song (kind 'art') or a QR code ('qr', arg or clipboard) -> a spare GIF slot of the pad, shown right away."""
+        if not self.dev.connected:
+            raise ValueError("the pad is not connected")
+        if "gifslots" not in (self.dev.info.get("caps") or []):
+            raise ValueError("this firmware has no extra GIF slots (update it)")
+        if kind == "art":
+            img = padimage.square(padimage.fetch_image(padimage.art_url()))
+        else:
+            img = padimage.qr_image(arg.strip() or self._clipboard_text())
+        slot = max(1, min(GIF_SLOTS - 1, int(self.cfg.get("image_slot", 3))))
+        self.dev.upload_gif(padimage.to_gif(img), None, slot)
+        self.dev.request({"cmd": "gif_cfg", "slot": slot})
+        self.post(lambda: (self.pad.set_mode(M_GIF), self.refresh_pad_gifs()))
+        return f"{'cover art' if kind == 'art' else 'QR code'} sent to GIF slot {slot + 1}"
 
     def _hotkey_fired(self):
         self.show_window()
@@ -6759,6 +6817,8 @@ class App(ctk.CTk):
         self.info_rot.pack(fill="x", padx=14, pady=4)
         ctk.CTkButton(right, text="Send to the pad now", command=lambda: self.info_send_now(force=True)).pack(fill="x", padx=14, pady=(10, 4))
         ui.secondary_button(right, "Show the Info screen on the pad", self.info_show_on_pad).pack(fill="x", padx=14, pady=4)
+        ui.secondary_button(right, "Show the album cover on the pad", lambda: self._send_pad_image("art", "")).pack(fill="x", padx=14, pady=4)
+        ui.secondary_button(right, "Show a QR code of the clipboard", lambda: self._send_pad_image("qr", "")).pack(fill="x", padx=14, pady=4)
         self.info_status = ui.muted(right, "", wraplength=260)
         self.info_status.pack(anchor="w", padx=14, pady=8)
         self._info_preview_tick()
@@ -6778,7 +6838,9 @@ class App(ctk.CTk):
             self._info_sent = (None, 0.0)
 
     EXTRA_HINTS = {"countdown": "date: 2026-12-24", "worldclock": "Europe/Zurich, Asia/Tokyo", "git": "folder of the repository",
-                   "ci": "owner/name (public repository)", "crypto": "bitcoin  or  ethereum:eur"}
+                   "ci": "owner/name (public repository)", "crypto": "bitcoin  or  ethereum:eur",
+                   "quote": "(empty)  or a text file of  quote | author  lines", "birthday": "Anna 03-14, Max 1990-07-02",
+                   "ping": "example.com  or  192.168.1.1:22", "http": "https://example.com", "lyrics": "(nothing to enter)"}
 
     def _extra_kind_changed(self):
         key = next(k for k, v in extras.KINDS.items() if v == self.extra_kind.get())
@@ -6853,6 +6915,9 @@ class App(ctk.CTk):
             self.badges.set("test", 3)
             self.set_status("Test badge set - it appears on the Info screen")
 
+    def _send_pad_image(self, kind, arg):
+        self.bg(lambda: self.pad_image(kind, arg), self.set_status, "Could not send the picture")
+
     def info_show_on_pad(self):
         self.pad.set_mode(M_INFO)
         if self.dev.connected:
@@ -6873,7 +6938,7 @@ class App(ctk.CTk):
     def _info_collect(self):
         """Gather the cards for the pad. Runs on a worker thread. -> (cards, badges, {source: error text})"""
         info, now, cards, errs = self.cfg["info"], time.time(), [], {}
-        cache = self._info_cache
+        cache, snap = self._info_cache, {}                       # snap: what the LED alerts compare between rounds
 
         def cached(key, ttl, fn):
             hit = cache.get(key)
@@ -6896,6 +6961,8 @@ class App(ctk.CTk):
                 ev = feeds.next_event(feeds.parse_ics(text))
                 if ev:
                     cards.append(feeds.event_card(ev))
+                    if not ev[1] and 0 <= (ev[0] - datetime.now().astimezone()).total_seconds() <= 600:
+                        snap["event"] = f"{ev[0].isoformat()} {ev[2]}"          # starts within 10 minutes
                 errs["event"] = "" if ev else "no upcoming events found"
             except Exception as e:                           # noqa: BLE001
                 errs["event"] = f"calendar problem: {e}"
@@ -6912,12 +6979,28 @@ class App(ctk.CTk):
         for i, item in enumerate(info.get("extras") or []):
             key = f"x{i}"
             try:
-                cards.append(cached(key + json.dumps(item, sort_keys=True), extras.TTL[item["type"]], lambda it=item: extras.build(it)))
+                card = cached(key + json.dumps(item, sort_keys=True), extras.TTL[item["type"]], lambda it=item: extras.build(it))
+                cards.append(card)
+                if item["type"] == "ci":
+                    snap[key.replace("x", "ci")] = card.get("t", "").lower()
                 errs[key] = ""
             except Exception as e:                           # noqa: BLE001
                 errs[key] = f"{extras.KINDS.get(item.get('type'), 'card')}: {e}"
         badges = self.badges.get() if self.badges else []
+        snap.update({f"badge:{b['name']}": int(b["n"]) for b in badges})
+        self._alert_snap = snap
         return cards[:4], badges, errs
+
+    def _led_alerts(self):
+        """Compare the latest snapshot with the previous one; blink the LED for what is new (only when the switch is on)."""
+        found = self.alerts.update(self._alert_snap)
+        if found and self.cfg.get("led_alerts") and self.dev.connected and self._pad_cap("ledfx"):
+            name, hex_, times = found[0]
+            try:
+                self.dev.request({"cmd": "led", "alert": hex_, "times": times}, timeout=2)
+            except DeviceError:
+                pass
+        return found
 
     def info_send_now(self, force=False):
         def work():
@@ -6950,6 +7033,7 @@ class App(ctk.CTk):
                 continue
             try:
                 cards, badges, errs = self._info_collect()
+                self._led_alerts()
             except Exception:                                # noqa: BLE001
                 continue
             sig = json.dumps([cards, badges], sort_keys=True)
@@ -7346,6 +7430,18 @@ class App(ctk.CTk):
         self.dimlevel = ctk.CTkSlider(box, from_=5, to=120, number_of_steps=23, width=220, command=lambda v: (self.cfg.__setitem__("dim_level", int(v)), save_config(self.cfg)))
         self.dimlevel.set(int(self.cfg.get("dim_level", 25)))
         self.dimlevel.grid(row=12, column=1, padx=6, sticky="w")
+        self.ledmood_var = tk.BooleanVar(value=bool(self.cfg.get("led_mood")))
+        ctk.CTkSwitch(box, text="Pad LED follows the time of day (warm morning, white noon, violet night)", variable=self.ledmood_var,
+                      command=lambda: (self.cfg.__setitem__("led_mood", bool(self.ledmood_var.get())), save_config(self.cfg))).grid(row=13, column=0, columnspan=3, padx=6, pady=4, sticky="w")
+        self.ledaudio_var = tk.BooleanVar(value=bool(self.cfg.get("led_audio")))
+        self.ledaudio_sw = ctk.CTkSwitch(box, text="Pad LED reacts to sound from the audio input (low = red, mid = green, high = blue)", variable=self.ledaudio_var,
+                                         command=lambda: (self.cfg.__setitem__("led_audio", bool(self.ledaudio_var.get())), save_config(self.cfg)))
+        self.ledaudio_sw.grid(row=14, column=0, columnspan=3, padx=6, pady=4, sticky="w")
+        if not audio.available():
+            self.ledaudio_sw.configure(state="disabled", text="Sound-reactive LED: not available (pip install sounddevice numpy)")
+        self.ledalert_var = tk.BooleanVar(value=bool(self.cfg.get("led_alerts")))
+        ctk.CTkSwitch(box, text="Blink the LED for a new mail badge, a CI result or an upcoming event (firmware 1.4)", variable=self.ledalert_var,
+                      command=lambda: (self.cfg.__setitem__("led_alerts", bool(self.ledalert_var.get())), save_config(self.cfg))).grid(row=15, column=0, columnspan=3, padx=6, pady=4, sticky="w")
         self.autostart_var = tk.BooleanVar(value=autostart.is_enabled())
         ctk.CTkSwitch(box, text="Start this app when I log in (minimised)", variable=self.autostart_var, command=self._autostart_toggled).grid(
             row=8, column=0, columnspan=3, padx=6, pady=4, sticky="w")

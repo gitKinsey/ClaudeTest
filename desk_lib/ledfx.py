@@ -33,11 +33,13 @@ class AlertTracker:
             return out
         for name, val in snap.items():
             old = last.get(name)
-            if name == "ci" and val != old and val:
-                bad = str(val).lower() in ("failure", "failed", "cancelled", "timed out", "startup failure")
-                out.append(("ci", "ff2030" if bad else "20ff60", 3 if bad else 1))
+            if name.startswith("ci"):
+                done = ("success", "failure", "cancelled", "timed out", "startup failure")       # runs that are still going do not blink
+                if val in done and val != old:
+                    bad = val != "success"
+                    out.append((name, "ff2030" if bad else "20ff60", 3 if bad else 1))
             elif name == "event" and val and val != old:
                 out.append(("event", "ffb020", 2))
-            elif isinstance(val, int) and isinstance(old, int) and val > old:
+            elif isinstance(val, int) and not isinstance(val, bool) and val > (old if isinstance(old, int) else 0):
                 out.append((name, "20a0ff", 2))              # a badge count grew: new mail / message
         return out

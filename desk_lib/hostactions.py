@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from desk_lib import netactions, sysactions, textops
 
 SAFE_URL_SCHEMES = ("http", "https", "mailto")
-NEW_OPS = ("appvol", "dnd", "audio_out", "mic", "shot", "translate", "ai", "webhook", "layout", "cliphist", "plugin")
+NEW_OPS = ("appvol", "dnd", "audio_out", "mic", "shot", "translate", "ai", "webhook", "layout", "cliphist", "plugin", "art", "qr")
 
 
 def collect_allowed(layer_maps, customs, resolve):
@@ -45,7 +45,7 @@ def collect_allowed(layer_maps, customs, resolve):
 class HostActions:
     def __init__(self, allowed_fn, allow_shell_fn, type_clipboard=None, notify=None, opener=None, runner=None, system=None,
                  type_text=None, read_clipboard=None, counter=None, script_runner=None, sysact=None, layouts=None, layout_store=None, cliphist=None,
-                 cfg_get=None, focus_program=None, net_fetch=None, plugin_runner=None):
+                 cfg_get=None, focus_program=None, net_fetch=None, plugin_runner=None, pad_image=None):
         self.allowed_fn, self.allow_shell_fn = allowed_fn, allow_shell_fn
         self.type_clipboard, self.notify = type_clipboard, notify
         self.type_text, self.read_clipboard, self.counter = type_text, read_clipboard, counter   # snippets / clipboard transforms
@@ -53,6 +53,7 @@ class HostActions:
         self.sysact, self.layouts, self.layout_store, self.cliphist = sysact, layouts, layout_store, cliphist   # OS actions, window layouts, clipboard history
         self.cfg_get = cfg_get or (lambda key, default=None: default)                              # app settings (AI key, screenshot folder)
         self.focus_program, self.net_fetch = focus_program or (lambda: ""), net_fetch
+        self.pad_image = pad_image                                                                 # callable(kind, arg) -> message, for ops "art" / "qr"
         self.plugin_runner = plugin_runner                                                         # callable('name:arg') -> message, for op "plugin"
         self.open_url = opener or webbrowser.open
         self.popen = runner or subprocess.Popen
@@ -155,6 +156,10 @@ class HostActions:
             if word.lower() == "save" and name.strip():
                 return f"layout '{name.strip()}' saved ({lay.save(store, name.strip())} windows)"
             return f"layout '{arg.strip()}' restored ({lay.restore(store, arg.strip())} windows moved)"
+        if op in ("art", "qr"):
+            if not self.pad_image:
+                raise ValueError("pictures for the pad are not available here")
+            return self.pad_image(op, arg)
         if op == "plugin":
             if not self.plugin_runner:
                 raise ValueError("plugins are switched off (Device page -> Plugins)")
