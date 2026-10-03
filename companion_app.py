@@ -18,6 +18,7 @@ import ctypes
 import ctypes.wintypes
 from datetime import datetime
 import functools
+import gc
 import io
 import json
 import math
@@ -4172,6 +4173,8 @@ class App(ctk.CTk):
         self.refresh_library()
         self.recompute_pending()
         self.history.record(self._edit_snapshot())
+        gc.disable()                                          # Tk objects (fonts) must be freed on the main thread: a collection inside a worker thread can deadlock
+        self.after(2000, self._gc_tick)
         if self.cfg.get("hotkey_on"):
             self.hotkey_set(True, self.cfg["hotkey"])
         if self.cfg.get("update_check"):
@@ -5251,6 +5254,11 @@ class App(ctk.CTk):
 
     def test_seq(self):
         self._guard(lambda: self.test_spec(self._seq_spec(), "Sequence"))
+
+    def _gc_tick(self):
+        gc.collect()
+        if not self.closing:
+            self.after(3000, self._gc_tick)
 
     def _twin_loop(self):
         if self.closing:

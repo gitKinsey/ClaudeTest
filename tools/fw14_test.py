@@ -62,7 +62,7 @@ notes = []
 app.notify = lambda t, msg, kind="ok": notes.append((t, msg))
 assert app.dev.info["fw"] == "1.4.0" and all(c in app.dev.info["caps"] for c in m.NEW14_CAPS) and app.dev.info["modes"] == 12
 sc = app.screens_card
-assert pump(40, lambda: all(str(w.cget("state")) == "normal" for w in sc.widgets))
+assert pump(40, lambda: all(str(w.cget("state")) == "normal" for w in sc.widgets if w not in sc.new_boxes))
 # ---- screen mask
 assert [v.get() for v in sc.mask_vars] == [True] * 6 + [False] * 14
 sc.mask_vars[6].set(True); sc.mask_vars[10].set(True); sc._mask_changed()

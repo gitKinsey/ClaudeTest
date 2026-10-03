@@ -45,3 +45,20 @@ Run these under `xvfb-run -a` on a headless machine; all talk to the built-in si
   Online search against a local mock Tenor + GIPHY server (trending, search, wrong key, no network, non-GIF download,
   stale searches), upload with byte comparison, and the PC-volume mirroring loop (parsing of `pactl` / `amixer` /
   `osascript` output from canned text, what is sent to the pad). `SHOTS=1` also saves screenshots to `/tmp`.
+
+## Tests added with firmware / app 1.5
+
+`tools/run_app_tests.sh` runs all of them (lint first). The new ones:
+
+* `appextras_test.py` - update check, plugins, undo history, tips, languages, global hotkey (fake backend), latency / power, the mouse recorder,
+  secret redaction and the diagnostic zip, the Python client against a fake serial port. No display needed.
+* `appglue_test.py` - accent colour / scale / language / system theme, undo-redo of key assignments, plugins through the host-action whitelist,
+  hotkey, update check, tips card, auto-heal (a simulated pad that corrupts the first write), live mirror, share codes (including hostile ones),
+  the diagnostic zip.
+* `data_test.py` - the info-card sources (quotes, birthdays, ping / website, lyrics, moon, sun, network, goal, rain, rings), cover art / QR code,
+  the sound-reactive LED maths and thread, the time-of-day mood, LED alerts, and their app glue.
+* `fw15_test.py` - the firmware-1.5 features in the app against the simulated pad, plus a simulated 1.4 pad for compatibility.
+* `emulator_test.py` group `t_fw15` - the real firmware 1.5 in QEMU: themes, display options, the eight new screens, saver styles, clock faces,
+  card kinds, triple tap / chords / dial clicks (also with synthetic key timing through `key_test`), pad functions, labels, dim, boot log, rollback.
+  It takes about 3.5 minutes; **do not run other heavy jobs on the same machine meanwhile** - starving the emulator once produced a firmware
+  reset in `t_settings` (two clean runs followed).

@@ -114,6 +114,13 @@ class Emu:
     def panicked(self):
         return any("Guru Meditation" in l or "abort()" in l for l in self.log)
 
+    def panic_context(self, before=3, after=22):
+        """The console lines around the first panic (what the firmware printed: the exception, the registers, the backtrace)."""
+        for i, l in enumerate(self.log):
+            if "Guru Meditation" in l or "abort()" in l:
+                return self.log[max(0, i - before):i + after]
+        return []
+
     def close(self):
         try:
             self.p.kill()
@@ -1287,6 +1294,7 @@ def t_fw15(c):
     expect(e.request({"cmd": "hello"})["layer"] == 0, "letting go brings layer 1 back")
     press(3, "release"); e.pump(0.2)
     expect(e.request({"cmd": "hello"})["layer"] == 0, "a release without a hold does nothing")
+    expect(e.request({"cmd": "remap", "key": 3, "gesture": "hold", "layer": 2, "type": "layer", "val": "hold2"})["ok"], "the same on layer 3")
     e.request({"cmd": "layer", "val": 2}); e.pump(0.2); press(3, "hold"); e.pump(0.3)
     expect(e.request({"cmd": "hello"})["layer"] == 1, "from layer 3: hold K3 -> layer 2"); press(3, "release"); e.pump(0.3)
     expect(e.request({"cmd": "hello"})["layer"] == 2, "...and back to layer 3")
@@ -1458,6 +1466,8 @@ def main():
                 print(f"  FAIL  {t.__name__:28s} {ex!r}")
                 for l in e.log[-8:]:
                     print("        console:", l[:160])
+                for l in e.panic_context():
+                    print("        panic:", l[:200])
                 try:
                     e.wait_boot(30)
                 except Exception:
