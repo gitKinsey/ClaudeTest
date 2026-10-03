@@ -25,7 +25,7 @@ assert ok("macro", [{"host": {"op": "notify", "arg": "a"}}, {"panic": True}])
 d = m.describe_spec
 assert d(("panic", None)).startswith("panic") and d(("toggle", [A, B])) == "alternate: notify: A  /  media key mute"
 assert d(("mouse", {"wheel": 2, "mods": ["CTRL"]})) == "scroll up 2 with Ctrl" and d(("mouse", {"wheel": 3, "h": True})) == "scroll left 3" and d(("random", [A, B])).startswith("random one of 2")
-assert len(m.MODE_CHOICES) == 12 and m.NUM_MODES == 12 and m.FW_BUNDLED == "1.5.0" and "ledfx" in m.NEW14_CAPS
+assert len(m.MODE_CHOICES) == 20 and m.NUM_MODES == 20 and m.FW_BUNDLED == "1.5.0" and "ledfx" in m.NEW14_CAPS
 for act in ("Panic: stop all macros",):
     assert ("Layers & Pad", act) in m.ACTION_INDEX
 assert ("Mouse", "Zoom In (Ctrl+Scroll)") in m.ACTION_INDEX and m.ACTION_INDEX[("Mouse", "Zoom In (Ctrl+Scroll)")][0][1]["mods"] == ["CTRL"]
@@ -64,7 +64,7 @@ assert app.dev.info["fw"] == "1.4.0" and all(c in app.dev.info["caps"] for c in 
 sc = app.screens_card
 assert pump(40, lambda: all(str(w.cget("state")) == "normal" for w in sc.widgets))
 # ---- screen mask
-assert [v.get() for v in sc.mask_vars] == [True] * 6 + [False] * 6
+assert [v.get() for v in sc.mask_vars] == [True] * 6 + [False] * 14
 sc.mask_vars[6].set(True); sc.mask_vars[10].set(True); sc._mask_changed()
 assert pump(60, lambda: sim.settings["mode_mask"] == 0x3F | (1 << 6) | (1 << 10)) and app.pad.mode_mask == 0x3F | (1 << 6) | (1 << 10)
 for v in sc.mask_vars:
@@ -97,7 +97,7 @@ assert pump(60, lambda: sim.habits["names"][0] == "Hydrate") and "Hydrate" in sc
 sc.hab[1].delete(0, "end"); sc.hab[1].insert(0, "x" * 11); sc.save_habits(); assert "at most 10" in app.status.cget("text")
 sim.reminders[2] = {"m": 9, "t": "Tea"}; sim.settings["mode_mask"] = 0xFFF
 sc.on_connected()
-assert pump(60, lambda: sc.rem[2][1].get() == "Tea" and all(v.get() for v in sc.mask_vars)), "controls follow the pad"
+assert pump(60, lambda: sc.rem[2][1].get() == "Tea" and all(v.get() for v in sc.mask_vars[:12])), "controls follow the pad"
 
 # ---- dial pressed + turned (gestures panel) and alternating / random keys
 g = app.automation.gestures

@@ -31,6 +31,18 @@ def band_levels(samples, rate):
     return out
 
 
+VIZ_FREQS = (80, 160, 320, 640, 1250, 2500, 5000, 7500)               # eight log-spaced bars for the pad's SOUND screen
+
+
+def bars(samples, rate):
+    """-> eight integers 0..100 (one per VIZ_FREQS entry); frequencies above the Nyquist limit read 0."""
+    out = []
+    for f in VIZ_FREQS:
+        p = goertzel(samples, rate, f) if f < rate / 2 else 0.0
+        out.append(int(min(1.0, math.sqrt(p) * 6) * 100))
+    return out
+
+
 def color(levels, floor=0.04):
     """Bands -> (r, g, b): low = red, mid = green, high = blue. Silence -> off (0, 0, 0)."""
     lo, mid, hi = levels
@@ -47,7 +59,7 @@ class Spectrum:
     """Listens to the default input in the background; .levels holds the latest [low, mid, high]."""
 
     def __init__(self, stream_factory=None, rate=16000, block=1024):
-        self.rate, self.block, self.levels = rate, block, [0.0, 0.0, 0.0]
+        self.rate, self.block, self.levels, self.bar_levels = rate, block, [0.0, 0.0, 0.0], [0] * 8
         self._factory, self._stream, self._lock = stream_factory, None, threading.Lock()
 
     def _callback(self, indata, frames, time_info, status):
@@ -56,8 +68,10 @@ class Spectrum:
         except Exception:                                            # noqa: BLE001
             return
         lv = band_levels(samples, self.rate)
+        br = bars(samples, self.rate)
         with self._lock:
             self.levels = [max(new, old * 0.6) for new, old in zip(lv, self.levels)]          # fast attack, smooth decay
+            self.bar_levels = [max(new, int(old * 0.7)) for new, old in zip(br, self.bar_levels)]
 
     def start(self):
         if self._stream is not None:
@@ -83,8 +97,12 @@ class Spectrum:
             except Exception:                                        # noqa: BLE001
                 pass
             self._stream = None
-        self.levels = [0.0, 0.0, 0.0]
+        self.levels, self.bar_levels = [0.0, 0.0, 0.0], [0] * 8
 
     def current(self):
         with self._lock:
             return list(self.levels)
+
+    def current_bars(self):
+        with self._lock:
+            return list(self.bar_levels)

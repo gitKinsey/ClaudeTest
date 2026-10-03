@@ -13,8 +13,10 @@ from desk_lib.feeds import ascii_fold
 
 KINDS = {"countdown": "Countdown to a date", "worldclock": "World clock", "git": "Git repository status",
          "ci": "GitHub Actions status", "crypto": "Crypto price", "quote": "Quote of the day", "birthday": "Birthdays / anniversaries",
-         "ping": "Is a server up? (ping)", "http": "Is a website up? (HTTP)", "lyrics": "Lyrics of the playing song"}
-TTL = {"countdown": 30, "worldclock": 15, "git": 20, "ci": 120, "crypto": 120, "quote": 600, "birthday": 600, "ping": 20, "http": 30, "lyrics": 2}       # seconds between refreshes
+         "ping": "Is a server up? (ping)", "http": "Is a website up? (HTTP)", "lyrics": "Lyrics of the playing song",
+         "progress": "Progress of the year / month / week / day (bar)", "battery": "Laptop battery (ring)", "disk": "Disk usage (ring)", "load": "CPU load (ring)"}
+TTL = {"countdown": 30, "worldclock": 15, "git": 20, "ci": 120, "crypto": 120, "quote": 600, "birthday": 600, "ping": 20, "http": 30, "lyrics": 2,
+       "progress": 60, "battery": 30, "disk": 120, "load": 2}       # seconds between refreshes
 
 QUOTES = [
     ("Well begun is half done.", "Aristotle"), ("Simplicity is the ultimate sophistication.", "Leonardo da Vinci"),
@@ -77,8 +79,14 @@ def validate(item):
     elif t == "http":
         if not re.fullmatch(r"https?://[^\s]+", a):
             raise ValueError("enter a web address starting with http:// or https://")
-    elif t == "lyrics":
+    elif t == "lyrics" or t in ("battery", "load"):
         a = ""
+    elif t == "progress":
+        a = a.lower() or "year"
+        if a not in ("year", "month", "week", "day", "work"):
+            raise ValueError("enter year, month, week, day or work (the 9-17 working day)")
+    elif t == "disk":
+        a = a or "/"
     return {"type": t, "label": label, "arg": a}
 
 
@@ -286,6 +294,63 @@ def http_card(label, url, fetch=None, clock=None):
     return {"k": "c", "label": ascii_fold(label or "WEBSITE", 24).upper(), "t": t, "a": ascii_fold(host, 40), "b": b}
 
 
+# ---------------------------------------------------------------- bars and rings (card kinds "p" progress and "r" ring on firmware 1.5)
+def progress_card(label, which, now=None):
+    now = now or dt.datetime.now()
+    if which == "year":
+        start, end = dt.datetime(now.year, 1, 1), dt.datetime(now.year + 1, 1, 1)
+        tag, sub = f"of {now.year}", f"day {now.timetuple().tm_yday} of {(end - start).days}"
+    elif which == "month":
+        start = dt.datetime(now.year, now.month, 1)
+        end = dt.datetime(now.year + (now.month == 12), now.month % 12 + 1, 1)
+        tag, sub = now.strftime("of %B"), f"day {now.day} of {(end - start).days}"
+    elif which == "week":
+        start = dt.datetime(now.year, now.month, now.day) - dt.timedelta(days=now.weekday())
+        end = start + dt.timedelta(days=7)
+        tag, sub = "of this week", now.strftime("%A")
+    elif which == "day":
+        start = dt.datetime(now.year, now.month, now.day)
+        end = start + dt.timedelta(days=1)
+        tag, sub = "of today", now.strftime("%H:%M")
+    else:                                                    # "work": 09:00 - 17:00
+        start, end = dt.datetime(now.year, now.month, now.day, 9), dt.datetime(now.year, now.month, now.day, 17)
+        tag, sub = "of the working day", "9:00 - 17:00"
+    pct = max(0.0, min(100.0, (now - start) / (end - start) * 100.0))
+    return {"k": "p", "label": ascii_fold(label or "PROGRESS", 24).upper(), "t": str(int(pct)), "a": tag, "b": sub}
+
+
+def battery_card(label, sensor=None):
+    if sensor is None:
+        import psutil                                        # noqa: PLC0415
+        sensor = getattr(psutil, "sensors_battery", lambda: None)
+    b = sensor()
+    if b is None:
+        raise ValueError("this computer has no battery")
+    left = ""
+    if not b.power_plugged and b.secsleft and b.secsleft > 0:
+        left = f"{b.secsleft // 3600}h {(b.secsleft // 60) % 60:02d}m left"
+    return {"k": "r", "label": ascii_fold(label or "BATTERY", 24).upper(), "t": str(int(round(b.percent))), "a": "charging" if b.power_plugged else "on battery", "b": left}
+
+
+def disk_card(label, path, usage=None):
+    if usage is None:
+        import psutil                                        # noqa: PLC0415
+        usage = psutil.disk_usage
+    try:
+        u = usage(path)
+    except OSError as e:
+        raise ValueError(f"cannot read {path}: {e.strerror or e}") from None
+    gb = 1024 ** 3
+    return {"k": "r", "label": ascii_fold(label or "DISK", 24).upper(), "t": str(int(round(u.percent))), "a": f"{u.used / gb:.0f} of {u.total / gb:.0f} GB", "b": ascii_fold(path, 20)}
+
+
+def load_card(label, cpu=None, ram=None):
+    if cpu is None:
+        import psutil                                        # noqa: PLC0415
+        cpu, ram = psutil.cpu_percent(None), psutil.virtual_memory().percent
+    return {"k": "r", "label": ascii_fold(label or "CPU", 24).upper(), "t": str(int(round(cpu))), "a": "CPU load", "b": f"RAM {int(round(ram or 0))}%"}
+
+
 _LYRICS = None
 
 
@@ -308,6 +373,14 @@ def build(item, **kw):
         return ping_card(label, arg, kw.get("connect"), kw.get("clock"))
     if t == "http":
         return http_card(label, arg, kw.get("fetch"), kw.get("clock"))
+    if t == "progress":
+        return progress_card(label, arg, kw.get("now"))
+    if t == "battery":
+        return battery_card(label, kw.get("sensor"))
+    if t == "disk":
+        return disk_card(label, arg, kw.get("usage"))
+    if t == "load":
+        return load_card(label, kw.get("cpu"), kw.get("ram"))
     if t == "lyrics":
         global _LYRICS
         from desk_lib import feeds, lyrics                   # noqa: PLC0415

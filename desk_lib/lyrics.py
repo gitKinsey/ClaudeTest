@@ -105,4 +105,5 @@ class Lyrics:
             cur, nxt = self._plain[0], self._plain[1] if len(self._plain) > 1 else ""
         else:
             raise ValueError("no lyrics found for this song")
-        return {"k": "c", "label": "LYRICS", "t": ascii_fold(cur or "...", 40), "a": ascii_fold(nxt, 40), "b": ascii_fold(np["title"], 40)}
+        line = ascii_fold(cur or "...", 80)
+        return {"k": "s" if len(line) > 11 else "c", "label": "LYRICS", "t": line, "a": ascii_fold(nxt, 40), "b": ascii_fold(np["title"], 40)}       # "s" = scrolling text (firmware 1.5)

@@ -7,13 +7,19 @@ import customtkinter as ctk
 from desk_lib import ui
 
 DIAL = [("Off", 0), ("Normal", 1), ("Fast", 2)]
-CLOCKS = [("Classic (analog + digital)", 0), ("Digital", 1), ("Binary", 2), ("Minimal", 3)]
+CLOCKS = [("Classic (analog + digital)", 0), ("Digital", 1), ("Binary", 2), ("Minimal", 3), ("Analog, smooth seconds (1.5)", 4), ("Words (1.5)", 5)]
 SAVER_TIMES = [("Off", 0), ("1 minute", 60), ("5 minutes", 300), ("10 minutes", 600), ("30 minutes", 1800), ("1 hour", 3600)]
-SAVER_STYLES = [("Starfield", 1), ("Matrix rain", 2), ("Dim drifting clock", 3)]
+SAVER_STYLES = [("Starfield", 1), ("Matrix rain", 2), ("Dim drifting clock", 3), ("Plasma (1.5)", 4), ("Fire (1.5)", 5), ("Lava lamp (1.5)", 6), ("Game of Life (1.5)", 7)]
+THEMES = [("Cyan (default)", 0), ("High contrast", 1), ("Night red", 2), ("Terminal green", 3), ("Amber", 4), ("Monochrome", 5), ("Seasons (follows the month)", 6)]
+ROTATIONS = [("0 degrees", 0), ("90 degrees", 1), ("180 degrees", 2), ("270 degrees", 3)]
 HOURS = [f"{h:02d}:00" for h in range(24)]
-GESTURES = [("Hold the key", "hold"), ("Double-tap the key", "double")]
-DIAL_PRESS = {"Dial pressed + turned right": 8, "Dial pressed + turned left": 9}      # slots 8 / 9 (firmware 1.4), gesture name "press"
-SCREEN_NAMES = ["Clock", "Focus timer", "Media", "System", "GIF", "Info", "Stopwatch", "Breathing", "Dice & coin", "Reaction test", "Snake", "Habits"]
+GESTURES = [("Hold the key", "hold"), ("Double-tap the key", "double"), ("Triple-tap the key (1.5)", "triple")]
+DIAL_PRESS = {"Dial pressed + turned right": 8, "Dial pressed + turned left": 9,        # slots 8 / 9 (firmware 1.4), gesture name "press"
+              "Chord K1 + K2 together (1.5)": 10, "Chord K2 + K3 together (1.5)": 11, "Chord K3 + K4 together (1.5)": 12, "Chord K4 + K5 together (1.5)": 13,
+              "Dial double-click (1.5)": 14, "Dial triple-click (1.5)": 15}
+SLOT_CAP = {8: "pressturn", 9: "pressturn", 10: "chords", 11: "chords", 12: "chords", 13: "chords", 14: "dialclicks", 15: "dialclicks"}
+SCREEN_NAMES = ["Clock", "Focus timer", "Media", "System", "GIF", "Info", "Stopwatch", "Breathing", "Dice & coin", "Reaction test", "Snake", "Habits",
+                "Pong", "Breakout", "Flappy", "Game of Life", "Pixel pet", "Simon", "Diagnostics", "Sound bars"]
 
 
 def _label(table, value, default=0):
@@ -67,8 +73,32 @@ class BehaviourCard:
             lambda f: ctk.CTkLabel(f, text="max brightness"))
         self.level.grid(row=3, column=2, padx=6)
         self._reg(self.level)
+        # ---- firmware 1.5: look and feel
+        self.v.update({"theme": tk.StringVar(value=THEMES[0][0]), "rotation": tk.StringVar(value=ROTATIONS[0][0]), "tint": tk.BooleanVar(value=False),
+                       "pixel_shift": tk.BooleanVar(value=False), "fade": tk.BooleanVar(value=False), "boot_anim": tk.BooleanVar(value=True),
+                       "detent_led": tk.BooleanVar(value=False), "key_toast": tk.BooleanVar(value=False), "dial_lock": tk.BooleanVar(value=False)})
+        self.rep = [tk.BooleanVar(value=False) for _ in range(5)]
+        self.w15 = []
+
+        def reg15(w):
+            self.w15.append(w)
+            return w
+        sw = lambda key, text: (lambda f: reg15(ctk.CTkSwitch(f, text=text, variable=self.v[key], command=lambda k=key: self.apply(**{k: bool(self.v[k].get())}))))   # noqa: E731
+        m15 = lambda var, table, key, width=200: (lambda f: reg15(ctk.CTkOptionMenu(f, values=[n for n, _v in table], variable=var, width=width,   # noqa: E731
+                                                                                     command=lambda lab, k=key, t=table: self.apply(**{k: _value(t, lab)}))))
+        row(4, "Colour theme", m15(self.v["theme"], THEMES, "theme", 240), sw("tint", "tint the accent per layer"))
+        row(5, "Display", m15(self.v["rotation"], ROTATIONS, "rotation", 130), sw("pixel_shift", "pixel shift (against burn-in)"), sw("fade", "fade between screens"))
+        def make_splash(f):
+            self.splash = reg15(ctk.CTkEntry(f, width=170, placeholder_text="start-up name (12 chars)"))
+            self.splash.bind("<Return>", lambda _e: self.apply(splash=self.splash.get().strip()))
+            return self.splash
+        row(6, "Start-up", sw("boot_anim", "start-up animation"), make_splash)
+        row(7, "Feedback", sw("detent_led", "LED tick on every dial detent"), sw("key_toast", "show the key's name when pressed"))
+        row(8, "Dial", sw("dial_lock", "lock the dial (turns do nothing; a click still opens the menu)"))
+        row(9, "Key repeat", *[(lambda f, i=i: reg15(ctk.CTkCheckBox(f, text=f"K{i + 1}", variable=self.rep[i], width=60, command=self._repeat_changed))) for i in range(5)],
+            lambda f: ctk.CTkLabel(f, text="  hold the key to repeat its action (for arrow keys, volume ...)"))
         self.note = ui.muted(body, "", wraplength=860)
-        self.note.grid(row=4, column=0, columnspan=3, sticky="w", padx=6, pady=(2, 0))
+        self.note.grid(row=10, column=0, columnspan=3, sticky="w", padx=6, pady=(2, 0))
         self._level_job = None
         self.refresh()
 
@@ -82,12 +112,17 @@ class BehaviourCard:
         ok = has_cap(app, "dialaccel")
         for w in self.widgets:
             w.configure(state="normal" if ok else "disabled")
+        for w in self.w15:
+            w.configure(state="normal" if has_cap(app, "themes") else "disabled")
         if not app.dev.connected:
             self.note.configure(text="Connect the pad to change these. They are stored on the pad.")
         elif not ok:
             self.note.configure(text="This pad's firmware is older than 1.3 - update it (Firmware card below) to get these settings.")
+        elif not has_cap(app, "themes"):
+            self.note.configure(text="The look-and-feel options (themes, rotation, key names ...) need firmware 1.5 - update the pad (Firmware card below).")
         else:
-            self.note.configure(text="Night dimming needs the pad's clock to be set (the app does that on connect). Everything here is stored on the pad.")
+            self.note.configure(text="Night dimming needs the pad's clock to be set (the app does that on connect). Everything here is stored on the pad. "
+                                     "Rotation 90 / 270 turns the picture on the pad; the screenshot and the twin always show it upright.")
 
     def load(self, st):
         """Fill the controls from the pad's {"evt":"settings"} answer."""
@@ -101,6 +136,16 @@ class BehaviourCard:
             self.v["night_from"].set(f"{int(st.get('night_from', 22)):02d}:00")
             self.v["night_to"].set(f"{int(st.get('night_to', 7)):02d}:00")
             self.level.set(max(5, min(150, int(st.get("night_level", 30)))))
+            self.v["theme"].set(_label(THEMES, st.get("theme", 0)))
+            self.v["rotation"].set(_label(ROTATIONS, st.get("rotation", 0)))
+            for k in ("tint", "pixel_shift", "fade", "detent_led", "key_toast", "dial_lock"):
+                self.v[k].set(bool(st.get(k)))
+            self.v["boot_anim"].set(bool(st.get("boot_anim", True)))
+            self.splash.delete(0, "end")
+            self.splash.insert(0, st.get("splash", ""))
+            mask = int(st.get("repeat_mask", 0))
+            for i, var in enumerate(self.rep):
+                var.set(bool((mask >> i) & 1))
         finally:
             self.busy = False
 
@@ -114,6 +159,9 @@ class BehaviourCard:
         if self.busy or not has_cap(self.app, "dialaccel"):
             return
         self.app.bg(lambda: self.app.dev.request({"cmd": "settings", **fields}), lambda _r: self.app.set_status("Pad setting changed"), "Pad setting failed")
+
+    def _repeat_changed(self):
+        self.apply(repeat_mask=sum(1 << i for i, v in enumerate(self.rep) if v.get()))
 
     def _night_changed(self):
         self.apply(night_on=bool(self.v["night_on"].get()), night_from=int(self.v["night_from"].get()[:2]),
@@ -137,7 +185,8 @@ def gesture_msgs(app, existing, resolve, caps=None):
     wanted = set()
     for k, m in sorted(app.cfg.get("gestures", {}).items()):
         layer, slot, g = parse_gesture_key(k)
-        if g == "press" and caps is not None and "pressturn" not in caps:
+        need = SLOT_CAP.get(slot) if g == "press" else ("tapdance" if g == "triple" else None)
+        if need and caps is not None and need not in caps:
             continue                                                         # an older pad cannot do it: keep it in the settings, send nothing
         spec = resolve(m["cat"], m["action"])
         if not spec:
@@ -164,9 +213,10 @@ class GesturePanel:
         self.app = app
         box = ctk.CTkFrame(parent)
         box.pack(fill="x", pady=5, padx=2)
-        ctk.CTkLabel(box, text="Key gestures: hold and double-tap", font=ui.font(15, "bold"), anchor="w").pack(anchor="w", padx=16, pady=(14, 2))
-        ui.muted(box, "Give K1 to K5 a second and third action. A key that has a hold or double-tap action reacts when you let go (a double-tap waits "
-                 "a quarter of a second to see whether a second tap follows); keys without one still act the instant you press them. Needs firmware 1.3.",
+        ctk.CTkLabel(box, text="Key gestures: hold, double-tap, triple-tap, chords, dial clicks", font=ui.font(15, "bold"), anchor="w").pack(anchor="w", padx=16, pady=(14, 2))
+        ui.muted(box, "Give K1 to K5 more actions. A key that has a hold, double-tap or triple-tap action reacts when you let go (a multi-tap waits "
+                 "a quarter of a second to see whether another tap follows); keys without one still act the instant you press them. A chord is two neighbouring keys pressed "
+                 "together (those two keys wait 45 ms to see whether the other follows). Hold / double-tap need firmware 1.3, the rest 1.5.",
                  wraplength=880).pack(anchor="w", padx=16, pady=(0, 6))
         self.list = ctk.CTkFrame(box, fg_color="transparent")
         self.list.pack(fill="x", padx=10, pady=4)
@@ -181,9 +231,9 @@ class GesturePanel:
         r1 = ctk.CTkFrame(add, fg_color="transparent")
         r1.pack(fill="x", padx=10, pady=(10, 4))
         ctk.CTkOptionMenu(r1, values=["Layer 1", "Layer 2", "Layer 3"], variable=self.layer, width=100).pack(side="left", padx=(0, 6))
-        ctk.CTkOptionMenu(r1, values=["K1", "K2", "K3", "K4", "K5"] + list(DIAL_PRESS), variable=self.slot, width=220).pack(side="left", padx=6)
+        ctk.CTkOptionMenu(r1, values=["K1", "K2", "K3", "K4", "K5"] + list(DIAL_PRESS), variable=self.slot, width=270).pack(side="left", padx=6)
         ctk.CTkOptionMenu(r1, values=[n for n, _g in GESTURES], variable=self.gest, width=170).pack(side="left", padx=6)
-        ui.muted(r1, "(the gesture choice only applies to K1-K5)").pack(side="left", padx=6)
+        ui.muted(r1, "(the gesture choice only applies to K1-K5; chords and dial clicks need firmware 1.5)").pack(side="left", padx=6)
         r2 = ctk.CTkFrame(add, fg_color="transparent")
         r2.pack(fill="x", padx=10, pady=(4, 10))
         self.cat_menu = ctk.CTkOptionMenu(r2, values=cats, variable=self.cat, width=150, command=self._cat_changed)
@@ -259,13 +309,16 @@ class ScreensCard:
         grid = ctk.CTkFrame(body, fg_color="transparent", border_width=0)
         grid.grid(row=1, column=0, columnspan=4, sticky="w", padx=6)
         self.mask_vars = []
+        self.new_boxes = []                                  # screens 13-20 need firmware 1.5
         for i, name in enumerate(SCREEN_NAMES):
             v = tk.BooleanVar(value=i < 6)
             self.mask_vars.append(v)
             cb = ctk.CTkCheckBox(grid, text=f"{i + 1} {name}", variable=v, width=150, command=self._mask_changed)
             cb.grid(row=i // 4, column=i % 4, padx=(0, 10), pady=3, sticky="w")
             self.widgets.append(cb)
-        ui.muted(body, "Screens 7-12 are drawn by the pad itself and use K1-K5 (for example K1 = start / stop on the stopwatch); your key actions are back on every other screen.",
+            if i >= 12:
+                self.new_boxes.append(cb)
+        ui.muted(body, "Screens 7-20 are drawn by the pad itself and use K1-K5 (for example K1 = start / stop on the stopwatch, the dial steers the games); your key actions are back on every other screen.",
                  wraplength=860).grid(row=2, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 8))
         ctk.CTkLabel(body, text="Reminders", anchor="w", font=ui.font(13, "bold")).grid(row=3, column=0, padx=6, pady=(6, 2), sticky="w")
         self.rem = []
@@ -321,6 +374,9 @@ class ScreensCard:
         ok = self._ok()
         for w in self.widgets:
             w.configure(state="normal" if ok else "disabled")
+        if ok and not has_cap(self.app, "games"):
+            for w in self.new_boxes:
+                w.configure(state="disabled")
         self.note.configure(text="Connect the pad to change these." if not self.app.dev.connected else
                             "" if ok else "This pad's firmware is older than 1.4 - update it (Firmware card below) to get these screens and reminders.")
 

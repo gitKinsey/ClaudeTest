@@ -180,7 +180,7 @@ def t_first_boot_responsive(c):
 
 def t_hello(c):
     h = c.e.request({"cmd": "hello"})
-    expect(h["ok"] and h["dev"] == "desk-companion" and h["fw"] == "1.4.0", f"bad hello {h}")
+    expect(h["ok"] and h["dev"] == "desk-companion" and h["fw"] == "1.5.0", f"bad hello {h}")
     for k in ("mode", "bright", "os", "fs_free", "fs_total", "layout", "hid", "disp", "fs", "safe", "led_pin"):
         expect(k in h, f"hello lacks {k}")
     expect(h["led_pin"] == 21, "LED pin should default to GPIO21 (Waveshare ESP32-S3-Zero)")
@@ -267,7 +267,7 @@ def t_modes_render(c):
         c.save(img, f"mode_{m}_{n}.png")
         expect(len(set(img.getdata())) >= 4, f"mode {m} ({n}) renders an almost empty screen")
         expect(e.request({"cmd": "ping"})["ok"], "alive")
-    expect(e.request({"cmd": "mode", "val": 13})["ok"] is True, "out-of-range mode is ignored, not fatal")
+    expect(e.request({"cmd": "mode", "val": 21})["ok"] is True, "out-of-range mode is ignored, not fatal")
     expect(e.request({"cmd": "hello"})["mode"] in (1, 2, 3, 4), "mode unchanged by invalid value")
 
 
@@ -322,7 +322,7 @@ def t_remap_persistence(c):
     expect(e.request({"cmd": "remap", "key": 6, "type": "combo", "val": ["CTRL", "SHIFT", "ALT", "t"]})["ok"], "remap combo")
     expect(e.request({"cmd": "remap", "key": 2, "type": "macro", "val": [{"combo": ["GUI", "r"]}, {"delay": 200}, {"text": "cmd"}, {"media": "MUTE"}]})["ok"], "remap macro")
     expect(e.request({"cmd": "remap", "key": 3, "type": "media", "val": "NEXT"})["ok"], "remap media")
-    expect(e.request({"cmd": "remap", "key": 10, **spec})["err"] == "key", "key 10 invalid (8 / 9 are the dial press+turn slots since firmware 1.4)")
+    expect(e.request({"cmd": "remap", "key": 16, **spec})["err"] == "key", "key 16 invalid (8 / 9 = dial press+turn since 1.4; 10-13 chords, 14 / 15 dial clicks since 1.5)")
     expect(e.request({"cmd": "remap", "key": 1, "type": "combo", "val": ["NOPE"]})["err"] == "spec", "bad key name")
     expect(e.request({"cmd": "remap", "key": 1, "type": "text", "val": "x" * 4000})["err"] == "too_long", "too long")
     j = json.dumps(spec, separators=(",", ":"))
@@ -525,7 +525,7 @@ def t_layers(c):
     e = c.e
     e.request({"cmd": "reset_keys"})
     h = e.request({"cmd": "hello"})
-    expect(h["layers"] == 3 and h["layer"] == 0 and h["modes"] == 12, f"hello layers/modes: {h}")
+    expect(h["layers"] == 3 and h["layer"] == 0 and h["modes"] == 20, f"hello layers/modes: {h}")
     for cap in ("layers", "mouse", "host", "info", "gifslots", "factory"):
         expect(cap in h["caps"], f"capability {cap} missing: {h['caps']}")
     expect("wifi" not in h["caps"] and "ota" not in h["caps"], f"the default build is cable-only: {h['caps']}")
@@ -545,7 +545,7 @@ def t_layers(c):
     expect(sp["def"] is True and sp["spec"] == {"type": "media", "val": "PLAY_PAUSE"}, f"default of layer 2 K2: {sp}")
     sp = e.request({"cmd": "getkeys", "layer": 0, "slot": 1})
     expect(sp["spec"] == {"type": "combo", "val": ["PRIMARY", "c"]}, f"default of layer 1 K1: {sp}")
-    expect(e.request({"cmd": "getkeys", "layer": 0, "slot": 9})["err"] == "key", "slot 9")
+    expect(e.request({"cmd": "getkeys", "layer": 0, "slot": 16})["err"] == "key", "slot 16")
     # switching
     e.msgs.clear()
     r = e.request({"cmd": "layer", "val": 1})
@@ -775,10 +775,10 @@ def t_settings(c):
     h = e.request({"cmd": "hello"})
     for cap in ("hostx", "gestures", "dialaccel", "clockstyle", "saver", "nightdim"):
         expect(cap in h["caps"], f"capability {cap} missing: {h['caps']}")
-    expect(h["fw"] == "1.4.0", f"firmware version {h['fw']}")
+    expect(h["fw"] == "1.5.0", f"firmware version {h['fw']}")
     st = e.request({"cmd": "settings"})
     expect(st["evt"] == "settings" and st["dial_accel"] == 0 and st["clock_style"] == 0 and st["saver_s"] == 0 and st["night_on"] is False, f"defaults {st}")
-    for bad in ({"dial_accel": 3}, {"clock_style": 4}, {"saver_s": 3601}, {"saver_style": 0}, {"night_from": 24}, {"night_level": 4}, {"night_on": 1}, {"dial_accel": "x"}):
+    for bad in ({"dial_accel": 3}, {"clock_style": 6}, {"saver_s": 3601}, {"saver_style": 0}, {"night_from": 24}, {"night_level": 4}, {"night_on": 1}, {"dial_accel": "x"}):
         expect(e.request({"cmd": "settings", **bad})["err"] == "settings", f"accepted {bad}")
     expect(e.request({"cmd": "settings"})["dial_accel"] == 0, "a refused settings call changes nothing")
     # ---- dial acceleration (virtual turns with a pretend interval between detents)
@@ -867,9 +867,9 @@ def t_screens(c):
     e = c.e
     for cap in ("screens", "pressturn", "toggle", "wheelmods", "ledfx", "reminders", "habits"):
         expect(cap in e.request({"cmd": "hello"})["caps"], f"capability {cap}")
-    expect(e.request({"cmd": "hello"})["modes"] == 12 and e.request({"cmd": "hello"})["fw"] == "1.4.0", "12 screens, firmware 1.4.0")
+    expect(e.request({"cmd": "hello"})["modes"] == 20 and e.request({"cmd": "hello"})["fw"] == "1.5.0", "20 screens, firmware 1.5.0")
     expect(e.request({"cmd": "settings"})["mode_mask"] == 0x3F, "default: the six classic screens only")
-    for bad in (0, 4096, -1):
+    for bad in (0, 0x100000, -1):
         expect(e.request({"cmd": "settings", "mode_mask": bad})["err"] == "settings", f"mask {bad}")
     scr = lambda: e.request({"cmd": "screens"})   # noqa: E731
 
@@ -1016,7 +1016,7 @@ def t_actions14(c):
     # ---- dial pressed + turned
     expect(e.request({"cmd": "getkeys", "layer": 0})["pt"] == [False, False], "no press+turn actions yet")
     expect(e.request({"cmd": "remap", "key": 8, "type": "host", "val": n("pr")})["ok"] and e.request({"cmd": "remap", "key": 9, "layer": 1, "type": "host", "val": n("pl")})["ok"], "remap slots 8 / 9")
-    expect(e.request({"cmd": "remap", "key": 10, "type": "text", "val": "x"})["err"] == "key" and e.request({"cmd": "remap", "key": 8, "gesture": "hold", "type": "text", "val": "x"})["err"] == "key", "no slot 10; no gestures on slot 8")
+    expect(e.request({"cmd": "remap", "key": 16, "type": "text", "val": "x"})["err"] == "key" and e.request({"cmd": "remap", "key": 8, "gesture": "hold", "type": "text", "val": "x"})["err"] == "key", "no slot 16; no gestures on slot 8")
     expect(e.request({"cmd": "getkeys", "layer": 0})["pt"] == [True, False] and e.request({"cmd": "getkeys", "layer": 1})["pt"] == [False, True], "flags per layer")
     sp = e.request({"cmd": "getkeys", "layer": 0, "slot": 8}); expect(sp["def"] is False and sp["spec"]["val"]["arg"] == "pr", f"slot 8 {sp}")
     sp = e.request({"cmd": "getkeys", "layer": 0, "slot": 9}); expect(sp["def"] is True and "spec" not in sp, f"slot 9 unset {sp}")
@@ -1070,6 +1070,303 @@ def t_actions14(c):
     e.request({"cmd": "reset_keys"})
     expect(not e.panicked() and e.request({"cmd": "ping"})["ok"], "no crash")
 
+def t_fw15(c):
+    """Firmware 1.5: themes, display options, input extras (chords, triple tap, dial clicks, fx actions), screens 13-20, saver styles,
+    clock faces, info card kinds, labels, dim, boot log, rollback."""
+    import calendar
+    e = c.e
+    n = {"op": "notify"}
+    hello = e.request({"cmd": "hello"})
+    for cap in ("hostx2", "dimcmd", "themes", "fx", "chords", "tapdance", "dialclicks", "keyrepeat", "games", "pet", "diag", "viz", "labels", "bootlog", "rollback", "cards2", "saver2", "clock2", "display2", "konami"):
+        expect(cap in hello["caps"], f"capability {cap}")
+    scr = lambda: e.request({"cmd": "screens"})   # noqa: E731
+    st = lambda **kw: e.request({"cmd": "settings", **kw})   # noqa: E731
+
+    def press(k, g=None):
+        r = e.request({"cmd": "input", "k": k, **({"g": g} if g else {})}); expect(r["ok"], f"press K{k} {r}"); return r
+
+    def hosts(fn, wait=0.4):
+        e.msgs.clear(); fn(); e.pump(wait)
+        return [m["arg"] for m in e.msgs if m.get("evt") == "host"]
+    e.request({"cmd": "reset_keys"})
+    e.request({"cmd": "time", "epoch": calendar.timegm((2026, 10, 7, 12, 0, 0)), "tz": 0})
+
+    # ---- settings: validation, round trip, persistence
+    base = st()
+    expect(all(k in base for k in ("theme", "tint", "rotation", "pixel_shift", "fade", "boot_anim", "splash", "detent_led", "key_toast", "repeat_mask", "dial_lock", "host_dim", "pomo_today")), f"1.5 settings in the reply {sorted(base)}")
+    expect(base["boot_anim"] is True and base["theme"] == 0 and base["pomo_today"] == 0, "defaults")
+    for bad in ({"theme": 7}, {"theme": -1}, {"rotation": 4}, {"repeat_mask": 32}, {"tint": 1}, {"fade": "yes"}, {"splash": "x" * 13}, {"splash": "café"}, {"splash": 5}, {"clock_style": 6}, {"saver_style": 8}, {"saver_style": 0}):
+        expect(st(**bad).get("err") == "settings", f"rejected {bad}")
+    r = st(theme=3, tint=True, rotation=2, pixel_shift=True, fade=True, boot_anim=False, splash="MY PAD", detent_led=True, key_toast=True, repeat_mask=5, dial_lock=False)
+    expect((r["theme"], r["tint"], r["rotation"], r["pixel_shift"], r["fade"], r["boot_anim"], r["splash"], r["detent_led"], r["key_toast"], r["repeat_mask"]) ==
+           (3, True, 2, True, True, False, "MY PAD", True, True, 5), f"settings applied {r}")
+    expect(e.request({"cmd": "settings", "mode_mask": 0xFFFFF})["mode_mask"] == 0xFFFFF, "20-bit screen mask")
+    e.power_cycle(); e.wait_boot(120)
+    r = st()
+    expect((r["theme"], r["tint"], r["rotation"], r["pixel_shift"], r["fade"], r["boot_anim"], r["splash"], r["detent_led"], r["key_toast"], r["repeat_mask"], r["mode_mask"]) ==
+           (3, True, 2, True, True, False, "MY PAD", True, True, 5, 0xFFFFF), f"settings persist {r}")
+    st(theme=0, tint=False, rotation=0, pixel_shift=False, fade=False, boot_anim=True, splash="", detent_led=False, key_toast=False, repeat_mask=0, mode_mask=0x3F)
+    expect(st()["splash"] == "" and st()["boot_anim"] is True, "back to defaults")
+
+    # ---- themes change the picture; the seasons theme needs the clock
+    e.request({"cmd": "mode", "val": 1}); st(clock_style=0)
+    shots = {}
+    for th in (0, 1, 2, 3, 4, 5, 6):
+        st(theme=th); e.pump(0.5)
+        shots[th] = rgb565be_to_image(snapshot(e)); c.save(shots[th], f"theme_{th}.png")
+        expect(len(set(shots[th].getdata())) >= 4, f"theme {th} renders")
+    expect(len({shots[t].tobytes() for t in (0, 1, 2, 3, 4, 5)}) == 6, "the six fixed themes look different")
+    expect(shots[6].tobytes() != shots[0].tobytes(), "the seasons theme (October = autumn) differs from the default")
+    st(theme=0)
+
+    # ---- clock faces 4 (sweep) and 5 (words)
+    st(clock_style=0); e.pump(0.4); classic = rgb565be_to_image(snapshot(e)).tobytes()
+    st(clock_style=4); e.pump(0.6); a = rgb565be_to_image(snapshot(e)); e.pump(0.5); b = rgb565be_to_image(snapshot(e))
+    expect(a.tobytes() != b.tobytes(), "the sweep face moves between frames (half a second apart)")
+    st(clock_style=5); e.pump(0.6); w = rgb565be_to_image(snapshot(e)); c.save(w, "clock_words.png")
+    expect(len(set(w.getdata())) >= 4 and w.tobytes() != classic, "words face renders")
+    st(clock_style=0)
+
+    # ---- new screens 13-20 render and all differ
+    st(mode_mask=0xFFFFF)
+    imgs = {}
+    for m in range(13, 21):
+        expect(e.request({"cmd": "mode", "val": m})["ok"], f"mode {m}"); e.pump(0.7)
+        img = rgb565be_to_image(snapshot(e)); c.save(img, f"screen_{m}.png")
+        expect(sum(1 for px in img.getdata() if px != (0, 0, 0)) > 300, f"screen {m} looks empty")
+        imgs[m] = img.tobytes()
+    expect(len(set(imgs.values())) == 8, "the eight new screens look different")
+    # long press cycles through them when enabled
+    e.request({"cmd": "mode", "val": 19}); e.request({"cmd": "input", "hold": True}); e.pump(0.3)
+    expect(e.request({"cmd": "info"})["mode"] == 20, "long press: diagnostics -> sound")
+    e.request({"cmd": "input", "hold": True}); e.pump(0.3)
+    expect(e.request({"cmd": "info"})["mode"] == 1, "...and round to the clock")
+
+    # ---- Pong / Breakout
+    for m in (13, 14):
+        e.request({"cmd": "mode", "val": m}); expect(scr()["pong"]["state"] == 0, "ready")
+        press(1); expect(scr()["pong"]["state"] == 1, f"game {m} started")
+        e.request({"cmd": "input", "turn": 3}); e.request({"cmd": "input", "turn": -2}); e.pump(0.5)
+        expect(scr()["pong"]["state"] in (1, 2), "running or over")
+        press(1); expect(scr()["pong"]["state"] == 0, "K1 again stops it")
+    e.request({"cmd": "mode", "val": 13}); press(1); e.request({"cmd": "input", "turn": -20}); e.request({"cmd": "input", "turn": -20})     # paddle parked in the corner
+    for _ in range(80):                                              # nobody moves the paddle: the ball is lost sooner or later
+        e.pump(0.5)
+        if scr()["pong"]["state"] == 2:
+            break
+    expect(scr()["pong"]["state"] == 2, "an unattended game ends")
+    expect(e.request({"cmd": "mode", "val": 5})["ok"], "leave")
+    # ---- Flappy
+    e.request({"cmd": "mode", "val": 15}); expect(scr()["flap"]["state"] == 0, "flappy ready")
+    press(2); expect(scr()["flap"]["state"] == 1, "any key starts it")
+    e.pump(4.0)
+    expect(scr()["flap"]["state"] == 2, "the bird falls when nobody flaps")
+    e.request({"cmd": "input", "turn": 1}); expect(scr()["flap"]["state"] == 1, "a dial turn starts a new game")
+    # ---- Life
+    e.request({"cmd": "mode", "val": 16}); e.pump(0.5)
+    lf = scr()["life"]
+    expect(lf["run"] and lf["pop"] > 20, f"life starts with a random soup {lf}")
+    press(1); expect(scr()["life"]["run"] is False, "K1 pauses")
+    g0 = scr()["life"]["gen"]; press(5); expect(scr()["life"]["gen"] == g0 + 1, "K5 = one step")
+    press(3); expect(scr()["life"]["pop"] == 0, "K3 clears")
+    press(4); expect(scr()["life"]["pop"] == 5, "K4 adds a glider")
+    ms0 = scr()["life"]["ms"]; e.request({"cmd": "input", "turn": 2}); expect(scr()["life"]["ms"] < ms0, "dial right = faster")
+    press(2); expect(scr()["life"]["pop"] > 20, "K2 = new random soup")
+    # ---- pixel pet
+    e.request({"cmd": "mode", "val": 17}); press(5)
+    pt = scr()["pet"]; expect((pt["food"], pt["fun"], pt["rest"], pt["sleep"]) == (80, 80, 80, False), f"pet reset {pt}")
+    press(2); pt = scr()["pet"]; expect(pt["fun"] == 100 and pt["rest"] == 70 and pt["food"] == 75, f"play {pt}")
+    press(1); pt = scr()["pet"]; expect(pt["food"] == 100, f"feed {pt}")
+    press(3); expect(scr()["pet"]["sleep"] is True, "K3 = sleep"); press(3); expect(scr()["pet"]["sleep"] is False, "K3 again = wake")
+    press(5)
+    e.power_cycle(); e.wait_boot(120)
+    expect(scr()["pet"]["food"] == 80, "the pet's state survives a restart")
+    # ---- Simon
+    st(mode_mask=0xFFFFF); e.request({"cmd": "mode", "val": 18}); expect(scr()["simon"]["state"] == 0, "simon idle")
+    press(5); expect(scr()["simon"]["state"] == 1 and scr()["simon"]["len"] == 1, "K5 starts")
+    for _ in range(40):
+        e.pump(0.3)
+        if scr()["simon"]["state"] == 2:
+            break
+    sm = scr()["simon"]; expect(sm["state"] == 2, f"after showing the sequence it is your turn {sm}")
+    press(sm["seq"][0] + 1)
+    sm = scr()["simon"]; expect(sm["len"] == 2 and sm["state"] == 4, f"a correct answer grows the sequence {sm}")
+    for _ in range(40):
+        e.pump(0.3)
+        if scr()["simon"]["state"] == 2:
+            break
+    sm = scr()["simon"]; expect(sm["state"] == 2 and len(sm["seq"]) == 2, f"round 2 {sm}")
+    press(((sm["seq"][0] + 1) % 4) + 1)
+    sm = scr()["simon"]; expect(sm["state"] == 3 and sm["best"] == 1, f"a wrong key ends the game with a best of 1 {sm}")
+    # ---- diagnostics pages
+    e.request({"cmd": "mode", "val": 19}); d0 = scr()["diag_page"]
+    press(1); expect(scr()["diag_page"] == (d0 + 1) % 4, "K1 = next page")
+    e.request({"cmd": "input", "turn": -1}); expect(scr()["diag_page"] == d0, "dial left = previous page")
+    pages = set()
+    for _ in range(4):
+        e.pump(0.7); pages.add(rgb565be_to_image(snapshot(e)).tobytes()); press(1)
+    expect(len(pages) == 4, "the four diagnostics pages look different")
+    # ---- sound bars
+    e.request({"cmd": "mode", "val": 20}); e.pump(0.5); idle = rgb565be_to_image(snapshot(e)).tobytes()
+    e.send({"cmd": "viz", "v": [100, 80, 60, 40, 20, 10, 5, 0]}); e.pump(0.15)
+    age = scr()["viz_age"]
+    live = rgb565be_to_image(snapshot(e)); c.save(live, "viz_live.png")
+    expect(age < 1500 and live.tobytes() != idle, f"bars follow the app (age {age} ms)")
+    e.pump(2.0); expect(scr()["viz_age"] > 1500, "no data: the bars fall back to idle")
+
+    # ---- saver styles 1-7 (and the screensaver does not start while a game runs)
+    st(saver_s=1, mode_mask=0x3F); e.request({"cmd": "mode", "val": 1})
+    seen = {}
+    for style in range(1, 8):
+        st(saver_style=style); e.pump(0.2)
+        for _ in range(20):
+            e.pump(0.5)
+            if st()["saver_on"]:
+                break
+        expect(st()["saver_on"], f"saver style {style} starts")
+        e.pump(0.5); img = rgb565be_to_image(snapshot(e)); c.save(img, f"saver_{style}.png")
+        expect(sum(1 for px in img.getdata() if px != (0, 0, 0)) > 100, f"saver style {style} draws something")
+        seen[style] = img.tobytes()
+        e.request({"cmd": "input", "turn": 1}); e.pump(0.3)             # wake it (this runs the dial action: volume)
+    expect(len(set(seen.values())) == 7, "the seven saver styles look different")
+    st(saver_s=0)
+
+    # ---- info card kinds
+    e.request({"cmd": "mode", "val": 6})
+    long_text = "a rather long line of lyrics that has to scroll across"
+    cards = {"r": {"k": "r", "label": "CPU", "t": "73", "a": "load", "b": "8 cores"}, "p": {"k": "p", "label": "YEAR", "t": "76", "a": "of 2026", "b": "day 280"},
+             "s": {"k": "s", "label": "LYRICS", "t": long_text, "a": "next line", "b": "song"}, "c": {"k": "c", "label": "NOTE", "t": "hello", "a": "a", "b": "b"}}
+    ims = {}
+    for k, card in cards.items():
+        expect(e.request({"cmd": "info_cards", "cards": [card], "rot": 0})["ok"], f"card {k}"); e.pump(0.8)
+        ims[k] = rgb565be_to_image(snapshot(e)); c.save(ims[k], f"card_{k}.png")
+        expect(sum(1 for px in ims[k].getdata() if px != (0, 0, 0)) > 300, f"card kind {k} draws")
+    expect(len({v.tobytes() for v in ims.values()}) == 4, "card kinds look different")
+    e.request({"cmd": "info_cards", "cards": [cards["s"]], "rot": 0}); e.pump(0.6)
+    a = rgb565be_to_image(snapshot(e)).tobytes(); e.pump(0.7); b = rgb565be_to_image(snapshot(e)).tobytes()
+    expect(a != b, "scrolling text moves")
+    e.request({"cmd": "info_cards", "cards": [], "badges": []})
+
+    # ---- triple tap / chords / dial clicks / labels / key toast
+    gt = lambda seq, h, d, t: e.request({"cmd": "gesture_test", "hold": h, "dbl": d, "tri": t, "seq": seq})["fired"]   # noqa: E731
+    tri = [[1, 0], [0, 50], [1, 100], [0, 150], [1, 200], [0, 250]]
+    expect(gt(tri, False, False, True) == [[200, "triple"]], "triple tap fires on the third press")
+    expect(gt(tri[:4], False, True, True) == [[411, "double"]], "two taps with both set: double after the window")
+    expect(gt(tri[:4], False, False, True) == [[411, "tap"]], "two taps with only triple set: a single tap")
+    expect(gt(tri[:2], False, False, True) == [[311, "tap"]], "one tap with triple set: tap after the window")
+    expect(gt(tri, False, True, False) == [[100, "double"], [511, "tap"]], "without triple: unchanged (double + tap)")
+    expect(gt(tri + [[1, 300], [0, 350]], False, True, True) == [[200, "triple"], [611, "tap"]], "a 4th tap starts over")
+    expect(gt([[1, 0], [0, 700]], True, False, True) == [[450, "hold"]], "hold still works with triple set")
+    expect(e.request({"cmd": "remap", "key": 1, "gesture": "triple", "type": "host", "val": dict(n, arg="tri1")})["ok"], "remap triple")
+    expect(e.request({"cmd": "getkeys", "layer": 0})["slots"][0]["t"] is True, "triple flag")
+    expect(hosts(lambda: press(1, "triple")) == ["tri1"], "virtual triple runs the action")
+    expect(e.request({"cmd": "remap", "key": 8, "gesture": "triple", "type": "text", "val": "x"})["err"] == "key", "no triple on the dial")
+    expect(e.request({"cmd": "remap", "key": 1, "gesture": "triple", "clear": True})["ok"] and e.request({"cmd": "getkeys", "layer": 0})["slots"][0]["t"] is False, "clear")
+    # chords (slots 10-13) and dial double / triple click (14 / 15)
+    for key, arg in ((10, "c12"), (11, "c23"), (12, "c34"), (13, "c45")):
+        expect(e.request({"cmd": "remap", "key": key, "type": "host", "val": dict(n, arg=arg)})["ok"], f"chord slot {key}")
+    expect(e.request({"cmd": "getkeys", "layer": 0})["ch"] == [True] * 4, "chord flags")
+    got = [hosts(lambda p=p: e.request({"cmd": "input", "chord": p})) for p in (1, 2, 3, 4)]
+    expect(got == [["c12"], ["c23"], ["c34"], ["c45"]], f"chords {got}")
+    expect(e.request({"cmd": "input", "chord": 5})["err"] == "chord", "chord range")
+    expect(e.request({"cmd": "remap", "key": 14, "type": "host", "val": dict(n, arg="d2")})["ok"] and e.request({"cmd": "remap", "key": 15, "type": "host", "val": dict(n, arg="d3")})["ok"], "dial click slots")
+    expect(e.request({"cmd": "getkeys", "layer": 0})["dc"] == [True, True], "dial click flags")
+    expect(hosts(lambda: e.request({"cmd": "input", "dclick": 2})) == ["d2"] and hosts(lambda: e.request({"cmd": "input", "dclick": 3})) == ["d3"], "double / triple click run their actions")
+    e.request({"cmd": "input", "dclick": 1}); e.pump(0.3)
+    expect(scr().get("popup") is False, "one click = the normal menu")
+    e.request({"cmd": "input", "hold": True}); e.pump(0.3)                        # close the menu
+    expect(e.request({"cmd": "input", "dclick": 4})["err"] == "dclick", "dclick range")
+    e.request({"cmd": "remap", "key": 15, "clear": True}); expect(e.request({"cmd": "getkeys", "layer": 0})["dc"] == [True, False], "clear the triple click")
+    expect(hosts(lambda: e.request({"cmd": "input", "dclick": 3})) == ["d2"], "triple click falls back to the double click action when it is the only one")
+    e.request({"cmd": "reset_keys"})
+    expect(e.request({"cmd": "getkeys", "layer": 0})["ch"] == [False] * 4 and e.request({"cmd": "getkeys", "layer": 0})["dc"] == [False, False], "reset clears chords and dial clicks")
+    # labels + key toast
+    labels = ["COPY", "PASTE", "UNDO", "PLAY", "MUTE", "VOL+", "VOL-"]
+    r = e.request({"cmd": "labels", "layer": 0, "l": labels}); expect(r["l"] == labels, f"labels {r}")
+    expect(e.request({"cmd": "labels", "layer": 0})["l"] == labels, "read back")
+    for bad in ({"layer": 3, "l": labels}, {"l": labels[:3]}, {"l": ["x" * 9] + labels[1:]}, {"l": ["a|b"] + labels[1:]}):
+        expect(e.request({"cmd": "labels", **bad})["err"] in ("layer", "labels"), f"bad labels {bad}")
+    e.request({"cmd": "mode", "val": 5}); e.request({"cmd": "mode", "val": 1}); st(key_toast=True)
+    press(2); expect(scr()["toast"] == "PASTE", f"toast {scr()['toast']}")
+    e.pump(1.0); expect(scr()["toast"] == "", "the toast goes away again")
+    st(key_toast=False); press(2); expect(scr()["toast"] == "", "no toast when switched off")
+    e.power_cycle(); e.wait_boot(120)
+    expect(e.request({"cmd": "labels", "layer": 0})["l"] == labels, "labels persist")
+
+    # ---- fx actions
+    fx = lambda key, name, **kw: e.request({"cmd": "remap", "key": key, "type": "fx", "val": name, **kw})   # noqa: E731
+    expect(fx(1, "bogus")["err"] == "spec", "unknown fx name")
+    expect(fx(1, "dial_lock")["ok"], "dial_lock action")
+    press(1); expect(st()["dial_lock"] is True, "dial lock on")
+    e.msgs.clear(); e.request({"cmd": "remap", "key": 6, "type": "host", "val": dict(n, arg="dial6")})
+    expect(hosts(lambda: e.request({"cmd": "input", "turn": 1})) == [], "a locked dial does nothing")
+    press(1); expect(st()["dial_lock"] is False and hosts(lambda: e.request({"cmd": "input", "turn": 1})) == ["dial6"], "unlocked again")
+    e.request({"cmd": "reset_keys"})
+    fx(2, "theme_next"); press(2); expect(st()["theme"] == 1, "theme_next"); st(theme=0)
+    fx(3, "bright_down"); b0 = e.request({"cmd": "hello"})["bright"]; press(3); expect(e.request({"cmd": "hello"})["bright"] == b0 - 24, "bright_down")
+    fx(4, "bright_up"); press(4); press(4); expect(e.request({"cmd": "hello"})["bright"] == b0 + 24, "bright_up (twice)")
+    e.request({"cmd": "brightness", "val": 200})
+    fx(5, "mode_next"); st(mode_mask=(1 << 0) | (1 << 2)); e.request({"cmd": "mode", "val": 1}); press(5); expect(e.request({"cmd": "info"})["mode"] == 3, "mode_next skips disabled screens")
+    st(mode_mask=0x3F); e.request({"cmd": "mode", "val": 1})
+    fx(1, "rot_next"); press(1); expect(st()["rotation"] == 1, "rot_next"); st(rotation=0)
+    fx(1, "latch_ctrl"); e.request({"cmd": "remap", "key": 2, "type": "combo", "val": ["a"]})
+    press(1); expect(scr()["latch"] == 1, "ctrl latched"); press(2); e.pump(0.3); expect(scr()["latch"] == 0, "the next combo uses and clears the latch")
+    press(1); press(1); expect(scr()["latch"] == 0, "pressing the latch twice un-latches")
+    fx(1, "popup")
+    e.request({"cmd": "remap", "key": 3, "type": "host", "val": dict(n, arg="k3")})
+    press(1); expect(scr()["popup"] is True, "popup open")
+    e.request({"cmd": "input", "turn": 2}); popup_img = rgb565be_to_image(snapshot(e)); c.save(popup_img, "popup.png")
+    expect(hosts(lambda: e.request({"cmd": "input", "click": True})) == ["k3"] and scr()["popup"] is False, "dial picks key 3, click runs it and closes the popup")
+    press(1); expect(hosts(lambda: press(3)) == ["k3"] and scr()["popup"] is False, "a key press inside the popup runs that key")
+    press(1); e.pump(4.6); expect(scr()["popup"] is False, "the popup closes by itself")
+    e.request({"cmd": "remap", "key": 6, "type": "fx", "val": "switch_next"}); e.request({"cmd": "remap", "key": 7, "type": "fx", "val": "switch_prev"})
+    e.request({"cmd": "input", "turn": 1}); expect(scr()["sw_alt"] is True, "the first detent holds Alt"); e.pump(1.3); expect(scr()["sw_alt"] is False, "Alt is released when the dial rests")
+    e.request({"cmd": "input", "turn": -1}); e.pump(1.3)
+    e.request({"cmd": "remap", "key": 1, "type": "macro", "val": [{"fx": "dial_lock"}, {"delay": 10}, {"fx": "dial_lock"}]}); press(1); e.pump(0.3)
+    expect(st()["dial_lock"] is False, "fx works inside macros")
+    expect(e.request({"cmd": "remap", "key": 1, "type": "macro", "val": [{"fx": "nope"}]})["err"] == "spec", "unknown fx in a macro")
+    e.request({"cmd": "reset_keys"})
+
+    # ---- Konami code
+    k0 = scr()["konami"]
+    for step in ({"turn": 1}, {"turn": 1}, {"turn": -1}, {"turn": -1}):
+        e.request({"cmd": "input", **step})
+    for k in (1, 2, 1, 2):
+        press(k)
+    expect(scr()["party"] is False, "not yet")
+    press(5); r = scr()
+    expect(r["konami"] == k0 + 1 and r["party"] is True, f"the code works {r['konami']} {r['party']}")
+    e.pump(0.4); img = rgb565be_to_image(snapshot(e)); c.save(img, "konami.png")
+    e.pump(6.2); expect(scr()["party"] is False, "party ends")
+    for k in (1, 1, 5):
+        press(k)
+    expect(scr()["konami"] == k0 + 1, "wrong sequence does nothing")
+
+    # ---- dim (not saved; ends when the host disappears)
+    expect(e.request({"cmd": "dim", "level": 300})["err"] == "level" and e.request({"cmd": "dim", "level": -1})["err"] == "level" and e.request({"cmd": "dim", "on": 1})["err"] == "on", "dim validation")
+    e.request({"cmd": "brightness", "val": 200})
+    r = e.request({"cmd": "dim", "level": 30}); expect(r["level"] == 30 and r["bl"] == 30 and st()["host_dim"] == 30, f"dim {r}")
+    expect(e.request({"cmd": "hello"})["bright"] == 200, "the saved brightness is not touched by dim")
+    expect(e.request({"cmd": "dim", "level": 0})["bl"] == 200, "dim off")
+    r = e.request({"cmd": "dim", "on": True}); expect(r["level"] == 25 and r["bl"] == 25, f"dim on {r}")
+    expect(e.request({"cmd": "dim", "on": False})["level"] == 0, "dim off again")
+    e.request({"cmd": "dim", "level": 40}); e.pump(11.0)
+    expect(st()["host_dim"] == 0 and st()["bl"] == 200, "a dimmed pad returns to normal when the host goes silent")
+
+    # ---- fade-in: brightness ramps after a screen change
+    st(fade=True); e.request({"cmd": "mode", "val": 3}); r1 = st()["bl"]; e.pump(0.6); r2 = st()["bl"]
+    expect(r1 < 200 and r2 == 200, f"fade-in ramps the backlight ({r1} -> {r2})"); st(fade=False)
+
+    # ---- boot log, counters, rollback
+    bl = e.request({"cmd": "boot_log"})
+    expect(all(k in bl for k in ("log", "reset", "crashes", "counts", "usb_connects", "usb_drops", "up_ms", "heap", "heap_min", "disp_why")) and len(bl["counts"]) == 6, f"boot_log {sorted(bl)}")
+    expect("prefs=ok" in bl["log"] and "ready=ok" in bl["log"] and sum(bl["counts"]) >= 1, f"boot notes and reset counters {bl['log'][:60]} {bl['counts']}")
+    bl = e.request({"cmd": "boot_log", "clear": True}); expect(sum(bl["counts"]) == 0 and bl["usb_connects"] == 0, "counters cleared")
+    expect(e.request({"cmd": "rollback"})["err"] == "confirm", "rollback needs confirmation")
+    expect(e.request({"cmd": "rollback", "confirm": True})["err"] == "no_previous", "no previous firmware stored: refused, pad keeps running")
+    expect(e.request({"cmd": "ping"})["ok"], "still alive")
+    e.request({"cmd": "reset_keys"}); st(mode_mask=0x3F)
+
 
 def t_recovery(c):
     e = c.e
@@ -1095,7 +1392,7 @@ def t_recovery(c):
 
 
 TESTS = [t_first_boot_responsive, t_hello, t_ping_echo_id, t_info, t_led, t_gpio, t_inputs, t_display_and_snapshot, t_modes_render, t_virtual_input,
-         t_events, t_remap_persistence, t_gif, t_layers, t_new_actions, t_info_screen, t_gif_slots, t_gestures, t_settings, t_screens, t_actions14, t_recovery, t_selftest_misc, t_fuzz, t_safe_mode]
+         t_events, t_remap_persistence, t_gif, t_layers, t_new_actions, t_info_screen, t_gif_slots, t_gestures, t_settings, t_screens, t_actions14, t_fw15, t_recovery, t_selftest_misc, t_fuzz, t_safe_mode]
 
 
 def main():

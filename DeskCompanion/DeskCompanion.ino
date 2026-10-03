@@ -71,6 +71,7 @@
 #include <ArduinoJson.h>
 #include <AnimatedGIF.h>
 #include <Preferences.h>
+#include <esp_ota_ops.h>
 #include <LittleFS.h>
 #if DC_ENABLE_WIFI
 #include <WiFi.h>
@@ -119,13 +120,15 @@ struct HidStub {                               // keeps every call site valid wh
 #endif
 
 // ================================================================ types (kept above all functions)
-enum StepType : uint8_t { ST_KEYS, ST_MEDIA, ST_TEXT, ST_DELAY, ST_LAYER, ST_HOST, ST_MOUSE, ST_PANIC };
+enum StepType : uint8_t { ST_KEYS, ST_MEDIA, ST_TEXT, ST_DELAY, ST_LAYER, ST_HOST, ST_MOUSE, ST_PANIC, ST_FX };
 struct Step { uint8_t t = 0; uint8_t n = 0; uint8_t keys[6] = {0, 0, 0, 0, 0, 0}; uint16_t val = 0; String text; };
 struct KeyName { const char* name; uint8_t code; };
 struct MediaName { const char* name; uint16_t code; };
 struct FileOut { fs::File f; void put(const uint8_t* b, size_t n) { f.write(b, n); } void tick() { delay(1); } };
-enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF, M_INFO, M_STOPW, M_BREATH, M_TOYS, M_REACT, M_SNAKE, M_HABIT };
+enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF, M_INFO, M_STOPW, M_BREATH, M_TOYS, M_REACT, M_SNAKE, M_HABIT, M_PONG, M_BREAK, M_FLAP, M_LIFE, M_PET, M_SIMON, M_DIAG, M_VIZ };
 struct InfoCard { char kind = 'c'; String label, t, a, b; };
+struct Theme { uint16_t txt, dim, dim2, gray, acc, acc2, ok, warn, red; };
+struct Ball { float x, y, vx, vy; };
 struct InfoBadge { String name; uint16_t n = 0; };
 enum PomoState : uint8_t { PS_IDLE, PS_RUN, PS_PAUSE, PS_DONE };
 
@@ -197,6 +200,7 @@ static bool resolveMedia(const char* nm, uint16_t& code);
 static void sendMedia(uint16_t code);
 static bool parseKeys(JsonVariantConst arr, Step& s);
 static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out);
+static bool parseFx(JsonVariantConst v, Step& s);
 static void macroStart(std::vector<Step>& steps);
 static void macroTick();
 static void slotKey(uint8_t lay, uint8_t i, char* out);
@@ -312,6 +316,68 @@ static void ledService();
 static void handleLine(const String& line);
 static void serialService();
 static void loadSettings();
+static Theme themeOf(uint8_t t);
+static void applyTheme();
+static void applyRotation();
+static void cmdDim(JsonDocument& doc);
+static void cmdLabels(JsonDocument& doc);
+static void cmdBootLog(JsonDocument& doc);
+static void cmdRollback(JsonDocument& doc);
+static void cmdViz(JsonDocument& doc);
+static void loadLabels();
+static void showToast(const char* t);
+static void bootAnimRun();
+static void fxRun(uint8_t n);
+static void switcherStep(int dir);
+static void popupTurn(int steps);
+static void popupClick();
+static void popupKey(int i);
+static void scenePopup();
+static void fxToast(const char* t);
+static void popupClose();
+static void keyDispatch(int i, uint32_t now, bool down);
+static uint32_t dayNumber();
+static void drawParty();
+static void konamiFeed(uint8_t code);
+static void encMulti(uint8_t n);
+static void encClickRegister(uint32_t now);
+static void onChord(uint8_t p);
+static void clearLayerKeys(uint8_t l);
+static void sinInit();
+static bool gameBusy();
+static void pgNew(bool isBreak);
+static void pgOver(bool isBreak);
+static void pgTick(bool isBreak);
+static void drawPaddleGame(bool isBreak);
+static void scenePong();
+static void sceneBreak();
+static void fpNew();
+static void fpFlap();
+static void fpTick();
+static void sceneFlap();
+static bool lifeInside(int x, int y);
+static void lifeCount();
+static void lifeRand();
+static void lifeStep();
+static void lifeTick();
+static void lifeKey(int i);
+static void drawLife(bool hud);
+static void sceneLife();
+static void petSave();
+static void petLoad();
+static void petTick();
+static void petKey(int i);
+static void scenePet();
+static void smNew();
+static void smKey(int i);
+static void smTick();
+static void sceneSimon();
+static void sceneDiag();
+static void sceneViz();
+static bool modeDial(int steps);
+static void gamesTick();
+static void pomoLoadToday();
+static void pomoCredit();
 void setup();
 void loop();
 
@@ -329,18 +395,21 @@ static const float    VCC_DIVIDER = 2.0f;
 static const size_t   RX_MAX = 6000;              // longest accepted JSON line
 static const bool     DC_IS_SIM = DC_SIM_FLAG;
 static const uint8_t  PIN_RGB = DC_RGB_PIN;       // onboard WS2812 (Waveshare ESP32-S3-Zero: GPIO21)
-static const char*    FW_VERSION = "1.4.0";
-static const char*    MODE_NAME[13] = {"", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO", "STOPWATCH", "BREATHE", "DICE", "REACTION", "SNAKE", "HABITS"};
-static const uint8_t  NUM_MODES = 12;   // 1-6 are the classic screens; 7-12 are optional (enable them with settings "mode_mask")
+static const char*    FW_VERSION = "1.5.0";
+static const char*    MODE_NAME[21] = {"", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO", "STOPWATCH", "BREATHE", "DICE", "REACTION", "SNAKE", "HABITS",
+                                       "PONG", "BREAKOUT", "FLAPPY", "LIFE", "PET", "SIMON", "DIAGNOSTICS", "SOUND"};
+static const uint8_t  NUM_MODES = 20;   // 1-6 are the classic screens; 7-20 are optional (enable them with settings "mode_mask")
 static const uint8_t  LAYERS = 3;                 // key layers (each has K1..K5 + dial right / left)
 static const uint8_t  GIF_SLOTS = 4;              // /anim.gif (slot 0, also the built-in demo) + /anim1.gif .. /anim3.gif
 static const uint32_t INFO_STALE_MS = 300000UL;   // info cards older than this are shown as "no data"
 
 static inline uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
-static const uint16_t C_BG = 0x0000, C_TXT = 0xFFFF;
-static const uint16_t C_DIM = rgb(38, 42, 52), C_DIM2 = rgb(70, 76, 92), C_GRAY = rgb(140, 146, 160);
-static const uint16_t C_ACC = rgb(0, 210, 255), C_ACC2 = rgb(255, 70, 170), C_OK = rgb(70, 220, 110);
-static const uint16_t C_WARN = rgb(255, 176, 0), C_RED = rgb(255, 72, 72);
+static const uint16_t C_BG = 0x0000;
+// theme colours: variables (applyTheme() fills them from the selected theme, see settings "theme" / "tint")
+static uint16_t C_TXT = 0xFFFF, C_DIM = rgb(38, 42, 52), C_DIM2 = rgb(70, 76, 92), C_GRAY = rgb(140, 146, 160);
+static uint16_t C_ACC = rgb(0, 210, 255), C_ACC2 = rgb(255, 70, 170), C_OK = rgb(70, 220, 110);
+static uint16_t C_WARN = rgb(255, 176, 0), C_RED = rgb(255, 72, 72);
+static const char* const THEME_NAME[7] = {"CYAN", "CONTRAST", "NIGHT RED", "TERMINAL", "AMBER", "MONO", "SEASONS"};
 
 // ================================================================ globals
 TFT_eSPI tft;
@@ -365,10 +434,11 @@ uint32_t lastActivity = 0, lastTurnAt = 0;
 bool     saverOn = false;
 int32_t  turnDtOverride = -1;                    // tests: pretend the previous detent was this many ms ago
 uint8_t  lastTurnRuns = 0;                       // how many times the dial action ran for the last turn (after acceleration)
+uint8_t  gTri[LAYERS], gChord[LAYERS], gDial[LAYERS];   // triple-tap keys / chord slots (bit p = keys p+1 and p+2 together) / dial double (1) + triple (2) click actions
 uint8_t  gHold[LAYERS], gDbl[LAYERS];            // bit i = key i of that layer has a stored hold / double-tap action
 // ---- v1.4: optional screens 7-12, reminders, toggle / random actions, LED effects
-uint16_t modeMask = 0x003F;                      // screens in the dial menu / long-press cycle (bit m-1 = screen m); 1-6 by default
-uint8_t  tglState[LAYERS * 9 * 3];               // toggle actions: which half runs next, per (layer, slot, gesture)
+uint32_t modeMask = 0x003F;                      // screens in the dial menu / long-press cycle (bit m-1 = screen m); 1-6 by default
+uint8_t  tglState[LAYERS * 15 * 4];              // toggle actions: which half runs next, per (layer, slot, gesture)
 bool     swRun = false; uint32_t swStartAt = 0, swAccum = 0, swLaps[4]; uint8_t swLapN = 0;
 bool     brRun = false; uint8_t brPattern = 0; uint32_t brStartAt = 0;
 uint8_t  toyKind = 0; int toyResult = 0; uint32_t toyRollUntil = 0;
@@ -378,6 +448,31 @@ uint32_t habDay = 0; uint8_t habHist[5]; char habName[5][11] = {"WATER", "MOVE",
 struct Reminder { uint16_t min = 0; char text[17] = ""; uint32_t nextAt = 0; };
 Reminder remArr[3]; bool remActive = false; uint8_t remIdx = 0; uint32_t remUntil = 0, remShownAt = 0, remPulseAt = 0;
 uint32_t alertStart = 0, alertEnd = 0; uint8_t alertR = 0, alertG = 0, alertB = 0;      // LED alert pattern (a few quick flashes)
+// ---- v1.5: themes, display options, input extras, diagnostics counters
+uint8_t  themeIdx = 0, rotation = 0;
+bool     tintOn = false, pixelShift = false, fadeOn = false, bootAnim = true, detentLed = false, keyToast = false, dialLock = false;
+int8_t   shiftX = 0, shiftY = 0;
+char     splashTxt[13] = "";
+uint8_t  repeatMask = 0, hostDim = 0;
+uint32_t fadeAt = 0, toastUntil = 0, vizAt = 0;
+char     toastTxt[10] = "";
+uint8_t  vizBars[8];
+char     lbl[3][7][9];                                   // per layer: labels of K1..K5, dial right, dial left (shown by the key toast / popup menu)
+uint16_t rstCount[6];                                    // power-on / software / panic / watchdog / brownout / other resets, persisted
+uint32_t usbConnects = 0, usbDrops = 0;
+uint8_t  latchMods = 0;                          // sticky modifiers for the next key combo: 1 ctrl, 2 shift, 4 alt, 8 gui
+bool     swAltHeld = false; uint32_t swAltAt = 0;        // dial window switcher (Alt+Tab held between detents)
+bool     popupOpen = false; uint8_t popupSel = 0; uint32_t popupAt = 0;
+uint8_t  konamiPos = 0; uint16_t konamiCount = 0; uint32_t partyUntil = 0; uint8_t partyPrevLed = 0;
+uint8_t  dcCount = 0; uint32_t dcAt = 0;         // dial click counter for double / triple click actions
+uint8_t  SIN8[256];                              // one sine period 0..255 (plasma saver), filled by sinInit()
+Ball     bl; float padX = 120; uint16_t pgScore = 0, pgBest[2] = {0, 0}; uint8_t pgState = 0, pgLives = 3, brk[4]; uint32_t pgAt = 0;       // Pong / Breakout
+float    fbY = 110, fbV = 0; int16_t fpX[2], fpGap[2]; uint16_t fpScore = 0, fpBest = 0; uint8_t fpState = 0; bool fpPassed[2]; uint32_t fpAt = 0;   // Flappy
+uint8_t  lifeA[900], lifeB[900]; bool lifeRun = true; uint16_t lifeGen = 0, lifePop = 0, lifeSame = 0, lifeMs = 140; uint32_t lifeAt = 0;    // Life
+uint8_t  petHun = 80, petHap = 80, petEne = 80; bool petSleep = false; int8_t petAct = 0; uint32_t petAt = 0, petSaveAt = 0, petActAt = 0;   // pixel pet
+uint8_t  smSeq[32], smLen = 0, smState = 0, smIdx = 0, smLit = 255, smBest = 0; uint32_t smAt = 0, smLitUntil = 0;                           // Simon
+uint8_t  diagPage = 0;
+uint16_t pomoToday = 0; uint32_t pomoDayNo = 0;             // focus sessions finished today (needs a synced clock for the day change)
 uint8_t  curLayer = 0, menuLayer = 0;
 uint32_t layerToastUntil = 0, flashAt = 0, ledFlashUntil = 0;
 uint8_t  ledFlashR = 0, ledFlashG = 0, ledFlashB = 0;
@@ -517,9 +612,35 @@ static bool nightActive(int hour, uint8_t from, uint8_t to) {                  /
   return from < to ? (hour >= from && hour < to) : (hour >= from || hour < to);
 }
 static uint8_t effBright() {
-  if (!nightOn || !timeSynced) return brightness;
-  struct tm t; localTm(t);
-  return nightActive(t.tm_hour, nightFrom, nightTo) ? (uint8_t)min((int)brightness, (int)nightLevel) : brightness;
+  int b = brightness;
+  if (nightOn && timeSynced) { struct tm t; localTm(t); if (nightActive(t.tm_hour, nightFrom, nightTo)) b = min(b, (int)nightLevel); }
+  if (hostDim) b = min(b, (int)hostDim);                                        // the app dims the pad while the PC is locked / a video is fullscreen
+  if (fadeAt) { uint32_t dt = millis() - fadeAt; if (dt >= 250) fadeAt = 0; else b = b * (int)dt / 250; }   // fade-in after a screen change
+  return (uint8_t)b;
+}
+static Theme themeOf(uint8_t t) {
+  switch (t) {
+    case 1: return {rgb(255, 255, 255), rgb(70, 70, 70), rgb(150, 150, 150), rgb(225, 225, 225), rgb(255, 255, 0), rgb(0, 255, 255), rgb(0, 255, 0), rgb(255, 150, 0), rgb(255, 0, 0)};
+    case 2: return {rgb(255, 110, 100), rgb(40, 8, 8), rgb(90, 20, 20), rgb(150, 50, 40), rgb(255, 40, 30), rgb(190, 0, 0), rgb(200, 60, 20), rgb(255, 90, 0), rgb(255, 0, 0)};
+    case 3: return {rgb(190, 255, 200), rgb(8, 40, 14), rgb(20, 90, 36), rgb(60, 160, 80), rgb(0, 255, 70), rgb(0, 190, 60), rgb(140, 255, 140), rgb(210, 255, 0), rgb(255, 80, 60)};
+    case 4: return {rgb(255, 230, 190), rgb(48, 30, 4), rgb(100, 66, 10), rgb(170, 120, 40), rgb(255, 176, 0), rgb(255, 120, 0), rgb(200, 190, 60), rgb(255, 210, 60), rgb(255, 72, 40)};
+    case 5: return {rgb(255, 255, 255), rgb(36, 36, 36), rgb(80, 80, 80), rgb(150, 150, 150), rgb(255, 255, 255), rgb(190, 190, 190), rgb(220, 220, 220), rgb(200, 200, 200), rgb(255, 255, 255)};
+    default: return {0xFFFF, rgb(38, 42, 52), rgb(70, 76, 92), rgb(140, 146, 160), rgb(0, 210, 255), rgb(255, 70, 170), rgb(70, 220, 110), rgb(255, 176, 0), rgb(255, 72, 72)};
+  }
+}
+static void applyTheme() {                                                     // theme 6 "seasons": the accent follows the month (needs a synced clock)
+  Theme th = themeOf(themeIdx == 6 ? 0 : themeIdx);
+  if (themeIdx == 6 && timeSynced) {
+    struct tm t; localTm(t);
+    int m = t.tm_mon;
+    if (m == 11 || m <= 1) { th.acc = rgb(150, 210, 255); th.acc2 = rgb(220, 235, 255); }       // winter: ice
+    else if (m <= 4) { th.acc = rgb(110, 230, 120); th.acc2 = rgb(255, 140, 200); }            // spring: green / blossom
+    else if (m <= 7) { th.acc = rgb(255, 150, 40); th.acc2 = rgb(0, 200, 230); }               // summer: sun / sea
+    else { th.acc = rgb(230, 110, 30); th.acc2 = rgb(200, 60, 40); }                           // autumn: leaves
+  }
+  if (tintOn && curLayer > 0) th.acc = curLayer == 1 ? th.acc2 : th.warn;                       // per-layer tint: layers 2 / 3 recolour the accent
+  C_TXT = th.txt; C_DIM = th.dim; C_DIM2 = th.dim2; C_GRAY = th.gray; C_ACC = th.acc; C_ACC2 = th.acc2; C_OK = th.ok; C_WARN = th.warn; C_RED = th.red;
+  needRedraw = true;
 }
 static void applyBacklight() { lastBl = effBright(); backlightSet(lastBl); }
 static uint32_t fsFreeBytes() { return (uint32_t)(LittleFS.totalBytes() - LittleFS.usedBytes()); }   // raw free space (an upload replaces its own slot first)
@@ -712,6 +833,15 @@ static bool parseKeys(JsonVariantConst arr, Step& s) {
   }
   return s.n > 0;
 }
+// pad functions ("fx" actions): things the pad does by itself
+static const char* const FX_NAMES[] = {"dial_lock", "theme_next", "rot_next", "mode_next", "mode_prev", "bright_up", "bright_down",
+                                       "latch_ctrl", "latch_shift", "latch_alt", "latch_gui", "popup", "switch_next", "switch_prev"};
+static bool parseFx(JsonVariantConst v, Step& s) {
+  const char* nm = v.as<const char*>();
+  if (!nm) return false;
+  for (uint8_t i = 0; i < sizeof FX_NAMES / sizeof FX_NAMES[0]; i++) if (!strcmp(nm, FX_NAMES[i])) { s.t = ST_FX; s.n = i + 1; return true; }
+  return false;
+}
 // spec = {"type":"combo|media|text|macro|none","val":...}
 static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out) {
   const char* type = spec["type"] | "none";
@@ -734,6 +864,7 @@ static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out) {
   if (!strcmp(type, "host")) { Step s; if (!parseHost(val, s)) return false; out.push_back(s); return true; }
   if (!strcmp(type, "mouse")) { Step s; if (!parseMouse(val, s)) return false; out.push_back(s); return true; }
   if (!strcmp(type, "panic")) { Step s; s.t = ST_PANIC; out.push_back(s); return true; }
+  if (!strcmp(type, "fx")) { Step s; if (!parseFx(val, s)) return false; out.push_back(s); return true; }
   if (!strcmp(type, "toggle") || !strcmp(type, "random")) {      // {"type":"toggle","val":[specA,specB]} alternates; {"type":"random","val":[spec x2..6]} picks one
     if (!val.is<JsonArrayConst>()) return false;
     size_t n = val.size(), lo = !strcmp(type, "toggle") ? 2 : 2, hi = !strcmp(type, "toggle") ? 2 : 6;
@@ -759,6 +890,7 @@ static bool parseSpec(JsonVariantConst spec, std::vector<Step>& out) {
       else if (!o["host"].isNull()) { if (!parseHost(o["host"], s)) return false; }
       else if (!o["mouse"].isNull()) { if (!parseMouse(o["mouse"], s)) return false; }
       else if (!o["panic"].isNull()) { s.t = ST_PANIC; }
+      else if (!o["fx"].isNull()) { if (!parseFx(o["fx"], s)) return false; }
       else if (!o["layer"].isNull()) {
         s.t = ST_LAYER;
         if (o["layer"].is<const char*>()) { String v = o["layer"].as<const char*>(); if (v == "next") s.val = 100; else if (v == "prev") s.val = 101; else return false; }
@@ -861,6 +993,7 @@ static void macroTick() {
     const Step& s = macro[macroIdx];
     switch (s.t) {
       case ST_KEYS:
+        if (latchMods) { static const uint8_t LM[4] = {0x80, 0x81, 0x82, 0x83}; for (int b = 0; b < 4; b++) if (latchMods & (1 << b)) Keyboard.press(LM[b]); latchMods = 0; needRedraw = true; }
         for (uint8_t i = 0; i < s.n; i++) Keyboard.press(s.keys[i]);
         delay(12);
         Keyboard.releaseAll();
@@ -871,6 +1004,7 @@ static void macroTick() {
       case ST_HOST: evtHost(s); macroIdx++; macroWake = millis() + 5; break;
       case ST_MOUSE: mouseDo(s); macroIdx++; macroWake = millis() + 8; break;
       case ST_PANIC: panicNow(); return;
+      case ST_FX: fxRun(s.n); macroIdx++; macroWake = millis() + 5; break;
       case ST_TEXT:
         if (textPos < s.text.length()) {
           uint8_t c = (uint8_t)s.text[textPos++];
@@ -934,7 +1068,7 @@ static void runSlot(uint8_t i) {                                  // i: 0..6 = K
   char k[8]; slotKey(curLayer, i, k);
   const char* def = i < 7 ? DEFAULT_SLOT[curLayer][i] : "";
   if (i >= 7 && !prefs.isKey(k)) return;
-  runSpecJson(prefs.getString(k, String(def)), def, (curLayer * 9 + i) * 3);
+  runSpecJson(prefs.getString(k, String(def)), def, (curLayer * 15 + i) * 4);
 }
 static void evtLayer() {
   if (!hostActive()) return;
@@ -946,6 +1080,7 @@ static void setLayer(uint8_t n) {
   if (n >= LAYERS) return;
   bool changed = n != curLayer;
   curLayer = n; layerToastUntil = millis() + 1600; needRedraw = true;
+  if (tintOn) applyTheme();
   static const uint8_t LC[LAYERS][3] = {{0, 40, 40}, {40, 0, 40}, {40, 30, 0}};   // 1 cyan, 2 magenta, 3 amber
   ledFlash(LC[n][0], LC[n][1], LC[n][2], 450);
   if (changed) evtLayer();
@@ -1013,6 +1148,16 @@ static void sceneClockAlt(const struct tm& t) {
       }
     }
     spr.setTextColor(C_GRAY); snprintf(b, sizeof b, "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec); spr.drawString(b, 120, 186, 4);
+  } else if (clockStyle == 5) {                                // words: "IT IS HALF PAST TEN"
+    static const char* const HR[12] = {"TWELVE", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN"};
+    static const char* const MN[12] = {"", "FIVE PAST", "TEN PAST", "QUARTER PAST", "TWENTY PAST", "TWENTY-FIVE PAST", "HALF PAST", "TWENTY-FIVE TO", "TWENTY TO", "QUARTER TO", "TEN TO", "FIVE TO"};
+    int m5 = (t.tm_min + 2) / 5, h = t.tm_hour; if (m5 >= 12) { m5 = 0; h++; } if (m5 >= 7) h++;
+    gauge(120, 120, 117, 111, t.tm_sec / 59.0f, C_ACC);
+    spr.setTextColor(C_GRAY); spr.drawString("IT IS", 120, 62, 2);
+    spr.setTextColor(C_ACC); spr.drawString(m5 ? MN[m5] : "", 120, 104, strlen(MN[m5]) > 12 ? 2 : 4);
+    spr.setTextColor(C_TXT); spr.drawString(HR[h % 12], 120, 142, 4);
+    if (!m5) { spr.setTextColor(C_ACC); spr.drawString("O'CLOCK", 120, 176, 4); }
+    spr.setTextColor(C_DIM2); snprintf(b, sizeof b, "%02d:%02d", t.tm_hour, t.tm_min); spr.drawString(b, 120, 208, 2);
   } else {                                                     // 3 minimal: huge time, one thin minute ring
     arcBand(120, 120, 118, 114, 0, (t.tm_sec / 60.0f) * 360.0f, C_ACC);
     snprintf(b, sizeof b, "%02d", t.tm_hour); spr.setTextColor(C_TXT); spr.drawString(b, 120, 86, 7);
@@ -1022,7 +1167,9 @@ static void sceneClockAlt(const struct tm& t) {
 
 static void sceneClock() {
   struct tm t; localTm(t);
-  if (clockStyle >= 1 && clockStyle <= 3) { sceneClockAlt(t); return; }
+  if ((clockStyle >= 1 && clockStyle <= 3) || clockStyle == 5) { sceneClockAlt(t); return; }
+  float frac = 0;                                                  // style 4: the seconds hand sweeps smoothly
+  if (clockStyle == 4) { struct timeval tv; gettimeofday(&tv, nullptr); frac = tv.tv_usec / 1e6f; }
   spr.fillSprite(C_BG);
   spr.drawCircle(120, 120, 119, C_DIM2);
   spr.drawCircle(120, 120, 118, C_DIM);
@@ -1043,7 +1190,7 @@ static void sceneClock() {
   spr.drawString(b, 120, 166, 4);
   hand(((t.tm_hour % 12) + t.tm_min / 60.0f) * 30.0f, 52, 6, C_TXT);
   hand((t.tm_min + t.tm_sec / 60.0f) * 6.0f, 82, 4, C_ACC);
-  hand(t.tm_sec * 6.0f, 94, 2, C_RED);
+  hand((t.tm_sec + frac) * 6.0f, 94, 2, C_RED);
   spr.fillCircle(120, 120, 6, C_TXT);
   spr.fillCircle(120, 120, 3, C_RED);
 }
@@ -1064,6 +1211,7 @@ static void scenePomo() {
   spr.setTextColor(col); spr.drawString(label, 120, 64, 2);
   spr.setTextColor(C_TXT); spr.drawString(b, 120, 112, 7);
   spr.setTextColor(C_GRAY);
+  if (pomoToday) { char tb[16]; snprintf(tb, sizeof tb, "TODAY %u", (unsigned)pomoToday); spr.drawString(tb, 120, 140, 2); }
   spr.drawString("K1 start/pause", 120, 158, 2);
   spr.drawString("K2 reset", 120, 176, 2);
   if (pomoState == PS_IDLE) spr.drawString("turn dial: minutes", 120, 196, 2);
@@ -1175,6 +1323,10 @@ static void drawOverlays() {
     spr.fillRoundRect(100, 214, 40, 20, 8, c);
     spr.setTextDatum(MC_DATUM); spr.setTextColor(C_BG); spr.drawString(b, 120, 224, 2);
   }
+  if ((int32_t)(toastUntil - now) > 0 && toastTxt[0]) {                  // key-label toast (settings "key_toast" + the "labels" command)
+    spr.fillRoundRect(60, 28, 120, 24, 10, C_DIM2);
+    spr.setTextDatum(MC_DATUM); spr.setTextColor(C_TXT); spr.drawString(toastTxt, 120, 40, 2);
+  }
   uint32_t age = now - flashAt;
   if (flashAt && age < 260) {                                    // ring that fades while it shrinks - feedback for every key press
     int th = 10 - (int)(age / 28);
@@ -1207,9 +1359,34 @@ static void sceneInfo() {
       arcBand(120, 120, 116, 108, 0, 360 * f, col);
     } else arcBand(120, 120, 116, 108, 0, 360, col);
     spr.setTextColor(C_GRAY); spr.drawString(fitStr(c.label, 18), 120, 52, 2);
-    spr.setTextColor(col);   spr.drawString(fitStr(c.t, 11), 120, 98, 4);
-    spr.setTextColor(C_TXT); spr.drawString(fitStr(c.a, 20), 120, 136, 2);
-    spr.setTextColor(C_GRAY); spr.drawString(fitStr(c.b, 20), 120, 156, 2);
+    if (c.kind == 'r') {                                           // ring: t = value 0..100 as a 270 degree gauge, a / b = captions
+      int v = constrain(c.t.toInt(), 0, 100);
+      gauge(120, 112, 70, 56, v / 100.0f, v > 85 ? C_RED : v > 65 ? C_WARN : C_ACC);
+      char vb[8]; snprintf(vb, sizeof vb, "%d%%", v);
+      spr.setTextColor(C_TXT); spr.drawString(vb, 120, 112, 4);
+      spr.setTextColor(C_TXT); spr.drawString(fitStr(c.a, 20), 120, 156, 2);
+      spr.setTextColor(C_GRAY); spr.drawString(fitStr(c.b, 20), 120, 172, 2);
+    } else if (c.kind == 'p') {                                    // progress bar: t = value 0..100
+      int v = constrain(c.t.toInt(), 0, 100);
+      char vb[8]; snprintf(vb, sizeof vb, "%d%%", v);
+      spr.setTextColor(C_ACC); spr.drawString(vb, 120, 92, 4);
+      spr.fillRoundRect(40, 116, 160, 16, 8, C_DIM); if (v) spr.fillRoundRect(40, 116, max(16, v * 160 / 100), 16, 8, C_ACC);
+      spr.setTextColor(C_TXT); spr.drawString(fitStr(c.a, 20), 120, 148, 2);
+      spr.setTextColor(C_GRAY); spr.drawString(fitStr(c.b, 20), 120, 168, 2);
+    } else if (c.kind == 's') {                                    // scrolling text: a long line (lyrics, headlines) moves through the middle of the screen
+      spr.setTextColor(C_ACC2); spr.setTextDatum(ML_DATUM);
+      int w = spr.textWidth(c.t, 4);
+      int off = w > 180 ? (int)((now / 25) % (uint32_t)(w + 180)) : 0;
+      spr.setViewport(30, 80, 180, 36);
+      spr.drawString(c.t, w > 180 ? 180 - off : (180 - w) / 2, 18, 4);
+      spr.resetViewport(); spr.setTextDatum(MC_DATUM);
+      spr.setTextColor(C_TXT); spr.drawString(fitStr(c.a, 20), 120, 136, 2);
+      spr.setTextColor(C_GRAY); spr.drawString(fitStr(c.b, 20), 120, 156, 2);
+    } else {
+      spr.setTextColor(col);   spr.drawString(fitStr(c.t, 11), 120, 98, 4);
+      spr.setTextColor(C_TXT); spr.drawString(fitStr(c.a, 20), 120, 136, 2);
+      spr.setTextColor(C_GRAY); spr.drawString(fitStr(c.b, 20), 120, 156, 2);
+    }
     for (uint8_t i = 0; nCards > 1 && i < nCards; i++) spr.fillCircle(120 + (int)(i - (nCards - 1) * 0.5f) * 12, 182, i == cardIdx % nCards ? 3 : 2, i == cardIdx % nCards ? col : C_DIM2);
   }
   for (uint8_t i = 0; i < nBadges && i < 4; i++) {                 // unread / notification counters along the bottom
@@ -1414,6 +1591,12 @@ static bool modeKey(int i) {                                      // a screen ma
     case M_HABIT:
       if (i < 5) { habitRoll(); if (timeSynced) { habHist[i] ^= 1; habitSave(); } needRedraw = true; return true; }
       return false;
+    case M_PONG: case M_BREAK: if (i == 0) { if (pgState == 1) pgState = 0; else pgNew(mode == M_BREAK); needRedraw = true; return true; } return false;
+    case M_FLAP: fpFlap(); return true;
+    case M_LIFE: if (i < 5) { lifeKey(i); return true; } return false;
+    case M_PET: if (i < 5) { petKey(i); return true; } return false;
+    case M_SIMON: if (i < 5) { smKey(i); return true; } return false;
+    case M_DIAG: if (i == 0) { diagPage = (diagPage + 1) & 3; needRedraw = true; return true; } return false;
   }
   return false;
 }
@@ -1451,6 +1634,324 @@ static void sceneReminder() {
   spr.setTextColor(C_DIM2); spr.drawString("any key = dismiss", 120, 188, 1);
 }
 
+// SIN8 is filled by sinInit()
+// ================================================================ v1.5 screens 13-20: Pong, Breakout, Flappy, Life, pixel pet, Simon, diagnostics, sound bars
+static void sinInit() { static bool done = false; if (done) return; done = true; for (int i = 0; i < 256; i++) SIN8[i] = (uint8_t)(127.5f + 127.5f * sinf(i * 6.2831853f / 256.0f)); }
+static bool gameBusy() { return pgState == 1 || fpState == 1 || smState == 1 || smState == 2 || smState == 4; }
+// ---- Pong (1 player, the ball bounces round the circular wall, the dial steers the paddle) and Breakout (the same engine plus bricks and three lives)
+static void pgNew(bool isBreak) {
+  float vx = (esp_random() & 1) ? 1.5f : -1.5f;
+  bl.x = 120; bl.y = 150; bl.vx = vx; bl.vy = -2.7f;
+  pgScore = 0; pgLives = isBreak ? 3 : 1; pgState = 1; pgAt = millis();
+  for (int r = 0; r < 4; r++) brk[r] = 0xFF;
+}
+static void pgOver(bool isBreak) {
+  pgState = 2;
+  uint16_t& best = pgBest[isBreak ? 1 : 0];
+  if (pgScore > best) { best = pgScore; prefs.putUShort(isBreak ? "pgb1" : "pgb0", best); }
+  needRedraw = true;
+}
+static void pgTick(bool isBreak) {
+  uint32_t now = millis();
+  if (pgState != 1 || (uint32_t)(now - pgAt) < 25) return;
+  pgAt = now; needRedraw = true;
+  bl.x += bl.vx; bl.y += bl.vy;
+  float dx = bl.x - 120, dy = bl.y - 120, d = sqrtf(dx * dx + dy * dy);
+  if (d > 110 && bl.y < 216) {                                      // bounce off the round wall
+    float nx = dx / d, ny = dy / d, dot = bl.vx * nx + bl.vy * ny;
+    if (dot > 0) { bl.vx -= 2 * dot * nx; bl.vy -= 2 * dot * ny; }
+    bl.x = 120 + nx * 109.5f; bl.y = 120 + ny * 109.5f;
+  }
+  float pw = isBreak ? 56 : 44;
+  if (bl.vy > 0 && bl.y >= 204 && bl.y <= 214 && fabsf(bl.x - padX) <= pw / 2 + 4) {      // paddle: the hit position steers the ball
+    float off = constrain((bl.x - padX) / (pw / 2), -1.0f, 1.0f);
+    float sp = sqrtf(bl.vx * bl.vx + bl.vy * bl.vy) * (isBreak ? 1.0f : 1.04f); if (sp > 6.0f) sp = 6.0f;
+    bl.vx = off * sp * 0.8f; bl.vy = -sqrtf(fmaxf(sp * sp - bl.vx * bl.vx, 1.0f)); bl.y = 203;
+    if (!isBreak) pgScore++;
+  }
+  if (isBreak && bl.y >= 48 && bl.y < 96 && bl.x >= 36 && bl.x < 204) {
+    int r = (int)((bl.y - 48) / 12), c = (int)((bl.x - 36) / 21);
+    if (r < 4 && c < 8 && ((brk[r] >> c) & 1)) {
+      brk[r] &= ~(1 << c); bl.vy = -bl.vy; pgScore += 10;
+      if (!(brk[0] | brk[1] | brk[2] | brk[3])) { for (int k = 0; k < 4; k++) brk[k] = 0xFF; bl.vx *= 1.1f; bl.vy *= 1.1f; }
+    }
+  }
+  if (bl.y > 232) {
+    if (isBreak && --pgLives > 0) { bl.x = 120; bl.y = 150; bl.vx = 1.5f; bl.vy = -2.7f; }
+    else pgOver(isBreak);
+  }
+}
+static void drawPaddleGame(bool isBreak) {
+  spr.fillSprite(C_BG);
+  arcBand(120, 120, 119, 116, 0, 360, C_DIM);
+  if (isBreak) {
+    uint16_t col[4] = {C_ACC2, C_WARN, C_OK, C_ACC};
+    for (int r = 0; r < 4; r++) for (int c = 0; c < 8; c++) if ((brk[r] >> c) & 1) spr.fillRoundRect(36 + c * 21, 48 + r * 12, 19, 10, 2, col[r]);
+  }
+  float pw = isBreak ? 56 : 44;
+  spr.fillRoundRect((int)(padX - pw / 2), 208, (int)pw, 7, 3, C_TXT);
+  if (pgState != 0) spr.fillCircle((int)bl.x, (int)bl.y, 4, C_TXT);
+  char b[24]; spr.setTextDatum(MC_DATUM);
+  snprintf(b, sizeof b, isBreak ? "%u  L%u" : "%u", (unsigned)pgScore, (unsigned)pgLives);
+  spr.setTextColor(C_GRAY); spr.drawString(b, 120, 28, 2);
+  if (pgState != 1) {
+    spr.setTextColor(pgState == 2 ? C_RED : C_ACC); spr.drawString(pgState == 2 ? "GAME OVER" : (isBreak ? "BREAKOUT" : "PONG"), 120, 108, 4);
+    snprintf(b, sizeof b, "best %u", (unsigned)pgBest[isBreak ? 1 : 0]); spr.setTextColor(C_GRAY); spr.drawString(b, 120, 136, 2);
+    spr.drawString("K1 = start   dial = paddle", 120, 160, 2);
+  }
+}
+static void scenePong() { drawPaddleGame(false); }
+static void sceneBreak() { drawPaddleGame(true); }
+// ---- Flappy: any key or a dial turn flaps
+static void fpNew() {
+  fbY = 110; fbV = 0; fpState = 1; fpScore = 0; fpAt = millis();
+  for (int i = 0; i < 2; i++) { fpX[i] = 260 + i * 140; fpGap[i] = 80 + (int)(esp_random() % 80); fpPassed[i] = false; }
+}
+static void fpFlap() { if (fpState == 1) fbV = -5.0f; else if (fpState != 1) fpNew(); needRedraw = true; }
+static void fpTick() {
+  uint32_t now = millis();
+  if (fpState != 1 || (uint32_t)(now - fpAt) < 30) return;
+  fpAt = now; needRedraw = true;
+  fbV += 0.45f; fbY += fbV;
+  bool dead = fbY < 10 || fbY > 230;
+  for (int i = 0; i < 2; i++) {
+    fpX[i] -= 3;
+    if (fpX[i] < -30) { fpX[i] += 280; fpGap[i] = 80 + (int)(esp_random() % 80); fpPassed[i] = false; }
+    if (70 + 7 > fpX[i] && 70 - 7 < fpX[i] + 26 && (fbY - 7 < fpGap[i] - 36 || fbY + 7 > fpGap[i] + 36)) dead = true;
+    if (!fpPassed[i] && fpX[i] + 26 < 70) { fpPassed[i] = true; fpScore++; }
+  }
+  if (dead) { fpState = 2; if (fpScore > fpBest) { fpBest = fpScore; prefs.putUShort("fpb", fpBest); } }
+}
+static void sceneFlap() {
+  spr.fillSprite(C_BG);
+  arcBand(120, 120, 119, 116, 0, 360, C_DIM);
+  for (int i = 0; i < 2; i++) {
+    int x = fpX[i], g = fpGap[i];
+    spr.fillRect(x, 0, 26, g - 36, C_OK); spr.fillRect(x - 3, g - 46, 32, 10, C_OK);
+    spr.fillRect(x, g + 36, 26, 240 - g - 36, C_OK); spr.fillRect(x - 3, g + 36, 32, 10, C_OK);
+  }
+  spr.fillCircle(70, (int)fbY, 8, C_WARN); spr.fillCircle(73, (int)fbY - 2, 2, C_BG); spr.fillTriangle(77, (int)fbY, 84, (int)fbY + 2, 77, (int)fbY + 4, C_ACC2);
+  char b[24]; spr.setTextDatum(MC_DATUM); spr.setTextColor(C_TXT); snprintf(b, sizeof b, "%u", (unsigned)fpScore); spr.drawString(b, 120, 30, 4);
+  if (fpState != 1) {
+    spr.setTextColor(fpState == 2 ? C_RED : C_ACC); spr.drawString(fpState == 2 ? "GAME OVER" : "FLAPPY", 120, 108, 4);
+    snprintf(b, sizeof b, "best %u", (unsigned)fpBest); spr.setTextColor(C_GRAY); spr.drawString(b, 120, 136, 2);
+    spr.drawString("any key / dial = flap", 120, 160, 2);
+  }
+}
+// ---- Game of Life on a 30 x 30 torus (8 px cells; only cells inside the round screen are alive)
+static bool lifeInside(int x, int y) { int dx = x * 8 + 4 - 120, dy = y * 8 + 4 - 120; return dx * dx + dy * dy <= 112 * 112; }
+static void lifeCount() { uint16_t n = 0; for (int i = 0; i < 900; i++) n += lifeA[i]; lifePop = n; }
+static void lifeRand() {
+  for (int y = 0; y < 30; y++) for (int x = 0; x < 30; x++) lifeA[y * 30 + x] = (lifeInside(x, y) && (esp_random() % 100) < 30) ? 1 : 0;
+  lifeGen = 0; lifeSame = 0; lifeCount(); needRedraw = true;
+}
+static void lifeStep() {
+  uint16_t pop = 0;
+  for (int y = 0; y < 30; y++) for (int x = 0; x < 30; x++) {
+    int n = 0;
+    for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) if (dx || dy) n += lifeA[((y + dy + 30) % 30) * 30 + (x + dx + 30) % 30];
+    bool alive = lifeA[y * 30 + x] && (n == 2 || n == 3);
+    if (!lifeA[y * 30 + x] && n == 3) alive = true;
+    if (!lifeInside(x, y)) alive = false;
+    lifeB[y * 30 + x] = alive; pop += alive;
+  }
+  memcpy(lifeA, lifeB, sizeof lifeA);
+  lifeSame = (pop == lifePop) ? lifeSame + 1 : 0; lifePop = pop; lifeGen++;
+  needRedraw = true;
+}
+static void lifeTick() {
+  uint32_t now = millis();
+  if (!lifeRun || (uint32_t)(now - lifeAt) < lifeMs) return;
+  lifeAt = now; lifeStep();
+  if (lifePop == 0 || lifeSame > 60) lifeRand();                    // died out or stuck: start over
+}
+static void lifeKey(int i) {
+  if (i == 0) lifeRun = !lifeRun;
+  else if (i == 1) lifeRand();
+  else if (i == 2) { memset(lifeA, 0, sizeof lifeA); lifeGen = 0; lifePop = 0; }
+  else if (i == 3) { static const int8_t G[5][2] = {{1, 0}, {2, 1}, {0, 2}, {1, 2}, {2, 2}}; int ox = 4 + (int)(esp_random() % 18), oy = 4 + (int)(esp_random() % 18); for (auto& g : G) lifeA[(oy + g[1]) * 30 + ox + g[0]] = 1; }
+  else if (i == 4) lifeStep();
+  lifeCount(); needRedraw = true;
+}
+static void drawLife(bool hud) {
+  spr.fillSprite(C_BG);
+  uint16_t col = C_ACC;
+  for (int y = 0; y < 30; y++) for (int x = 0; x < 30; x++) if (lifeA[y * 30 + x]) spr.fillRect(x * 8 + 1, y * 8 + 1, 6, 6, col);
+  if (hud) {
+    char b[24]; spr.setTextDatum(MC_DATUM); spr.setTextColor(C_GRAY); snprintf(b, sizeof b, "gen %u  pop %u%s", (unsigned)lifeGen, (unsigned)lifePop, lifeRun ? "" : "  PAUSED"); spr.drawString(b, 120, 232, 1);
+  }
+}
+static void sceneLife() { drawLife(true); }
+// ---- pixel pet: three needs (food, fun, rest). It does not age while the pad is off.
+static void petSave() { uint8_t b[4] = {petHun, petHap, petEne, (uint8_t)petSleep}; prefs.putBytes("pet", b, 4); petSaveAt = millis(); }
+static void petLoad() {
+  uint8_t b[4];
+  if (prefs.getBytes("pet", b, 4) == 4) { petHun = min<uint8_t>(b[0], 100); petHap = min<uint8_t>(b[1], 100); petEne = min<uint8_t>(b[2], 100); petSleep = b[3] != 0; }
+}
+static void petTick() {
+  uint32_t now = millis();
+  if ((uint32_t)(now - petAt) >= 60000UL) {
+    petAt = now;
+    if (petSleep) { petEne = min<int>(100, petEne + 4); if (petHun > 0) petHun--; if (petEne >= 100) petSleep = false; }
+    else {
+      if (petHun >= 2) petHun -= 2; else petHun = 0;
+      if (petHap > (petHun < 20 ? 2 : 0)) petHap -= (petHun < 20 ? 3 : 1); else petHap = 0;
+      if (petEne > 0) petEne--; if (petEne < 8) petSleep = true;
+    }
+    needRedraw = true;
+  }
+  if ((uint32_t)(now - petSaveAt) >= 300000UL) petSave();
+}
+static void petKey(int i) {
+  uint32_t now = millis(); petActAt = now; needRedraw = true;
+  if (petSleep && i != 2 && i != 4) { petSleep = false; petAct = 0; }
+  if (i == 0) { petHun = min<int>(100, petHun + 25); petHap = min<int>(100, petHap + 3); petAct = 1; }
+  else if (i == 1) { if (petEne > 12) { petHap = min<int>(100, petHap + 20); petEne -= 10; petHun = petHun > 5 ? petHun - 5 : 0; petAct = 2; } }
+  else if (i == 2) { petSleep = !petSleep; petAct = 0; }
+  else if (i == 3) { petHap = min<int>(100, petHap + 5); petAct = 3; }
+  else if (i == 4) { petHun = petHap = petEne = 80; petSleep = false; petAct = 0; }
+  petSave();
+}
+static void scenePet() {
+  uint32_t now = millis();
+  float bob = petSleep ? 2.0f * sinf(now / 900.0f) : 3.0f * sinf(now / 260.0f);
+  int avg = (petHun + petHap + petEne) / 3;
+  uint16_t body = avg >= 60 ? C_OK : avg >= 30 ? C_WARN : C_RED;
+  spr.fillSprite(C_BG);
+  int cy = 112 + (int)bob;
+  spr.fillTriangle(86, cy - 30, 96, cy - 58, 108, cy - 40, body); spr.fillTriangle(154, cy - 30, 144, cy - 58, 132, cy - 40, body);     // ears
+  spr.fillCircle(120, cy, 46, body);
+  spr.fillRoundRect(92, cy + 38, 20, 10, 4, body); spr.fillRoundRect(128, cy + 38, 20, 10, 4, body);                                    // feet
+  bool blink = ((now / 150) % 24) == 0 || petSleep;
+  if (blink) { spr.drawFastHLine(98, cy - 8, 16, C_BG); spr.drawFastHLine(126, cy - 8, 16, C_BG); }
+  else { spr.fillCircle(106, cy - 8, 7, C_TXT); spr.fillCircle(134, cy - 8, 7, C_TXT); int px = petAct == 3 ? 0 : 1; spr.fillCircle(106 + px, cy - 7, 3, C_BG); spr.fillCircle(134 + px, cy - 7, 3, C_BG); }
+  if (petAct == 1 && (uint32_t)(now - petActAt) < 900) spr.fillCircle(120, cy + 18, 7, C_BG);                                               // munching
+  else if (petHap >= 50) arcBand(120, cy + 12, 16, 12, 110, 250, C_BG);                                                                      // smile
+  else if (petHap >= 25) spr.drawFastHLine(110, cy + 22, 20, C_BG);
+  else arcBand(120, cy + 30, 16, 12, -70, 70, C_BG);                                                                                          // frown
+  spr.setTextDatum(MC_DATUM);
+  if (petSleep) { spr.setTextColor(C_ACC); spr.drawString("z", 176 + (int)bob, cy - 36, 4); spr.drawString("z", 192, cy - 56, 2); }
+  else if (petHun < 25) { spr.setTextColor(C_WARN); spr.drawString("FOOD?", 180, cy - 40, 2); }
+  else if (petAct == 2 && (uint32_t)(now - petActAt) < 900) { spr.setTextColor(C_ACC2); spr.drawString("<3", 178, cy - 36, 4); }
+  const char* nm[3] = {"FOOD", "FUN", "REST"}; uint8_t v[3] = {petHun, petHap, petEne};
+  for (int i = 0; i < 3; i++) {
+    int x = 58 + i * 46;
+    spr.fillRoundRect(x, 188, 40, 8, 3, C_DIM); if (v[i]) spr.fillRoundRect(x, 188, v[i] * 40 / 100, 8, 3, v[i] < 25 ? C_RED : C_ACC);
+    spr.setTextColor(C_GRAY); spr.drawString(nm[i], x + 20, 206, 1);
+  }
+}
+// ---- Simon: repeat the growing colour sequence (K1 red, K2 green, K3 blue, K4 yellow; K5 starts)
+static const uint16_t SM_COL[4] = {0xF9A7, 0x3F32, 0x4B7F, 0xFEE5};
+static void smNew() { smLen = 1; smSeq[0] = (uint8_t)(esp_random() & 3); smState = 1; smAt = millis() + 500; smIdx = 0; smLit = 255; needRedraw = true; }
+static void smKey(int i) {
+  uint32_t now = millis(); needRedraw = true;
+  if (smState == 0 || smState == 3) { if (i == 4) smNew(); return; }
+  if (smState != 2 || i > 3) return;
+  smLit = (uint8_t)i; smLitUntil = now + 220;
+  if (i == smSeq[smIdx]) {
+    smIdx++;
+    if (smIdx >= smLen) { if (smLen < 31) { smSeq[smLen] = (uint8_t)(esp_random() & 3); smLen++; } smState = 4; smAt = now + 800; }
+  } else {
+    smState = 3; uint8_t sc = smLen - 1; if (sc > smBest) { smBest = sc; prefs.putUChar("smb", smBest); }
+    ledFlash(60, 0, 0, 500);
+  }
+}
+static void smTick() {
+  uint32_t now = millis();
+  if (smLit != 255 && smState != 1 && (int32_t)(now - smLitUntil) >= 0) { smLit = 255; needRedraw = true; }
+  if (smState == 4 && (int32_t)(now - smAt) >= 0) { smState = 1; smIdx = 0; smAt = now + 300; smLit = 255; needRedraw = true; }
+  if (smState == 1) {
+    int32_t rel = (int32_t)(now - smAt);
+    if (rel < 0) return;
+    uint8_t idx = (uint8_t)(rel / 600), ph = rel % 600;
+    if (idx >= smLen) { smState = 2; smIdx = 0; smLit = 255; needRedraw = true; return; }
+    uint8_t lit = ph < 420 ? smSeq[idx] : 255;
+    if (lit != smLit) { smLit = lit; needRedraw = true; if (lit != 255) ledFlash(0, 30, 30, 200); }
+  }
+}
+static void sceneSimon() {
+  spr.fillSprite(C_BG);
+  static const float A0[4] = {270, 0, 180, 90};                      // K1 top-left, K2 top-right, K3 bottom-left, K4 bottom-right
+  for (int i = 0; i < 4; i++) {
+    uint16_t c = SM_COL[i], dim = (uint16_t)((c >> 2) & 0x39E7);
+    arcBand(120, 120, 116, 38, A0[i] + 3, A0[i] + 87, smLit == i ? c : dim);
+  }
+  spr.fillCircle(120, 120, 34, C_BG); spr.drawCircle(120, 120, 34, C_DIM2);
+  char b[24]; spr.setTextDatum(MC_DATUM);
+  spr.setTextColor(C_TXT); snprintf(b, sizeof b, "%u", (unsigned)(smState == 0 ? 0 : smLen - (smState == 3 ? 1 : 0))); spr.drawString(b, 120, 114, 4);
+  spr.setTextColor(C_GRAY);
+  spr.drawString(smState == 0 ? "K5 START" : smState == 1 ? "WATCH" : smState == 2 ? "YOUR TURN" : smState == 3 ? "WRONG - K5" : "GOOD", 120, 138, 1);
+  if (smBest) { snprintf(b, sizeof b, "best %u", (unsigned)smBest); spr.drawString(b, 120, 150, 1); }
+}
+// ---- diagnostics: how the pad is doing (pages: start-up, resets, link, storage)
+static void sceneDiag() {
+  spr.fillSprite(C_BG);
+  arcBand(120, 120, 118, 114, 0, 360, C_DIM);
+  spr.setTextDatum(MC_DATUM);
+  static const char* const TITLE[4] = {"START-UP", "RESETS", "LINK + MEMORY", "STORAGE + DISPLAY"};
+  spr.setTextColor(C_ACC); spr.drawString(TITLE[diagPage & 3], 120, 40, 2);
+  for (int i = 0; i < 4; i++) spr.fillCircle(108 + i * 12, 58, i == (diagPage & 3) ? 3 : 2, i == (diagPage & 3) ? C_ACC : C_DIM2);
+  char b[40]; int y = 80; spr.setTextColor(C_TXT);
+  if ((diagPage & 3) == 0) {
+    snprintf(b, sizeof b, "reset: %s", resetReasonStr(resetReason)); spr.drawString(b, 120, y, 2); y += 22;
+    snprintf(b, sizeof b, "crashes in a row: %lu%s", (unsigned long)crashCount, safeMode ? " SAFE" : ""); spr.drawString(b, 120, y, 2); y += 22;
+    int from = (int)bootLog.length() > 70 ? (int)bootLog.length() - 70 : 0; String tail = bootLog.substring(from);     // the end of the boot notes, in short lines
+    spr.setTextColor(C_GRAY);
+    for (int k = 0; k < 3 && tail.length(); k++) { String ln = tail.substring(0, 24); tail = tail.substring(ln.length()); spr.drawString(ln, 120, y, 1); y += 14; }
+  } else if ((diagPage & 3) == 1) {
+    static const char* const RN[6] = {"power-on", "software", "panic", "watchdog", "brownout", "other"};
+    for (int i = 0; i < 6; i++) { snprintf(b, sizeof b, "%s  %u", RN[i], (unsigned)rstCount[i]); spr.setTextColor(i >= 2 && rstCount[i] ? C_WARN : C_TXT); spr.drawString(b, 120, y, 2); y += 20; }
+  } else if ((diagPage & 3) == 2) {
+    snprintf(b, sizeof b, "host: %s", hostActive() ? "connected" : "no data"); spr.drawString(b, 120, y, 2); y += 20;
+    snprintf(b, sizeof b, "link up %lu  down %lu", (unsigned long)usbConnects, (unsigned long)usbDrops); spr.drawString(b, 120, y, 2); y += 20;
+    snprintf(b, sizeof b, "heap %luK  min %luK", (unsigned long)(ESP.getFreeHeap() / 1024), (unsigned long)(ESP.getMinFreeHeap() / 1024)); spr.drawString(b, 120, y, 2); y += 20;
+    uint32_t up = millis() / 1000; snprintf(b, sizeof b, "up %lu:%02lu:%02lu", (unsigned long)(up / 3600), (unsigned long)((up / 60) % 60), (unsigned long)(up % 60)); spr.drawString(b, 120, y, 2); y += 20;
+    snprintf(b, sizeof b, "chip %.0f C", chipTemp()); spr.drawString(b, 120, y, 2);
+  } else {
+    snprintf(b, sizeof b, "display: %s", okDisp ? "ok" : (dispWhy[0] ? dispWhy : "off")); spr.drawString(b, 120, y, 2); y += 20;
+    snprintf(b, sizeof b, "storage: %s", FS_STATE_NAME[fsState]); spr.drawString(b, 120, y, 2); y += 20;
+    if (okFs) { snprintf(b, sizeof b, "free %lu / %lu KB", (unsigned long)(fsFreeBytes() / 1024), (unsigned long)(LittleFS.totalBytes() / 1024)); spr.drawString(b, 120, y, 2); y += 20; }
+    snprintf(b, sizeof b, "gif slots used: %u", okFs ? (unsigned)gifSlotCount() : 0u); spr.drawString(b, 120, y, 2); y += 20;
+    snprintf(b, sizeof b, "settings free: %u", (unsigned)prefs.freeEntries()); spr.drawString(b, 120, y, 2);
+  }
+  spr.setTextColor(C_DIM2); spr.drawString("K1 / dial = next page", 120, 214, 1);
+}
+// ---- sound bars: the app sends the PC's audio spectrum ({"cmd":"viz"}) while the screen is open
+static void sceneViz() {
+  uint32_t now = millis();
+  bool live = vizAt && (uint32_t)(now - vizAt) < 1500;
+  spr.fillSprite(C_BG);
+  spr.setTextDatum(MC_DATUM); spr.setTextColor(C_GRAY); spr.drawString("SOUND", 120, 40, 2);
+  for (int i = 0; i < 8; i++) {
+    int h = live ? vizBars[i] * 120 / 100 : 6 + (int)(10 * (0.5f + 0.5f * sinf(now / 600.0f + i)));
+    int x = 40 + i * 20;
+    uint8_t r, g, bb; hsv2rgb((uint16_t)(190 + i * 20), &r, &g, &bb);
+    spr.fillRoundRect(x, 190 - h, 14, h, 4, live ? rgb(r, g, bb) : C_DIM2);
+  }
+  if (!live) { spr.setTextColor(C_GRAY); spr.drawString(vizAt ? "no sound" : "waiting for the app", 120, 214, 1); }
+}
+static bool modeDial(int steps) {                                  // the dial inside a screen that uses it; true = handled
+  switch (mode) {
+    case M_PONG: case M_BREAK: padX = constrain(padX + steps * 10, 40.0f, 200.0f); needRedraw = true; return true;
+    case M_FLAP: fpFlap(); return true;
+    case M_LIFE: lifeMs = (uint16_t)constrain((int)lifeMs - steps * 20, 40, 600); needRedraw = true; return true;
+    case M_PET: if (steps > 0) petKey(3); return true;
+    case M_DIAG: diagPage = (uint8_t)(((int)diagPage + (steps > 0 ? 1 : 3)) & 3); needRedraw = true; return true;
+  }
+  return false;
+}
+static void gamesTick() {
+  switch (mode) {
+    case M_PONG: pgTick(false); break;
+    case M_BREAK: pgTick(true); break;
+    case M_FLAP: fpTick(); break;
+    case M_LIFE: lifeTick(); break;
+    case M_PET: petTick(); break;
+    case M_SIMON: smTick(); break;
+  }
+  if (mode != M_PET) petTick();                                    // the pet's needs run in the background, whatever screen is showing
+}
+
 // ---- screensaver (starts after saverSec seconds without input; any key / dial action wakes it)
 static uint32_t sRng = 0x1234ABCDu;
 static uint32_t sRand() { sRng ^= sRng << 13; sRng ^= sRng >> 17; sRng ^= sRng << 5; return sRng; }
@@ -1475,6 +1976,36 @@ static void sceneSaver() {
       ry[i] += rv[i]; if (ry[i] > 300) { ry[i] = -(int)(sRand() % 80); rv[i] = 3 + sRand() % 6; }
       for (int k = 0; k < 8; k++) { int y = ry[i] - k * 10; if (y < 0 || y > 239) continue; spr.fillRect(x, y, 6, 8, rgb(0, (uint8_t)(255 - k * 32), (uint8_t)(40 - k * 4))); }
     }
+  } else if (saverStyle == 4) {                                // plasma: sine interference, drawn as 6 px blocks inside the round screen
+    sinInit(); uint32_t t = millis() / 20;
+    for (int y = 0; y < 40; y++) for (int x = 0; x < 40; x++) {
+      int dx = x * 6 + 3 - 120, dy = y * 6 + 3 - 120; if (dx * dx + dy * dy > 120 * 120) continue;
+      uint8_t v = (uint8_t)((SIN8[(x * 9 + t) & 255] + SIN8[(y * 7 + t * 2 / 3) & 255] + SIN8[((x + y) * 5 + t / 2) & 255]) / 3);
+      spr.fillRect(x * 6, y * 6, 6, 6, rgb(SIN8[v] * 2 / 3, SIN8[(v + 85) & 255] * 2 / 3, SIN8[(v + 170) & 255] * 2 / 3));
+    }
+  } else if (saverStyle == 5) {                                // fire: heat rises from the bottom row
+    static uint8_t fb[32 * 31];
+    for (int x = 0; x < 32; x++) fb[30 * 32 + x] = (uint8_t)(150 + sRand() % 106);
+    for (int y = 0; y < 30; y++) for (int x = 0; x < 32; x++) {
+      int v = (fb[(y + 1) * 32 + (x + 31) % 32] + fb[(y + 1) * 32 + x] + fb[(y + 1) * 32 + (x + 1) % 32] + fb[((y + 2 > 30) ? 30 : y + 2) * 32 + x]) / 4;
+      v = v > 6 ? v - 6 : 0; fb[y * 32 + x] = (uint8_t)v;
+      int dx = x * 7 + 11 - 120, dy = y * 8 + 4 - 120; if (dx * dx + dy * dy > 120 * 120 || !v) continue;
+      spr.fillRect(x * 7 + 8, y * 8, 7, 8, rgb((uint8_t)min(255, v * 3), (uint8_t)constrain((v - 85) * 3, 0, 255), (uint8_t)constrain((v - 170) * 3, 0, 255)));
+    }
+  } else if (saverStyle == 6) {                                // lava lamp: three metaballs
+    float t = millis() / 1500.0f; float bx[3], by[3];
+    for (int i = 0; i < 3; i++) { bx[i] = 120 + 62 * sinf(t * (0.6f + 0.25f * i) + i * 2.1f); by[i] = 120 + 62 * cosf(t * (0.5f + 0.3f * i) + i); }
+    for (int y = 0; y < 40; y++) for (int x = 0; x < 40; x++) {
+      float px = x * 6 + 3, py = y * 6 + 3; float dx0 = px - 120, dy0 = py - 120; if (dx0 * dx0 + dy0 * dy0 > 120 * 120) continue;
+      float f = 0; for (int i = 0; i < 3; i++) { float dx = px - bx[i], dy = py - by[i]; f += 1100.0f / (dx * dx + dy * dy + 1); }
+      if (f < 1.0f) continue;
+      uint8_t k = (uint8_t)constrain((int)((f - 1.0f) * 120), 0, 255);
+      spr.fillRect(x * 6, y * 6, 6, 6, rgb(255, (uint8_t)(40 + k / 2), (uint8_t)(k / 3)));
+    }
+  } else if (saverStyle == 7) {                                // Game of Life, restarts when it dies out
+    if (!lifePop) lifeRand();
+    uint32_t now = millis(); if ((uint32_t)(now - lifeAt) >= 160) { lifeAt = now; lifeStep(); if (!lifePop || lifeSame > 40) lifeRand(); }
+    drawLife(false);
   } else {                                                     // dim clock that drifts every minute (no burn-in)
     struct tm t; localTm(t); char b[8];
     snprintf(b, sizeof b, "%02d:%02d", t.tm_hour, t.tm_min);
@@ -1496,13 +2027,36 @@ static void renderScene() {
     case M_REACT: sceneReact(); break;
     case M_SNAKE: sceneSnake(); break;
     case M_HABIT: sceneHabits(); break;
+    case M_PONG:  scenePong(); break;
+    case M_BREAK: sceneBreak(); break;
+    case M_FLAP:  sceneFlap(); break;
+    case M_LIFE:  sceneLife(); break;
+    case M_PET:   scenePet(); break;
+    case M_SIMON: sceneSimon(); break;
+    case M_DIAG:  sceneDiag(); break;
+    case M_VIZ:   sceneViz(); break;
     default:      sceneGifMsg(); break;
   }
 }
+static void applyRotation() {
+#if DC_HAS_TFT
+  if (okDisp) { tft.setRotation(rotation & 3); tft.fillScreen(TFT_BLACK); }
+#endif
+  needRedraw = true;
+}
 static void pushScreen() {
 #if DC_HAS_TFT
-  if (okDisp) spr.pushSprite(0, 0);
+  if (okDisp) spr.pushSprite(shiftX, shiftY);
 #endif
+}
+static void drawParty() {                                        // the hidden Konami code: a rainbow ring and a message for a few seconds
+  uint32_t t = millis();
+  for (int i = 0; i < 12; i++) {
+    uint8_t r, g, b; hsv2rgb((uint16_t)((i * 30 + t / 6) % 360), &r, &g, &b);
+    arcBand(120, 120, 119, 104, i * 30.0f, i * 30.0f + 31.0f, rgb(r, g, b));
+  }
+  spr.setTextDatum(MC_DATUM); spr.setTextColor(C_TXT); spr.drawString("KONAMI!", 120, 112, 4);
+  char b[16]; snprintf(b, sizeof b, "x%u", (unsigned)konamiCount); spr.setTextColor(C_ACC); spr.drawString(b, 120, 140, 2);
 }
 static void renderFrame() {
   if (!okSprite) return;
@@ -1510,14 +2064,17 @@ static void renderFrame() {
   else if (remActive && !menuOpen) sceneReminder();
   else if (saverOn && !menuOpen) sceneSaver();
   else {
-    if (menuOpen && mode == M_GIF) spr.fillSprite(C_BG); else renderScene();
+    if ((menuOpen || popupOpen) && mode == M_GIF) spr.fillSprite(C_BG); else renderScene();
     if (menuOpen) sceneMenu();
+    else if (popupOpen) scenePopup();
     else if (mode != M_GIF) drawOverlays();
   }
+  if (partyUntil) drawParty();
   pushScreen();
 }
 static uint32_t renderInterval() {
-  if (uploading || menuOpen) return 100;
+  if (uploading || menuOpen || popupOpen) return 100;
+  if (partyUntil) return 40;
   if (remActive) return 50;
   if (saverOn) return saverStyle == 3 ? 5000 : 45;
   if (flashAt && millis() - flashAt < 280 && mode != M_GIF) return 30;
@@ -1526,13 +2083,21 @@ static uint32_t renderInterval() {
     case M_MEDIA: return playing ? 90 : 100000;
     case M_TELEM: return 500;
     case M_GIF:   return 1000;
-    case M_INFO:  return 500;
+    case M_INFO:  return (nCards && cards[cardIdx % nCards].kind == 's') ? 50 : 500;
     case M_STOPW: return swRun ? 50 : 1000;
     case M_BREATH: return brRun ? 40 : 1000;
     case M_TOYS:  return (int32_t)(toyRollUntil - millis()) > 0 ? 60 : 1000;
     case M_REACT: return rxState == 1 || rxState == 2 ? 100 : 1000;
     case M_SNAKE: return snRun ? 60 : 1000;
     case M_HABIT: return 1000;
+    case M_PONG: case M_BREAK: return pgState == 1 ? 25 : 1000;
+    case M_FLAP:  return fpState == 1 ? 30 : 1000;
+    case M_LIFE:  return lifeRun ? 60 : 1000;
+    case M_PET:   return 120;
+    case M_SIMON: return 60;
+    case M_DIAG:  return 500;
+    case M_VIZ:   return 60;
+    case M_CLOCK: return clockStyle == 4 ? 40 : 100000;
     default:      return 100000;                       // clock redraws on second change
   }
 }
@@ -1755,11 +2320,20 @@ static void gifService() {
 // ================================================================ modes, menu, pomodoro
 static void setMode(uint8_t m) {
   if (m < 1 || m > NUM_MODES) return;
-  if (m != mode) prefs.putUChar("mode", m);
+  if (m != mode) { prefs.putUChar("mode", m); if (fadeOn) { fadeAt = millis(); applyBacklight(); } }
   mode = m; needRedraw = true;
   if (m != M_SNAKE) snRun = false;                                // leaving a game pauses / resets it
+  pgState = 0; fpState = 0; smState = 0;
+  if (m == M_LIFE && !lifePop) lifeRand();
   if (m != M_REACT) rxState = 0;
   if (mode == M_GIF) gifRestart = true; else gifClose();
+}
+static uint32_t dayNumber() { time_t n = time(nullptr) + tzOff; return timeSynced ? (uint32_t)(n / 86400) : 0; }
+static void pomoLoadToday() { pomoDayNo = prefs.getULong("pm_d", 0); pomoToday = prefs.getUShort("pm_n", 0); if (pomoDayNo != dayNumber() && timeSynced) { pomoToday = 0; pomoDayNo = dayNumber(); } }
+static void pomoCredit() {                                      // a focus session ran to the end
+  uint32_t d = dayNumber();
+  if (d != pomoDayNo) { pomoDayNo = d; pomoToday = 0; }
+  pomoToday++; prefs.putULong("pm_d", pomoDayNo); prefs.putUShort("pm_n", pomoToday);
 }
 static void pomoToggle() {
   if (pomoState == PS_IDLE || pomoState == PS_DONE) { pomoRemain = pomoMinutes * 60000UL; pomoState = PS_RUN; prefs.putUChar("pomo", pomoMinutes); }
@@ -1772,7 +2346,7 @@ static void pomoTick() {
   uint32_t now = millis();
   if (pomoState == PS_RUN) {
     uint32_t dt = now - pomoLast; pomoLast = now;
-    if (dt >= pomoRemain) { pomoRemain = 0; pomoState = PS_DONE; pomoDoneAt = now; needRedraw = true; }
+    if (dt >= pomoRemain) { pomoRemain = 0; pomoState = PS_DONE; pomoDoneAt = now; needRedraw = true; pomoCredit(); }
     else pomoRemain -= dt;
   } else if (pomoState == PS_DONE && now - pomoDoneAt > 15000) pomoReset();
 }
@@ -1818,22 +2392,30 @@ static void menuClick() {
 // DOUBLE-TAP action decides on release: tap = released before G_HOLD_MS (and, with a double-tap action, not followed by a second press
 // within G_DBL_MS); hold = still down after G_HOLD_MS; double = second press within G_DBL_MS. Pure state machine, driven with explicit
 // timestamps so it can be tested with synthetic timing (see cmdGestureTest).
-enum : uint8_t { G_TAP = 1, G_HOLD = 2, G_DOUBLE = 4 };
+enum : uint8_t { G_TAP = 1, G_HOLD = 2, G_DOUBLE = 4, G_TRIPLE = 8 };
 static const uint32_t G_HOLD_MS = 450, G_DBL_MS = 260;
 struct GestureFsm {
   bool down = false, holdFired = false, consumed = false, pending = false;
+  uint8_t taps = 0;                                              // taps so far in a double / triple-tap sequence
   uint32_t downAt = 0, upAt = 0;
-  uint8_t step(bool isDown, uint32_t now, bool hasHold, bool hasDbl) {
+  uint8_t step(bool isDown, uint32_t now, bool hasHold, bool hasDbl, bool hasTri = false) {
     uint8_t m = 0;
-    if (pending && !down && (uint32_t)(now - upAt) > G_DBL_MS) { pending = false; m |= G_TAP; }          // the double-tap window closed
+    if (pending && !down && (uint32_t)(now - upAt) > G_DBL_MS) {                                          // the multi-tap window closed
+      pending = false;
+      if (hasTri) { m |= (taps >= 2 && hasDbl) ? G_DOUBLE : G_TAP; taps = 0; } else m |= G_TAP;
+    }
     if (down && !holdFired && !consumed && hasHold && (uint32_t)(now - downAt) >= G_HOLD_MS) { holdFired = true; m |= G_HOLD; }
     if (isDown && !down) {                                      // press
       down = true; downAt = now; holdFired = false; consumed = false;
-      if (!hasHold && !hasDbl && !pending) { consumed = true; m |= G_TAP; }                             // plain key: act at once
-      else if (pending) { pending = false; consumed = true; m |= hasDbl ? G_DOUBLE : G_TAP; }
+      if (!hasHold && !hasDbl && !hasTri && !pending) { consumed = true; m |= G_TAP; }                    // plain key: act at once
+      else if (pending) {
+        pending = false;
+        if (hasTri) { taps++; if (taps >= 3) { taps = 0; consumed = true; m |= G_TRIPLE; } }             // 2nd tap: wait for a 3rd on release
+        else { consumed = true; m |= hasDbl ? G_DOUBLE : G_TAP; }
+      } else taps = 0;
     } else if (!isDown && down) {                               // release
       down = false; upAt = now;
-      if (!consumed && !holdFired) { if (hasDbl) pending = true; else m |= G_TAP; }
+      if (!consumed && !holdFired) { if (hasDbl || hasTri) { pending = true; if (hasTri && taps == 0) taps = 1; } else m |= G_TAP; }
       consumed = false; holdFired = false;
     }
     return m;
@@ -1850,18 +2432,29 @@ static void gestureKey(uint8_t lay, uint8_t i, char g, char* out) {          // 
 }
 static void loadGestureFlags() {
   for (uint8_t l = 0; l < LAYERS; l++) {
-    gHold[l] = gDbl[l] = 0;
+    gHold[l] = gDbl[l] = gTri[l] = gChord[l] = gDial[l] = 0;
     for (uint8_t i = 0; i < 5; i++) {
       char k[10]; gestureKey(l, i, 'h', k); if (prefs.isKey(k)) gHold[l] |= (1 << i);
       gestureKey(l, i, 'd', k); if (prefs.isKey(k)) gDbl[l] |= (1 << i);
+      gestureKey(l, i, 't', k); if (prefs.isKey(k)) gTri[l] |= (1 << i);
     }
+    for (uint8_t p = 0; p < 4; p++) { char k[8]; slotKey(l, 9 + p, k); if (prefs.isKey(k)) gChord[l] |= (1 << p); }       // slots 10-13: key pairs K1+K2 ... K4+K5
+    for (uint8_t p = 0; p < 2; p++) { char k[8]; slotKey(l, 13 + p, k); if (prefs.isKey(k)) gDial[l] |= (1 << p); }       // slots 14 / 15: dial double / triple click
+  }
+}
+static const uint8_t NSLOTS = 15;
+static void clearLayerKeys(uint8_t l) {                           // every key, gesture, chord and dial-click action of one layer
+  static const char GC[3] = {'h', 'd', 't'};
+  for (uint8_t i = 0; i < NSLOTS; i++) {
+    char k[8]; slotKey(l, i, k); prefs.remove(k);
+    if (i < 5) for (uint8_t c = 0; c < 3; c++) { char g[10]; gestureKey(l, i, GC[c], g); prefs.remove(g); }
   }
 }
 static void runGesture(uint8_t i, char g) {
   char k[10]; gestureKey(curLayer, i, g, k);
   String js = prefs.getString(k, "");
   if (!js.length()) return;
-  runSpecJson(js, nullptr, (curLayer * 9 + i) * 3 + (g == 'h' ? 1 : 2));
+  runSpecJson(js, nullptr, (curLayer * 15 + i) * 4 + (g == 'h' ? 1 : g == 'd' ? 2 : 3));
 }
 // ---- dial acceleration: the faster the dial turns, the more often the action (volume ...) repeats
 static uint8_t accelMult(uint32_t dtPerDetent, uint8_t level) {
@@ -1874,22 +2467,29 @@ static uint8_t accelMult(uint32_t dtPerDetent, uint8_t level) {
 static void onKey(int i) {                              // the key's TAP action
   flashAt = millis(); needRedraw = true;                  // key-press ring (sprite screens)
   activity();
+  konamiFeed((uint8_t)(i + 1));
   if (menuOpen) uiTouch();
+  if (popupOpen && i < 5) { popupKey(i); return; }
   if (mode == M_POMO && i < 2) { if (i == 0) pomoToggle(); else pomoReset(); return; }   // K1/K2 = timer controls in focus mode
   if (!menuOpen && modeKey(i)) return;                      // stopwatch / breathing / dice / reaction / snake / habits claim some keys
+  if (keyToast && i < 5) showToast(lbl[curLayer][i]);
   runSlot(i);
 }
-static void onKeyGesture(int i, char g) {               // 'h' hold / 'd' double-tap
+static void onKeyGesture(int i, char g) {               // 'h' hold / 'd' double-tap / 't' triple-tap
   flashAt = millis(); needRedraw = true; activity();
   if (menuOpen) { uiTouch(); return; }
   runGesture(i, g);
 }
 static void onEncPressTurn(int steps) {                       // dial pressed + turned: its own pair of actions (slots 7 / 8), when configured
+  if (dialLock) return;
   int n = steps < 0 ? -steps : steps;
   for (int i = 0; i < n; i++) runSlot(steps > 0 ? 7 : 8);
 }
 static void onEncSteps(int steps) {
   if (menuOpen) { menuTurn(steps); return; }
+  if (popupOpen) { popupTurn(steps); return; }
+  if (modeDial(steps)) return;                                          // games / pet / diagnostics / life use the dial themselves
+  if (dialLock) { showToast("DIAL LOCK"); return; }                    // locked dial: turns do nothing (a click still opens the menu)
   if (mode == M_SNAKE && snRun) { snakeTurn(steps); return; }
   if (mode == M_POMO && pomoState == PS_IDLE) {
     pomoMinutes = (uint8_t)constrain((int)pomoMinutes + steps, 1, 90);
@@ -1906,12 +2506,15 @@ static void onEncSteps(int steps) {
 }
 static void encTurned(int steps) {                       // every detent, whatever screen / menu state: counter + event for the Dev tab
   activity();
+  konamiFeed(steps > 0 ? 6 : 7);
+  if (detentLed) ledFlash(14, 14, 14, 30);
   encPos += steps;
   evtEnc(steps > 0 ? 1 : -1, encPos);
 }
 static void onEncClick() {
   activity();
   if (menuOpen) { menuClick(); return; }
+  if (popupOpen) { popupClick(); return; }
   menuOpen = true; menuSel = 0; menuEdit = 0; menuMode = mode; savedBright = brightness; uiTouch(); needRedraw = true;
 }
 static void onEncLong() {
@@ -1919,34 +2522,151 @@ static void onEncLong() {
   if (menuOpen) { menuCloseNow(); return; }
   setMode(nextEnabledMode(mode, 1));
 }
+// ---- pad functions ("fx" actions) and the helpers behind them
+static void fxToast(const char* t) { showToast(t); }
+static void fxRun(uint8_t n) {
+  if (n < 1 || n > sizeof FX_NAMES / sizeof FX_NAMES[0]) return;
+  const char* nm = FX_NAMES[n - 1];
+  if (!strcmp(nm, "dial_lock")) { dialLock = !dialLock; prefs.putBool("dlock", dialLock); fxToast(dialLock ? "DIAL LOCK" : "DIAL FREE"); ledFlash(0, 0, dialLock ? 60 : 20, 300); }
+  else if (!strcmp(nm, "theme_next")) { themeIdx = (themeIdx + 1) % 7; prefs.putUChar("theme", themeIdx); applyTheme(); fxToast(THEME_NAME[themeIdx]); }
+  else if (!strcmp(nm, "rot_next")) { rotation = (rotation + 1) & 3; prefs.putUChar("rot", rotation); applyRotation(); }
+  else if (!strcmp(nm, "mode_next")) setMode(nextEnabledMode(mode, 1));
+  else if (!strcmp(nm, "mode_prev")) setMode(nextEnabledMode(mode, -1));
+  else if (!strcmp(nm, "bright_up") || !strcmp(nm, "bright_down")) {
+    int b = (int)brightness + (nm[7] == 'u' ? 24 : -24); brightness = (uint8_t)constrain(b, 5, 255);
+    prefs.putUChar("bright", brightness); savedBright = brightness; applyBacklight();
+    char t[10]; snprintf(t, sizeof t, "%d%%", brightness * 100 / 255); fxToast(t);
+  }
+  else if (!strncmp(nm, "latch_", 6)) {
+    uint8_t bit = !strcmp(nm + 6, "ctrl") ? 1 : !strcmp(nm + 6, "shift") ? 2 : !strcmp(nm + 6, "alt") ? 4 : 8;
+    latchMods ^= bit;                                                                  // press again to un-latch
+    char t[10]; snprintf(t, sizeof t, "%s%s%s%s", (latchMods & 1) ? "C" : "", (latchMods & 2) ? "S" : "", (latchMods & 4) ? "A" : "", (latchMods & 8) ? "G" : "");
+    fxToast(latchMods ? t : "LATCH OFF"); needRedraw = true;
+  }
+  else if (!strcmp(nm, "popup")) { popupOpen = true; popupSel = 0; popupAt = millis(); needRedraw = true; }
+  else if (!strcmp(nm, "switch_next")) switcherStep(1);
+  else if (!strcmp(nm, "switch_prev")) switcherStep(-1);
+}
+static void switcherStep(int dir) {                               // dial as window switcher: the first detent presses Alt (Cmd on a Mac) and Tab, later ones only Tab; Alt is let go when the dial rests
+  uint8_t mod = osMac ? 0x83 : 0x82;
+  if (!swAltHeld) { Keyboard.press(mod); swAltHeld = true; delay(12); }
+  if (dir < 0) Keyboard.press(0x81);
+  Keyboard.press(179); delay(10); Keyboard.release(179);
+  if (dir < 0) Keyboard.release(0x81);
+  swAltAt = millis();
+}
+static void popupClose() { popupOpen = false; needRedraw = true; }
+static void popupTurn(int steps) { popupAt = millis(); popupSel = (uint8_t)((((int)popupSel + steps) % 5 + 5) % 5); needRedraw = true; }
+static void popupClick() { uint8_t i = popupSel; popupClose(); runSlot(i); }
+static void popupKey(int i) { popupClose(); runSlot((uint8_t)i); }
+static void scenePopup() {                                        // like the radial menu: the five keys of this layer as segments, dial picks, click runs
+  dimSprite();
+  spr.setTextDatum(MC_DATUM);
+  for (int i = 0; i < 5; i++) {
+    float c = i * 72.0f; bool sel = (i == popupSel);
+    arcBand(120, 120, 118, 72, c - 34, c + 34, sel ? C_ACC : C_DIM2);
+    float a = c * DEG_TO_RAD;
+    char b[12]; if (lbl[curLayer][i][0]) snprintf(b, sizeof b, "%s", lbl[curLayer][i]); else snprintf(b, sizeof b, "KEY %d", i + 1);
+    spr.setTextColor(sel ? C_BG : C_TXT);
+    spr.drawString(b, 120 + lroundf(92 * sinf(a)), 120 - lroundf(92 * cosf(a)), 2);
+  }
+  spr.fillCircle(120, 120, 66, C_BG); spr.drawCircle(120, 120, 66, C_DIM2);
+  spr.setTextColor(C_GRAY); spr.drawString("POPUP", 120, 100, 2);
+  spr.setTextColor(C_TXT); spr.drawString(lbl[curLayer][popupSel][0] ? lbl[curLayer][popupSel] : "CLICK = RUN", 120, 128, 2);
+}
+static const uint8_t KONAMI_SEQ[9] = {6, 6, 7, 7, 1, 2, 1, 2, 5};   // dial right, right, left, left, then K1 K2 K1 K2 K5
+static void konamiFeed(uint8_t code) {
+  if (code == KONAMI_SEQ[konamiPos]) konamiPos++; else konamiPos = (code == KONAMI_SEQ[0]) ? 1 : 0;
+  if (konamiPos >= 9) {
+    konamiPos = 0; konamiCount++; prefs.putUShort("konami", konamiCount);
+    partyUntil = millis() + 6000; partyPrevLed = ledMode; ledMode = LM_RAINBOW; needRedraw = true;
+  }
+}
+static void onChord(uint8_t p) {                                  // keys p+1 and p+2 pressed together
+  flashAt = millis(); needRedraw = true; activity();
+  if (menuOpen) { uiTouch(); return; }
+  if (keyToast) showToast(lbl[curLayer][p]);
+  runSlot(9 + p);
+}
+static void encMulti(uint8_t n) {                                 // n clicks of the dial within the window: 1 = menu, 2 / 3 = the configured actions
+  activity();
+  if (menuOpen || popupOpen) { onEncClick(); return; }
+  if (n >= 3 && (gDial[curLayer] & 2)) runSlot(14);
+  else if (n >= 2 && (gDial[curLayer] & 1)) runSlot(13);
+  else onEncClick();
+}
+static void encClickRegister(uint32_t now) {
+  if (menuOpen || popupOpen || !gDial[curLayer]) { onEncClick(); return; }       // no double / triple click action: act at once, as before
+  dcCount++; dcAt = now;
+  if (dcCount >= 3 && (gDial[curLayer] & 2)) { dcCount = 0; encMulti(3); }
+}
 static void IRAM_ATTR encISR() {
   uint32_t now = micros();
   if (now - encLastUs < 400) return;                    // contact-bounce guard
   encLastUs = now;
   encAccum += (gpio_get_level((gpio_num_t)PIN_ENC_A) != gpio_get_level((gpio_num_t)PIN_ENC_B)) ? 1 : -1;   // IRAM-safe reads
 }
+static const uint32_t CHORD_MS = 45, REPEAT_DELAY_MS = 400, REPEAT_EVERY_MS = 90;
+static void keyDispatch(int i, uint32_t now, bool down) {         // one step of the key's gesture state machine + what it fires
+  bool hh = (gHold[curLayer] >> i) & 1, dd = (gDbl[curLayer] >> i) & 1, tt = (gTri[curLayer] >> i) & 1;
+  uint8_t m = gFsm[i].step(down, now, hh, dd, tt);
+  if (m & G_TAP) onKey(i);
+  if (m & G_HOLD) onKeyGesture(i, 'h');
+  if (m & G_DOUBLE) onKeyGesture(i, 'd');
+  if (m & G_TRIPLE) onKeyGesture(i, 't');
+}
 static void inputsService() {
   uint32_t now = millis();
   static bool gInit = false;
+  static uint8_t cst[5] = {0, 0, 0, 0, 0};                      // chord state per key: 0 idle, 1 waiting for a partner, 2 forwarded as a normal press, 3 used by a chord
+  static uint32_t cat[5] = {0, 0, 0, 0, 0}, repAt[5] = {0, 0, 0, 0, 0};
   if (!gInit) {                                                 // a key already held at power-up must not count as a press
     gInit = true;
-    for (int i = 0; i < 5; i++) if (keyBtn[i].read() == LOW) { gFsm[i].down = true; gFsm[i].consumed = true; gFsm[i].downAt = now; }
+    for (int i = 0; i < 5; i++) if (keyBtn[i].read() == LOW) { gFsm[i].down = true; gFsm[i].consumed = true; gFsm[i].downAt = now; cst[i] = 3; }
   }
   for (int i = 0; i < 5; i++) {
     keyBtn[i].update();
     if (keyBtn[i].fell()) { evtKey(i + 1, 1); flashAt = now; needRedraw = true; activity(); }
     if (keyBtn[i].rose()) evtKey(i + 1, 0);
-    bool hh = (gHold[curLayer] >> i) & 1, dd = (gDbl[curLayer] >> i) & 1;
-    uint8_t m = gFsm[i].step(keyBtn[i].read() == LOW, now, hh, dd);          // INPUT_PULLUP: pressed = LOW
-    if (m & G_TAP) onKey(i);
-    if (m & G_HOLD) onKeyGesture(i, 'h');
-    if (m & G_DOUBLE) onKeyGesture(i, 'd');
+  }
+  for (int i = 0; i < 5; i++) {
+    bool raw = keyBtn[i].read() == LOW;                         // INPUT_PULLUP: pressed = LOW
+    uint8_t cm = gChord[curLayer];
+    bool involved = cm && ((i > 0 && ((cm >> (i - 1)) & 1)) || (i < 4 && ((cm >> i) & 1)));
+    if (!involved) cst[i] = 0;
+    bool eff = raw;
+    if (involved) {
+      switch (cst[i]) {
+        case 0:
+          if (raw) {
+            int j = -1;                                          // a neighbour that is waiting right now, and a chord for that pair
+            if (i > 0 && cst[i - 1] == 1 && ((cm >> (i - 1)) & 1)) j = i - 1;
+            else if (i < 4 && cst[i + 1] == 1 && ((cm >> i) & 1)) j = i + 1;
+            if (j >= 0) { cst[i] = cst[j] = 3; onChord((uint8_t)min(i, j)); eff = false; }
+            else { cst[i] = 1; cat[i] = now; eff = false; }
+          }
+          break;
+        case 1:
+          if (!raw) { keyDispatch(i, now, true); cst[i] = 0; eff = false; }       // a short tap: deliver press and release together
+          else if ((uint32_t)(now - cat[i]) >= CHORD_MS) { cst[i] = 2; eff = true; }
+          else eff = false;
+          break;
+        case 2: if (!raw) cst[i] = 0; break;
+        default: eff = false; if (!raw) cst[i] = 0; break;
+      }
+    }
+    keyDispatch(i, now, eff);
+    if (eff && raw && ((repeatMask >> i) & 1) && gFsm[i].consumed && !menuOpen && !popupOpen && !((gHold[curLayer] | gDbl[curLayer] | gTri[curLayer]) >> i & 1)) {
+      if ((uint32_t)(now - gFsm[i].downAt) >= REPEAT_DELAY_MS && repAt[i] <= gFsm[i].downAt) repAt[i] = now;
+      else if (repAt[i] > gFsm[i].downAt && (uint32_t)(now - repAt[i]) >= REPEAT_EVERY_MS) { repAt[i] = now; runSlot((uint8_t)i); }
+    }
   }
   encBtn.update();
   if (encBtn.fell()) { encDownAt = millis(); encHeld = true; encLongDone = false; evtEncSw(1); }
   if (encBtn.rose()) evtEncSw(0);
-  if (encHeld && !encLongDone && millis() - encDownAt >= ENC_HOLD_MS) { encLongDone = true; onEncLong(); }
-  if (encBtn.rose()) { if (encHeld && !encLongDone) onEncClick(); encHeld = false; }
+  if (encHeld && !encLongDone && millis() - encDownAt >= ENC_HOLD_MS) { encLongDone = true; dcCount = 0; onEncLong(); }
+  if (encBtn.rose()) { if (encHeld && !encLongDone) encClickRegister(now); encHeld = false; }
+  if (dcCount && (uint32_t)(now - dcAt) > G_DBL_MS) { uint8_t n = dcCount; dcCount = 0; encMulti(n); }    // the double / triple click window closed
   int32_t d;
   portENTER_CRITICAL(&encMux); d = encAccum; encAccum = 0; portEXIT_CRITICAL(&encMux);
   encRem += d;
@@ -1956,7 +2676,7 @@ static void inputsService() {
   if (steps) {
     encTurned(steps);
     char pk[8]; slotKey(curLayer, steps > 0 ? 7 : 8, pk);
-    if (encHeld && !menuOpen && prefs.isKey(pk)) { encLongDone = true; onEncPressTurn(steps); }    // turning while pressed: no click / long-press afterwards
+    if (encHeld && !menuOpen && !popupOpen && prefs.isKey(pk)) { encLongDone = true; onEncPressTurn(steps); }    // turning while pressed: no click / long-press afterwards
     else onEncSteps(steps);
   }
 }
@@ -2051,6 +2771,9 @@ static void cmdHello() {
   cp.add("layers"); cp.add("mouse"); cp.add("host"); cp.add("info"); cp.add("gifslots"); cp.add("factory");
   cp.add("hostx"); cp.add("gestures"); cp.add("dialaccel"); cp.add("clockstyle"); cp.add("saver"); cp.add("nightdim");   // firmware 1.3
   cp.add("screens"); cp.add("pressturn"); cp.add("toggle"); cp.add("wheelmods"); cp.add("ledfx"); cp.add("reminders"); cp.add("habits");  // firmware 1.4
+  cp.add("hostx2"); cp.add("dimcmd"); cp.add("themes"); cp.add("fx"); cp.add("chords"); cp.add("tapdance"); cp.add("dialclicks"); cp.add("keyrepeat");   // firmware 1.5
+  cp.add("games"); cp.add("pet"); cp.add("diag"); cp.add("viz"); cp.add("labels"); cp.add("bootlog"); cp.add("rollback"); cp.add("cards2"); cp.add("saver2");
+  cp.add("clock2"); cp.add("display2"); cp.add("konami");
   if (DC_ENABLE_WIFI) cp.add("wifi");
   if (DC_HAS_OTA) cp.add("ota");
   sendDoc(d);
@@ -2266,10 +2989,10 @@ static void cmdGetKeys(JsonDocument& doc) {                // lets the app verif
   JsonDocument d; d["ok"] = true; d["evt"] = "keys"; d["layer"] = lay; d["cur"] = curLayer; d["layers"] = LAYERS;
   if (!doc["slot"].isNull()) {                              // one slot with its full spec (stored or default)
     int sl = doc["slot"].as<int>();
-    if (sl < 1 || sl > 9) { nack("key"); return; }
+    if (sl < 1 || sl > 15) { nack("key"); return; }
     const char* gest = doc["gesture"] | "tap";
-    if (strcmp(gest, "tap")) {                                // a hold / double-tap action: stored or absent (there is no default)
-      char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : 0;
+    if (strcmp(gest, "tap")) {                                // a hold / double / triple-tap action: stored or absent (there is no default)
+      char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : !strcmp(gest, "triple") ? 't' : 0;
       if (!gch || sl > 5) { nack("gesture"); return; }
       char gk[10]; gestureKey((uint8_t)lay, (uint8_t)(sl - 1), gch, gk);
       String gj = prefs.getString(gk, "");
@@ -2295,10 +3018,12 @@ static void cmdGetKeys(JsonDocument& doc) {                // lets the app verif
     String js = prefs.getString(k, "");
     JsonObject o = a.add<JsonObject>();
     o["s"] = i + 1; o["def"] = js.length() == 0; o["len"] = (uint32_t)js.length();
-    if (i < 5) { o["h"] = (bool)((gHold[lay] >> i) & 1); o["d"] = (bool)((gDbl[lay] >> i) & 1); }
+    if (i < 5) { o["h"] = (bool)((gHold[lay] >> i) & 1); o["d"] = (bool)((gDbl[lay] >> i) & 1); o["t"] = (bool)((gTri[lay] >> i) & 1); }
     o["crc"] = js.length() ? crc32u(0, (const uint8_t*)js.c_str(), js.length()) : 0u;
   }
   { JsonArray pt = d["pt"].to<JsonArray>(); for (uint8_t i = 7; i < 9; i++) { char k[8]; slotKey((uint8_t)lay, i, k); pt.add(prefs.isKey(k)); } }   // dial press+turn right / left set?
+  { JsonArray ch = d["ch"].to<JsonArray>(); for (uint8_t p = 0; p < 4; p++) ch.add((bool)((gChord[lay] >> p) & 1)); }                           // chords K1+K2 ... K4+K5 set?
+  { JsonArray dc = d["dc"].to<JsonArray>(); dc.add((bool)(gDial[lay] & 1)); dc.add((bool)(gDial[lay] & 2)); }                                    // dial double / triple click set?
   sendDoc(d);
 }
 static void cmdLayer(JsonDocument& doc) {
@@ -2343,7 +3068,7 @@ static void cmdFactory(JsonDocument& doc) {
   const char* what = doc["what"] | "settings";
   bool reboot = doc["reboot"] | true;
   if (!strcmp(what, "keys")) {
-    for (uint8_t l = 0; l < LAYERS; l++) for (uint8_t i = 0; i < 9; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); if (i < 5) { char g[10]; gestureKey(l, i, 'h', g); prefs.remove(g); gestureKey(l, i, 'd', g); prefs.remove(g); } }
+    for (uint8_t l = 0; l < LAYERS; l++) clearLayerKeys(l);
     loadGestureFlags();
     ack("factory");
   } else if (!strcmp(what, "settings")) {
@@ -2406,7 +3131,7 @@ static void cmdInput(JsonDocument& doc) {               // virtual key presses: 
     int k = doc["k"] | 0;
     if (k < 1 || k > 5) { nack("key"); return; }
     const char* g = doc["g"] | "tap";
-    if (!strcmp(g, "hold") || !strcmp(g, "double")) { evtKey(k, 1); onKeyGesture(k - 1, g[0] == 'h' ? 'h' : 'd'); evtKey(k, 0); ack("input"); return; }
+    if (!strcmp(g, "hold") || !strcmp(g, "double") || !strcmp(g, "triple")) { evtKey(k, 1); onKeyGesture(k - 1, g[0] == 'h' ? 'h' : g[0] == 'd' ? 'd' : 't'); evtKey(k, 0); ack("input"); return; }
     if (strcmp(g, "tap")) { nack("gesture"); return; }
     evtKey(k, 1); onKey(k - 1); evtKey(k, 0);
   } else if (!doc["turn"].isNull()) {
@@ -2420,6 +3145,14 @@ static void cmdInput(JsonDocument& doc) {               // virtual key presses: 
     if (pressed) onEncPressTurn(t); else onEncSteps(t);
     turnDtOverride = -1;
     JsonDocument r; r["ok"] = true; r["evt"] = "input"; r["runs"] = lastTurnRuns; sendDoc(r); return;
+  } else if (!doc["chord"].isNull()) {
+    int p = doc["chord"] | 0;
+    if (p < 1 || p > 4) { nack("chord"); return; }
+    onChord((uint8_t)(p - 1));
+  } else if (!doc["dclick"].isNull()) {
+    int n = doc["dclick"] | 0;
+    if (n < 1 || n > 3) { nack("dclick"); return; }
+    encMulti((uint8_t)n);
   } else if (doc["click"] | false) onEncClick();
   else if (doc["hold"] | false) onEncLong();
   else { nack("input"); return; }
@@ -2439,6 +3172,9 @@ static void settingsReply() {
   d["dial_accel"] = dialAccel; d["clock_style"] = clockStyle; d["saver_s"] = saverSec; d["saver_style"] = saverStyle;
   d["night_on"] = nightOn; d["night_from"] = nightFrom; d["night_to"] = nightTo; d["night_level"] = nightLevel;
   d["bl"] = lastBl; d["saver_on"] = saverOn; d["mode_mask"] = modeMask;
+  d["theme"] = themeIdx; d["tint"] = tintOn; d["rotation"] = rotation; d["pixel_shift"] = pixelShift; d["fade"] = fadeOn; d["boot_anim"] = bootAnim;
+  d["splash"] = splashTxt; d["detent_led"] = detentLed; d["key_toast"] = keyToast; d["repeat_mask"] = repeatMask; d["dial_lock"] = dialLock;
+  d["host_dim"] = hostDim; d["pomo_today"] = pomoToday;
   sendDoc(d);
 }
 static bool optInt(JsonDocument& doc, const char* key, int lo, int hi, int& out, bool& bad) {
@@ -2450,13 +3186,41 @@ static bool optInt(JsonDocument& doc, const char* key, int lo, int hi, int& out,
 }
 static void cmdSettings(JsonDocument& doc) {
   bool bad = false; int da = dialAccel, cs = clockStyle, ss = saverSec, st = saverStyle, nf = nightFrom, nt = nightTo, nl = nightLevel;
-  bool hDa = optInt(doc, "dial_accel", 0, 2, da, bad), hCs = optInt(doc, "clock_style", 0, 3, cs, bad), hSs = optInt(doc, "saver_s", 0, 3600, ss, bad),
-       hSt = optInt(doc, "saver_style", 1, 3, st, bad), hNf = optInt(doc, "night_from", 0, 23, nf, bad), hNt = optInt(doc, "night_to", 0, 23, nt, bad),
+  bool hDa = optInt(doc, "dial_accel", 0, 2, da, bad), hCs = optInt(doc, "clock_style", 0, 5, cs, bad), hSs = optInt(doc, "saver_s", 0, 3600, ss, bad),
+       hSt = optInt(doc, "saver_style", 1, 7, st, bad), hNf = optInt(doc, "night_from", 0, 23, nf, bad), hNt = optInt(doc, "night_to", 0, 23, nt, bad),
        hNl = optInt(doc, "night_level", 5, 255, nl, bad);
-  int mm = modeMask; bool hMm = optInt(doc, "mode_mask", 1, 0x0FFF, mm, bad);
+  int mm = modeMask; bool hMm = optInt(doc, "mode_mask", 1, 0x000FFFFF, mm, bad);
   bool hNo = !doc["night_on"].isNull();
   if (hNo && !doc["night_on"].is<bool>()) bad = true;
+  int th = themeIdx, ro = rotation, rm = repeatMask;
+  bool hTh = optInt(doc, "theme", 0, 6, th, bad), hRo = optInt(doc, "rotation", 0, 3, ro, bad), hRm = optInt(doc, "repeat_mask", 0, 31, rm, bad);
+  static const char* const BOOLS[7] = {"tint", "pixel_shift", "fade", "boot_anim", "detent_led", "key_toast", "dial_lock"};
+  bool hasB[7], valB[7];
+  for (int i = 0; i < 7; i++) {
+    hasB[i] = !doc[BOOLS[i]].isNull(); valB[i] = false;
+    if (hasB[i]) { if (!doc[BOOLS[i]].is<bool>()) bad = true; else valB[i] = doc[BOOLS[i]].as<bool>(); }
+  }
+  bool hSp = !doc["splash"].isNull(); String sp;
+  if (hSp) {
+    if (!doc["splash"].is<const char*>()) bad = true;
+    else {
+      sp = doc["splash"].as<String>(); sp.trim();
+      if (sp.length() > 12) bad = true;
+      for (unsigned j = 0; j < sp.length(); j++) if ((uint8_t)sp[j] < 32 || (uint8_t)sp[j] > 126) bad = true;
+    }
+  }
   if (bad) { nack("settings"); return; }
+  if (hTh) { themeIdx = (uint8_t)th; prefs.putUChar("theme", themeIdx); applyTheme(); }
+  if (hRo) { rotation = (uint8_t)ro; prefs.putUChar("rot", rotation); applyRotation(); }
+  if (hRm) { repeatMask = (uint8_t)rm; prefs.putUChar("repm", repeatMask); }
+  if (hasB[0]) { tintOn = valB[0]; prefs.putBool("tint", tintOn); applyTheme(); }
+  if (hasB[1]) { pixelShift = valB[1]; prefs.putBool("pshift", pixelShift); if (!pixelShift && (shiftX || shiftY)) { shiftX = shiftY = 0; applyRotation(); } }
+  if (hasB[2]) { fadeOn = valB[2]; prefs.putBool("fade", fadeOn); }
+  if (hasB[3]) { bootAnim = valB[3]; prefs.putBool("banim", bootAnim); }
+  if (hasB[4]) { detentLed = valB[4]; prefs.putBool("detled", detentLed); }
+  if (hasB[5]) { keyToast = valB[5]; prefs.putBool("ktoast", keyToast); }
+  if (hasB[6]) { dialLock = valB[6]; prefs.putBool("dlock", dialLock); ledFlash(0, 0, dialLock ? 60 : 20, 300); }
+  if (hSp) { strncpy(splashTxt, sp.c_str(), 12); splashTxt[12] = 0; prefs.putString("splash", sp); }
   if (hDa) { dialAccel = (uint8_t)da; prefs.putUChar("dacc", dialAccel); }
   if (hCs) { clockStyle = (uint8_t)cs; prefs.putUChar("cstyle", clockStyle); needRedraw = true; }
   if (hSs) { saverSec = (uint16_t)ss; prefs.putUShort("savs", saverSec); activity(); }
@@ -2465,14 +3229,89 @@ static void cmdSettings(JsonDocument& doc) {
   if (hNt) { nightTo = (uint8_t)nt; prefs.putUChar("nd_t", nightTo); }
   if (hNl) { nightLevel = (uint8_t)nl; prefs.putUChar("nd_l", nightLevel); }
   if (hNo) { nightOn = doc["night_on"].as<bool>(); prefs.putBool("nd_on", nightOn); }
-  if (hMm) { modeMask = (uint16_t)mm; prefs.putUShort("mmask", modeMask); }
+  if (hMm) { modeMask = (uint32_t)mm; prefs.putULong("mmask2", modeMask); }
   if (hNf || hNt || hNl || hNo) applyBacklight();
   settingsReply();
+}
+// ---- {"cmd":"dim","level":N} (N = 0 off) or {"on":bool}: the app dims the pad while the PC is locked / a video is fullscreen; not saved, ends by itself when the host disappears
+static void cmdDim(JsonDocument& doc) {
+  if (!doc["level"].isNull()) {
+    int l = doc["level"].is<int>() ? doc["level"].as<int>() : -1;
+    if (l < 0 || l > 255) { nack("level"); return; }
+    hostDim = (uint8_t)(l == 0 ? 0 : l < 5 ? 5 : l);
+  } else if (!doc["on"].isNull()) {
+    if (!doc["on"].is<bool>()) { nack("on"); return; }
+    hostDim = doc["on"].as<bool>() ? (hostDim ? hostDim : 25) : 0;
+  }
+  applyBacklight();
+  JsonDocument d; d["ok"] = true; d["evt"] = "dim"; d["level"] = hostDim; d["bl"] = lastBl; sendDoc(d);
+}
+// ---- {"cmd":"labels","layer":n,"l":["COPY","PASTE","UNDO","PLAY","MUTE","VOL+","VOL-"]}: names shown by the key toast and the popup menu (max 8 characters each); no "l" = read
+static void loadLabels() {
+  memset(lbl, 0, sizeof lbl);
+  for (uint8_t l = 0; l < LAYERS; l++) {
+    char k[6]; snprintf(k, sizeof k, "lb%u", l);
+    String v = prefs.getString(k, ""); int pos = 0;
+    for (uint8_t i = 0; i < 7 && v.length() && pos <= (int)v.length(); i++) {
+      int bar = v.indexOf('|', pos); if (bar < 0) bar = v.length();
+      strncpy(lbl[l][i], v.substring(pos, bar).c_str(), 8); lbl[l][i][8] = 0; pos = bar + 1;
+    }
+  }
+}
+static void cmdLabels(JsonDocument& doc) {
+  int lay = doc["layer"] | 0;
+  if (lay < 0 || lay >= LAYERS) { nack("layer"); return; }
+  if (!doc["l"].isNull()) {
+    JsonArrayConst a = doc["l"].as<JsonArrayConst>();
+    if (a.isNull() || a.size() != 7) { nack("labels"); return; }
+    String joined; char tmp[7][9];
+    for (int i = 0; i < 7; i++) {
+      String v = a[i].as<String>(); v.trim();
+      if (v.length() > 8) { nack("labels"); return; }
+      for (unsigned j = 0; j < v.length(); j++) if ((uint8_t)v[j] < 32 || (uint8_t)v[j] > 126 || v[j] == '|') { nack("labels"); return; }
+      strncpy(tmp[i], v.c_str(), 8); tmp[i][8] = 0; joined += v; if (i < 6) joined += '|';
+    }
+    char k[6]; snprintf(k, sizeof k, "lb%u", lay);
+    if (prefs.putString(k, joined) == 0 && joined.length() > 6) { nack("nvs_full"); return; }
+    memcpy(lbl[lay], tmp, sizeof tmp);
+  }
+  JsonDocument d; d["ok"] = true; d["evt"] = "labels"; d["layer"] = lay;
+  JsonArray a = d["l"].to<JsonArray>(); for (int i = 0; i < 7; i++) a.add(lbl[lay][i]);
+  sendDoc(d);
+}
+static void showToast(const char* t) { if (!t || !*t) return; strncpy(toastTxt, t, 9); toastTxt[9] = 0; toastUntil = millis() + 700; needRedraw = true; }
+// ---- {"cmd":"boot_log"}: how the last start-up went, reset statistics and USB link events (the Diagnostics screen shows the same); {"clear":true} zeroes the counters
+static void cmdBootLog(JsonDocument& doc) {
+  if (doc["clear"] | false) { memset(rstCount, 0, sizeof rstCount); prefs.putBytes("rstc", rstCount, sizeof rstCount); usbConnects = usbDrops = 0; }
+  JsonDocument d; d["ok"] = true; d["evt"] = "boot_log";
+  d["log"] = bootLog; d["reset"] = resetReasonStr(resetReason); d["crashes"] = crashCount; d["disp_why"] = dispWhy;
+  JsonArray c = d["counts"].to<JsonArray>(); for (int i = 0; i < 6; i++) c.add(rstCount[i]);
+  d["usb_connects"] = usbConnects; d["usb_drops"] = usbDrops;
+  d["up_ms"] = millis(); d["heap"] = ESP.getFreeHeap(); d["heap_min"] = ESP.getMinFreeHeap();
+  sendDoc(d);
+}
+// ---- {"cmd":"rollback","confirm":true}: boot the previous firmware again (the other OTA slot), if one is stored there (only after a Wi-Fi update)
+static void cmdRollback(JsonDocument& doc) {
+  if (!(doc["confirm"] | false)) { nack("confirm"); return; }
+  const esp_partition_t* run = esp_ota_get_running_partition();
+  const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
+  esp_app_desc_t desc;
+  if (!run || !other || other == run || esp_ota_get_partition_description(other, &desc) != ESP_OK) { nack("no_previous"); return; }
+  if (esp_ota_set_boot_partition(other) != ESP_OK) { nack("rollback"); return; }
+  JsonDocument d; d["ok"] = true; d["evt"] = "rollback"; d["to"] = desc.version; sendDoc(d);
+  delay(200); esp_restart();
+}
+// ---- {"cmd":"viz","v":[8 values 0..100]}: spectrum bars for the SOUND screen (no reply: sent several times a second)
+static void cmdViz(JsonDocument& doc) {
+  JsonArrayConst a = doc["v"].as<JsonArrayConst>();
+  if (a.isNull()) return;
+  for (int i = 0; i < 8 && i < (int)a.size(); i++) vizBars[i] = (uint8_t)constrain(a[i].as<int>(), 0, 100);
+  vizAt = millis(); if (mode == M_VIZ) needRedraw = true;
 }
 // ---- {"cmd":"gesture_test","hold":true,"dbl":false,"seq":[[1,0],[0,120],...]}: replays [pressed, ms] events through the gesture state
 // machine with the given timing and answers with what it would fire, as [[ms,"tap|hold|double"],...]. Does not run any action.
 static void cmdGestureTest(JsonDocument& doc) {
-  bool hh = doc["hold"] | false, dd = doc["dbl"] | false;
+  bool hh = doc["hold"] | false, dd = doc["dbl"] | false, tt = doc["tri"] | false;
   JsonArrayConst seq = doc["seq"].as<JsonArrayConst>();
   if (seq.isNull() || seq.size() == 0 || seq.size() > 24) { nack("seq"); return; }
   JsonDocument out; out["ok"] = true; out["evt"] = "gesture_test"; JsonArray fired = out["fired"].to<JsonArray>();
@@ -2481,6 +3320,7 @@ static void cmdGestureTest(JsonDocument& doc) {
     if (m & G_TAP) { JsonArray a = fired.add<JsonArray>(); a.add(t); a.add("tap"); }
     if (m & G_HOLD) { JsonArray a = fired.add<JsonArray>(); a.add(t); a.add("hold"); }
     if (m & G_DOUBLE) { JsonArray a = fired.add<JsonArray>(); a.add(t); a.add("double"); }
+    if (m & G_TRIPLE) { JsonArray a = fired.add<JsonArray>(); a.add(t); a.add("triple"); }
   };
   for (JsonVariantConst ev : seq) {
     if (ev.size() != 2) { nack("seq"); return; }
@@ -2489,11 +3329,11 @@ static void cmdGestureTest(JsonDocument& doc) {
     for (int guard = 0; guard < 4; guard++) {                       // idle moments before this event (the real loop calls step() every ms)
       uint32_t dl = f.deadline(hh);
       if (!dl || dl > t) break;
-      emit(f.step(f.down, dl, hh, dd), dl);
+      emit(f.step(f.down, dl, hh, dd, tt), dl);
     }
-    emit(f.step(down, t, hh, dd), t); last = t;
+    emit(f.step(down, t, hh, dd, tt), t); last = t;
   }
-  for (int guard = 0; guard < 4; guard++) { uint32_t dl = f.deadline(hh); if (!dl) break; emit(f.step(f.down, dl, hh, dd), dl); }
+  for (int guard = 0; guard < 4; guard++) { uint32_t dl = f.deadline(hh); if (!dl) break; emit(f.step(f.down, dl, hh, dd, tt), dl); }
   sendDoc(out);
 }
 // ---- {"cmd":"screens"}: state of the optional screens (for the app and for tests); {"habit"} / {"reminders"} have their own commands
@@ -2506,6 +3346,14 @@ static void cmdScreens(JsonDocument& doc) {
   JsonObject rx = d["rx"].to<JsonObject>(); rx["state"] = rxState; rx["ms"] = rxMs; rx["best"] = rxBest;
   JsonObject sn = d["snake"].to<JsonObject>(); sn["run"] = snRun; sn["over"] = snOver; sn["len"] = snLen; sn["dir"] = snDir; sn["best"] = snBest;
   d["reminder_active"] = remActive;
+  JsonObject pg = d["pong"].to<JsonObject>(); pg["state"] = pgState; pg["score"] = pgScore; pg["best"] = pgBest[0]; pg["lives"] = pgLives;
+  JsonObject fp = d["flap"].to<JsonObject>(); fp["state"] = fpState; fp["score"] = fpScore; fp["best"] = fpBest;
+  JsonObject lf = d["life"].to<JsonObject>(); lf["run"] = lifeRun; lf["gen"] = lifeGen; lf["pop"] = lifePop; lf["ms"] = lifeMs;
+  JsonObject pt = d["pet"].to<JsonObject>(); pt["food"] = petHun; pt["fun"] = petHap; pt["rest"] = petEne; pt["sleep"] = petSleep;
+  JsonObject sm = d["simon"].to<JsonObject>(); sm["state"] = smState; sm["len"] = smLen; sm["best"] = smBest; sm["idx"] = smIdx; JsonArray sq = sm["seq"].to<JsonArray>(); for (int i = 0; i < smLen; i++) sq.add(smSeq[i]);
+  d["diag_page"] = diagPage; d["popup"] = popupOpen; d["latch"] = latchMods; d["konami"] = konamiCount; d["party"] = partyUntil != 0; d["dial_lock"] = dialLock;
+  d["viz_age"] = vizAt ? (uint32_t)(millis() - vizAt) : 0u;
+  d["toast"] = ((int32_t)(toastUntil - millis()) > 0) ? toastTxt : ""; d["sw_alt"] = swAltHeld; d["bl"] = lastBl;
   sendDoc(d);
 }
 static void habitsReply() {
@@ -2619,9 +3467,9 @@ static void handleLine(const String& line) {
   else if (!strcmp(cmd, "echo")) { JsonDocument d; d["ok"] = true; d["evt"] = "echo"; d["data"] = doc["data"]; sendDoc(d); }
   else if (!strcmp(cmd, "remap")) {
     int key = doc["key"] | 0;
-    if (key < 1 || key > 9) { nack("key"); return; }                  // 8 / 9 = dial pressed + turned right / left (firmware 1.4)
+    if (key < 1 || key > 15) { nack("key"); return; }                 // 8 / 9 = dial pressed + turned right / left (1.4); 10-13 = chords K1+K2 ... K4+K5; 14 / 15 = dial double / triple click (1.5)
     const char* gest = doc["gesture"] | "tap";
-    char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : 0;
+    char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : !strcmp(gest, "triple") ? 't' : 0;
     if (strcmp(gest, "tap") && !gch) { nack("gesture"); return; }
     if (gch && key > 5) { nack("key"); return; }                      // only the five keys have hold / double-tap actions
     int glay = doc["layer"] | 0;
@@ -2629,8 +3477,8 @@ static void handleLine(const String& line) {
     if (gch && (doc["clear"] | false)) {                             // remove a hold / double-tap action again
       char gk[10]; gestureKey((uint8_t)glay, (uint8_t)(key - 1), gch, gk); prefs.remove(gk); loadGestureFlags(); ack("remap"); return;
     }
-    if (key >= 8 && (doc["clear"] | false)) {                          // remove a dial press+turn action again
-      char pk[8]; slotKey((uint8_t)glay, (uint8_t)(key - 1), pk); prefs.remove(pk); ack("remap"); return;
+    if (key >= 8 && (doc["clear"] | false)) {                          // remove a dial press+turn / chord / dial-click action again
+      char pk[8]; slotKey((uint8_t)glay, (uint8_t)(key - 1), pk); prefs.remove(pk); loadGestureFlags(); ack("remap"); return;
     }
     JsonDocument spec;
     spec["type"] = doc["type"]; spec["val"] = doc["val"];
@@ -2643,7 +3491,7 @@ static void handleLine(const String& line) {
     char k[10];
     if (gch) gestureKey((uint8_t)lay, (uint8_t)(key - 1), gch, k); else slotKey((uint8_t)lay, (uint8_t)(key - 1), k);
     if (prefs.putString(k, s) == 0) { nack("nvs_full"); return; }   // NVS (~20KB) can fill up with several large macros
-    if (gch) loadGestureFlags();
+    if (gch || key >= 10) loadGestureFlags();
     ack("remap");
   }
   else if (!strcmp(cmd, "settings")) cmdSettings(doc);
@@ -2651,9 +3499,14 @@ static void handleLine(const String& line) {
   else if (!strcmp(cmd, "habits")) cmdHabits(doc);
   else if (!strcmp(cmd, "reminders")) cmdReminders(doc);
   else if (!strcmp(cmd, "gesture_test")) cmdGestureTest(doc);
+  else if (!strcmp(cmd, "dim")) cmdDim(doc);
+  else if (!strcmp(cmd, "labels")) cmdLabels(doc);
+  else if (!strcmp(cmd, "boot_log")) cmdBootLog(doc);
+  else if (!strcmp(cmd, "rollback")) cmdRollback(doc);
+  else if (!strcmp(cmd, "viz")) cmdViz(doc);
   else if (!strcmp(cmd, "reset_keys")) {
     int only = doc["layer"] | -1;                                    // omitted = every layer
-    for (uint8_t l = 0; l < LAYERS; l++) { if (only >= 0 && l != only) continue; for (uint8_t i = 0; i < 9; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); if (i < 5) { char g[10]; gestureKey(l, i, 'h', g); prefs.remove(g); gestureKey(l, i, 'd', g); prefs.remove(g); } } }
+    for (uint8_t l = 0; l < LAYERS; l++) { if (only >= 0 && l != only) continue; clearLayerKeys(l); }
     loadGestureFlags();
     ack("reset_keys");
   }
@@ -2783,15 +3636,26 @@ static void loadSettings() {
   gifRot = prefs.getUShort("grot", 0); if (gifRot > 3600) gifRot = 0;
   dispOff = prefs.getBool("nodisp", false);
   dialAccel = prefs.getUChar("dacc", 0); if (dialAccel > 2) dialAccel = 0;
-  clockStyle = prefs.getUChar("cstyle", 0); if (clockStyle > 3) clockStyle = 0;
+  clockStyle = prefs.getUChar("cstyle", 0); if (clockStyle > 5) clockStyle = 0;
   saverSec = prefs.getUShort("savs", 0); if (saverSec > 3600) saverSec = 0;
-  saverStyle = prefs.getUChar("savst", 1); if (saverStyle < 1 || saverStyle > 3) saverStyle = 1;
+  saverStyle = prefs.getUChar("savst", 1); if (saverStyle < 1 || saverStyle > 7) saverStyle = 1;
   nightOn = prefs.getBool("nd_on", false);
   nightFrom = prefs.getUChar("nd_f", 22); if (nightFrom > 23) nightFrom = 22;
   nightTo = prefs.getUChar("nd_t", 7); if (nightTo > 23) nightTo = 7;
   nightLevel = prefs.getUChar("nd_l", 30); if (nightLevel < 5) nightLevel = 30;
-  modeMask = prefs.getUShort("mmask", 0x003F) & 0x0FFF; if (!modeMask) modeMask = 0x003F;
+  modeMask = (prefs.isKey("mmask2") ? prefs.getULong("mmask2", 0x3F) : (uint32_t)prefs.getUShort("mmask", 0x003F)) & 0x000FFFFFu; if (!modeMask) modeMask = 0x003F;
+  themeIdx = prefs.getUChar("theme", 0); if (themeIdx > 6) themeIdx = 0;
+  rotation = prefs.getUChar("rot", 0) & 3;
+  tintOn = prefs.getBool("tint", false); pixelShift = prefs.getBool("pshift", false); fadeOn = prefs.getBool("fade", false);
+  bootAnim = prefs.getBool("banim", true); detentLed = prefs.getBool("detled", false); keyToast = prefs.getBool("ktoast", false); dialLock = prefs.getBool("dlock", false);
+  repeatMask = prefs.getUChar("repm", 0) & 31;
+  { String sp = prefs.getString("splash", ""); strncpy(splashTxt, sp.c_str(), 12); splashTxt[12] = 0; }
+  loadLabels();
+  pomoLoadToday();
   snBest = prefs.getUShort("snkb", 0);
+  pgBest[0] = prefs.getUShort("pgb0", 0); pgBest[1] = prefs.getUShort("pgb1", 0); fpBest = prefs.getUShort("fpb", 0); smBest = prefs.getUChar("smb", 0);
+  konamiCount = prefs.getUShort("konami", 0);
+  petLoad();
   {                                                               // reminders "min|text;min|text;min|text"
     String r = prefs.getString("rem", ""); int pos = 0;
     for (int i = 0; i < 3 && pos <= (int)r.length(); i++) {
@@ -2815,6 +3679,23 @@ static void loadSettings() {
   wifiSsid = prefs.getString("ssid", ""); wifiPass = prefs.getString("wpass", "");
   uint32_t e = prefs.getULong("epoch", 0);                       // last known time: clock starts close even without host/NTP
   if (e > 1700000000UL) { struct timeval tv = {(time_t)e, 0}; settimeofday(&tv, nullptr); }
+}
+
+static void bootAnimRun() {                                       // ~0.9 s start-up animation: two rings and the pad's name
+  if (!bootAnim || !okSprite || safeMode) return;
+  uint32_t t0 = millis(), el;
+  while ((el = millis() - t0) < 900) {
+    float f = el / 900.0f;
+    spr.fillSprite(C_BG);
+    arcBand(120, 120, 118, 110, 0, 360 * f, C_ACC);
+    arcBand(120, 120, 100, 94, 360 * (1 - f), 360, C_ACC2);
+    uint8_t v = (uint8_t)(255 * (f < 0.3f ? 0 : (f - 0.3f) / 0.7f));
+    spr.setTextDatum(MC_DATUM); spr.setTextColor(rgb(v, v, v));
+    if (splashTxt[0]) spr.drawString(splashTxt, 120, 120, 4);
+    else { spr.drawString("DESK", 120, 104, 4); spr.drawString("COMPANION", 120, 136, 4); }
+    pushScreen();
+    delay(30);
+  }
 }
 
 void setup() {
@@ -2841,6 +3722,13 @@ void setup() {
   bootNote("prefs", okPrefs);
   loadSettings();                    // needs kbLayout before Keyboard.begin() below
   loadGestureFlags();
+  {                                                                // reset statistics (power-on / software / panic / watchdog / brownout / other)
+    if (prefs.getBytes("rstc", rstCount, sizeof rstCount) != sizeof rstCount) memset(rstCount, 0, sizeof rstCount);
+    int ri = resetReason == ESP_RST_POWERON ? 0 : resetReason == ESP_RST_SW ? 1 : resetReason == ESP_RST_PANIC ? 2 :
+             (resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT || resetReason == ESP_RST_WDT) ? 3 : resetReason == ESP_RST_BROWNOUT ? 4 : 5;
+    if (rstCount[ri] < 65535) rstCount[ri]++;
+    prefs.putBytes("rstc", rstCount, sizeof rstCount);
+  }
   lastActivity = millis();
 
   upChunk = (Serial.setRxBufferSize(8192) >= 4096) ? 768 : 128;  // core 2.0.x cannot grow the RX queue after boot -> small chunks
@@ -2907,9 +3795,11 @@ void setup() {
   ledBoot(30, 24, 0);                // amber: display done
 
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), encISR, CHANGE);
+  applyTheme(); applyRotation();
+  applyBacklight();
+  bootAnimRun();
   if (mode == M_GIF && okDisp) gifRestart = true;
   else renderFrame();
-  applyBacklight();
 
   ledReady = true;                   // from here the LED shows the heartbeat (green = ok, amber = degraded, red = safe mode)
   ledNextAt = 0;
@@ -2923,11 +3813,29 @@ void loop() {
   pomoTick();
   snakeTick();
   reactTick();
+  gamesTick();
   remTick();
   netService();
   otaService();
   ledService();
   uint32_t now = millis();
+  if (fadeAt) applyBacklight();                                 // fade-in after a screen change
+  { static uint32_t sec1 = 0; static bool hadHost = false;     // once a second: link statistics, host dim safety, pixel shifting, seasonal theme
+    if ((uint32_t)(now - sec1) >= 1000) {
+      sec1 = now;
+      bool h = hostActive();
+      if (h && !hadHost) usbConnects++;
+      if (!h && hadHost) usbDrops++;
+      hadHost = h;
+      if (hostDim && !h) { hostDim = 0; applyBacklight(); }      // the app vanished while it had the pad dimmed: back to normal
+      if (pixelShift && okDisp) {
+        static const int8_t PX[9][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}, {-1, 1}, {-1, 0}, {-1, -1}, {0, -1}, {1, -1}};
+        uint8_t i = (now / 60000UL) % 9;
+        if (shiftX != PX[i][0] || shiftY != PX[i][1]) { shiftX = PX[i][0]; shiftY = PX[i][1]; applyRotation(); }
+      }
+      if (themeIdx == 6 && timeSynced) { static int8_t lastMon = -1; struct tm t; localTm(t); if (t.tm_mon != lastMon) { lastMon = (int8_t)t.tm_mon; applyTheme(); } }
+    }
+  }
   if (mode == M_INFO && nCards > 1 && cardRotSec && (uint32_t)(now - cardAt) >= (uint32_t)cardRotSec * 1000UL) { cardIdx = (cardIdx + 1) % nCards; cardAt = now; needRedraw = true; }
 
   if (fsStartAt && (int32_t)(now - fsStartAt) >= 0) { fsStartAt = 0; fsStartAsync(fsTask, FS_MOUNTING); }
@@ -2935,12 +3843,15 @@ void loop() {
     if ((uint32_t)(now - svAt) >= 500) {
       svAt = now;
       bool can = saverSec > 0 && okSprite && mode != M_GIF && !menuOpen && !uploading && !dispHoldUntil && !(mode == M_POMO && pomoState == PS_RUN) &&
-                 !remActive && !(mode == M_STOPW && swRun) && !(mode == M_BREATH && brRun) && !(mode == M_SNAKE && snRun) && !(mode == M_REACT && (rxState == 1 || rxState == 2));
+                 !remActive && !popupOpen && !gameBusy() && !(mode == M_STOPW && swRun) && !(mode == M_BREATH && brRun) && !(mode == M_SNAKE && snRun) && !(mode == M_REACT && (rxState == 1 || rxState == 2));
       bool want = can && (uint32_t)(now - lastActivity) >= (uint32_t)saverSec * 1000UL;
       if (want != saverOn) { saverOn = want; needRedraw = true; }
     }
     if ((uint32_t)(now - ndAt) >= 15000) { ndAt = now; if (nightOn && effBright() != lastBl) applyBacklight(); }
   }
+  if (swAltHeld && (uint32_t)(now - swAltAt) > 900) { Keyboard.releaseAll(); swAltHeld = false; }    // window switcher: dial at rest = let go of Alt
+  if (popupOpen && (uint32_t)(now - popupAt) > 4000) popupClose();
+  if (partyUntil && (int32_t)(now - partyUntil) >= 0) { partyUntil = 0; ledMode = partyPrevLed; needRedraw = true; }
   if (uploading && now - upLast > 6000) uploadAbort();           // host vanished mid-upload
   if (menuOpen && now - menuTouched > MENU_TIMEOUT_MS) menuCloseNow();
   if (timeSynced && now - lastEpochSave > 1800000UL) { lastEpochSave = now; prefs.putULong("epoch", (uint32_t)time(nullptr)); }

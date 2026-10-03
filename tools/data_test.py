@@ -87,9 +87,46 @@ def down(u):
 c = extras.http_card("", "https://nope.invalid", fetch=down)
 check("http down", c["t"] == "DOWN", c)
 check("http validation", raises(lambda: extras.validate({"type": "http", "arg": "ftp://x"}), "http") and extras.validate({"type": "http", "arg": "https://x.y"})["arg"] == "https://x.y")
-check("new kinds are all registered", all(k in extras.TTL for k in extras.KINDS) and len(extras.KINDS) == 10)
+check("new kinds are all registered", all(k in extras.TTL for k in extras.KINDS) and len(extras.KINDS) == 14)
 b = extras.build({"type": "birthday", "label": "", "arg": "Z 06-01"}, today=today)
 check("build dispatches", b["t"] == "Z")
+
+# ---------------------------------------------------------------- ring / progress cards (firmware 1.5 card kinds)
+c = extras.progress_card("", "year", dt.datetime(2026, 7, 2, 12, 0))
+check("year progress", c["k"] == "p" and c["t"] == "50" and c["a"] == "of 2026" and c["b"] == "day 183 of 365", c)
+c = extras.progress_card("", "month", dt.datetime(2026, 2, 15, 0, 0))
+check("month progress", c["t"] == "50" and "of 28" in c["b"], c)
+c = extras.progress_card("", "week", dt.datetime(2026, 10, 7, 12, 0))                  # a Wednesday
+check("week progress", c["t"] == "35" and c["b"] == "Wednesday", c)
+check("day progress", extras.progress_card("", "day", dt.datetime(2026, 1, 1, 6, 0))["t"] == "25" and extras.progress_card("", "day", dt.datetime(2026, 1, 1, 6, 0))["b"] == "06:00")
+check("working day progress", extras.progress_card("", "work", dt.datetime(2026, 1, 1, 13, 0))["t"] == "50" and extras.progress_card("", "work", dt.datetime(2026, 1, 1, 7, 0))["t"] == "0"
+      and extras.progress_card("", "work", dt.datetime(2026, 1, 1, 20, 0))["t"] == "100")
+check("december month length", "of 31" in extras.progress_card("", "month", dt.datetime(2026, 12, 31, 0, 0))["b"])
+check("progress validation", extras.validate({"type": "progress", "arg": ""})["arg"] == "year" and raises(lambda: extras.validate({"type": "progress", "arg": "decade"}), "year, month"))
+
+
+class Batt:
+    def __init__(self, pct, plugged, secs):
+        self.percent, self.power_plugged, self.secsleft = pct, plugged, secs
+
+
+c = extras.battery_card("", lambda: Batt(81.6, False, 7500))
+check("battery ring", c["k"] == "r" and c["t"] == "82" and c["a"] == "on battery" and c["b"] == "2h 05m left", c)
+c = extras.battery_card("", lambda: Batt(40, True, -2))
+check("battery charging", c["a"] == "charging" and c["b"] == "", c)
+check("no battery", raises(lambda: extras.battery_card("", lambda: None), "no battery"))
+
+
+class Usage:
+    percent, used, total = 63.4, 300 * 1024 ** 3, 500 * 1024 ** 3
+
+
+c = extras.disk_card("", "/data", lambda p: Usage())
+check("disk ring", c["k"] == "r" and c["t"] == "63" and c["a"] == "300 of 500 GB" and c["b"] == "/data", c)
+check("disk error", raises(lambda: extras.disk_card("", "/nope", lambda p: (_ for _ in ()).throw(OSError(2, "No such file"))), "cannot read"))
+c = extras.load_card("", 37.4, 55.2)
+check("load ring", c["k"] == "r" and c["t"] == "37" and c["b"] == "RAM 55%", c)
+check("real psutil cards work", extras.load_card("")["k"] == "r" and extras.disk_card("", "/")["k"] == "r")
 
 # ---------------------------------------------------------------- lyrics
 LRC = "[00:05.00] First line\n[00:10.50] Second line\n[00:20.00]\n[00:25.00][01:00.00] Chorus\n[bad] x\nno stamp"
@@ -101,6 +138,8 @@ fetched = []
 ly = lyrics.Lyrics(fetch=lambda url: fetched.append(url) or {"syncedLyrics": LRC}, runner=lambda a: "7.5\n", system="Linux")
 np = {"playing": True, "title": "Song", "artist": "Band", "album": ""}
 c = ly.card(np)
+check("long lyric lines use the scrolling card kind", lyrics.Lyrics(fetch=lambda u: {"syncedLyrics": "[00:01.00] A line that is far too long for the card"}).card(np, 2)["k"] == "s"
+      and lyrics.Lyrics(fetch=lambda u: {"syncedLyrics": "[00:01.00] Hi"}).card(np, 2)["k"] == "c", c)
 check("lyrics card", c["t"] == "First line" and c["a"] == "Second line" and c["label"] == "LYRICS" and "artist_name=Band" in fetched[0], c)
 ly.card(np, pos=15)
 check("lyrics fetched once per song", len(fetched) == 1)
