@@ -76,5 +76,45 @@ app.prof_on.set(False); app._profiles_toggled(); app._profile_state["win"] = Non
 fw.cur = ("zoom", "Zoom Meeting"); time.sleep(0.6); pump(10)
 assert sim.layer == 2, "profiles are off"
 app._profile_remove(0); assert len(app.cfg["profiles"]) == 2
+# ---- ready-made key layouts
+from desk_lib import presets   # noqa: E402
+assert len(presets.PRESETS) >= 10
+for pname, pr in presets.PRESETS.items():                        # every preset only uses actions that exist in the library, for all 7 slots
+    assert sorted(pr["keys"]) == [1, 2, 3, 4, 5, 6, 7], pname
+    for slot, (cat, act) in pr["keys"].items():
+        spec = m.resolve_spec({"os": "win", "custom": {}}, cat, act)
+        assert spec and spec[0] != "none", (pname, cat, act)
+        assert m.resolve_spec({"os": "mac", "custom": {}}, cat, act), (pname, "mac", act)
+    assert pr["profile"][2] in ("process", "title") and pr["profile"][1], pname
+app.cfg["profiles"].clear()
+n_rules = len(app.cfg["profiles"])
+app.preset_var.set("Video meeting: Zoom"); app.preset_layer.set("Layer 3"); app.preset_rule.set(True)
+app.apply_preset()
+lm = app.cfg["layers"][2]
+assert lm["1"] == {"cat": "Productivity & Dev", "action": "Toggle Zoom Mute"} and lm["5"]["action"] == "Mute" and len(app.cfg["profiles"]) == n_rules + 1
+assert app.cfg["profiles"][-1] == {"name": "Zoom", "match": "zoom", "kind": "process", "layer": 2, "enabled": True}
+app.apply_preset(); assert len(app.cfg["profiles"]) == n_rules + 1, "applying twice does not duplicate the rule"
+assert "applied to layer 3" in app.status.cget("text")
+other = app.cfg["layers"][0]["1"]
+app.preset_var.set("Coding: VS Code"); app.preset_layer.set("Layer 2"); app.preset_rule.set(False); app.apply_preset()
+assert app.cfg["layers"][1]["3"]["action"] == "VS Code Terminal" and app.cfg["layers"][0]["1"] == other and len(app.cfg["profiles"]) == n_rules + 1
+# the preset reaches the simulated pad through the normal upload (mac shortcuts resolve differently from Windows)
+assert app.dev.connected
+sim = app.dev.ser.sim
+app.upload_slots([1, 2, 3], layer=1)
+assert pump(80, lambda: sim.layers[1].get(1) is not None and sim.layers[1].get(3) is not None)
+assert sim.layers[1][1] == {"type": "combo", "val": ["PRIMARY", "p"]} and sim.layers[1][3] == {"type": "combo", "val": ["CTRL", "`"]}, sim.layers[1]
+# preset errors are reported, not raised
+try:
+    presets.apply(app.cfg, "nope", 0)
+    raise SystemExit("unknown preset accepted")
+except KeyError:
+    pass
+try:
+    presets.apply(app.cfg, "Browsing", 0, action_exists=lambda c, a: False)
+    raise SystemExit("missing library action accepted")
+except ValueError:
+    pass
+assert any(c[0] == "Spotify" for c in presets.profile_choices()) and any(c[0] == "Zoom" for c in presets.profile_choices())
 app.destroy()
 print("ALL PROFILE TESTS PASSED")

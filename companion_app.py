@@ -45,7 +45,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, automation, backup, bridge, espota, extras, feeds, hostactions, padextras, recorder, scheduler, scripting, scripts_page, textops, wizards     # noqa: E402
+from desk_lib import activewin, automation, backup, bridge, espota, extras, feeds, hostactions, padextras, presets, recorder, scheduler, scripting, scripts_page, textops, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
@@ -130,6 +130,33 @@ ACTIONS = {
         ("Task View / Mission Control", C("GUI", "TAB"), C("CTRL", "UP")),
         ("Command Palette", C("PRIMARY", "SHIFT", "p")),
         ("Toggle Sidebar (VS Code)", C("PRIMARY", "b")),
+    ],
+    "View & Windows": [
+        ("Fullscreen", C("F11"), C("CTRL", "GUI", "f")), ("Reset Zoom", C("PRIMARY", "0")), ("Previous App (Alt+Shift+Tab)", C("ALT", "SHIFT", "TAB"), C("GUI", "SHIFT", "TAB")),
+        ("Snap Window Left", C("GUI", "LEFT")), ("Snap Window Right", C("GUI", "RIGHT")), ("Maximize Window", C("GUI", "UP")),
+        ("Minimize Window", C("GUI", "DOWN"), C("GUI", "m")), ("Next Virtual Desktop", C("CTRL", "GUI", "RIGHT"), C("CTRL", "RIGHT")),
+        ("Previous Virtual Desktop", C("CTRL", "GUI", "LEFT"), C("CTRL", "LEFT")),
+    ],
+    "Meetings": [
+        ("Teams: Mute", C("PRIMARY", "SHIFT", "m")), ("Teams: Camera", C("PRIMARY", "SHIFT", "o")), ("Teams: Share Screen", C("PRIMARY", "SHIFT", "e")),
+        ("Teams: Raise Hand", C("PRIMARY", "SHIFT", "k")), ("Meet: Mute", C("PRIMARY", "d")), ("Meet: Camera", C("PRIMARY", "e")),
+        ("Meet: Raise Hand", C("CTRL", "ALT", "h")), ("Meet: Chat", C("CTRL", "ALT", "c")),
+        ("Zoom: Share Screen", C("ALT", "s"), C("GUI", "SHIFT", "s")), ("Zoom: Raise Hand", C("ALT", "y"), C("ALT", "y")),
+    ],
+    "Creative & Video": [
+        ("Brush Tool", C("b")), ("Eraser Tool", C("e")), ("Brush Size Up", C("]")), ("Brush Size Down", C("[")),
+        ("Step Backward (Photoshop)", C("CTRL", "ALT", "z"), C("GUI", "ALT", "z")), ("Frame Forward", C("RIGHT")), ("Frame Back", C("LEFT")),
+        ("Timeline Play (Space)", C("SPACE")), ("Shuttle Reverse (J)", C("j")), ("Shuttle Stop (K)", C("k")), ("Shuttle Forward (L)", C("l")),
+        ("Add Edit / Split (Premiere)", C("PRIMARY", "k")), ("Mark In (I)", C("i")), ("Mark Out (O)", C("o")),
+    ],
+    "Writing": [
+        ("Bold", C("PRIMARY", "b")), ("Italic", C("PRIMARY", "i")), ("Underline", C("PRIMARY", "u")), ("Insert Link", C("PRIMARY", "k")),
+        ("Find Next", C("F3"), C("GUI", "g")), ("Select Line", C("HOME"), C("GUI", "LEFT")),
+    ],
+    "Spreadsheet & 3D": [
+        ("Edit Cell (F2)", C("F2")), ("Autosum", C("ALT", "=")), ("Toggle Filter", C("PRIMARY", "SHIFT", "l")), ("Absolute Reference (F4)", C("F4")),
+        ("Next Sheet", C("CTRL", "PGDN")), ("Previous Sheet", C("CTRL", "PGUP")),
+        ("Blender: Grab", C("g")), ("Blender: Rotate", C("r")), ("Blender: Scale", C("s")), ("Blender: Edit Mode", C("TAB")),
     ],
     "Layers & Pad": [
         ("Next Layer", ("layer", "next")), ("Previous Layer", ("layer", "prev")),
@@ -5857,6 +5884,25 @@ class App(ctk.CTk):
         for name, match, kind, layer in (("VS Code", "code", "process", 2), ("Browser", "firefox", "process", 2), ("Spotify", "spotify", "process", 1),
                                          ("Zoom", "zoom", "process", 1)):
             ui.secondary_button(sug, name, lambda a=(name, match, kind, layer): self.profile_add(*a), width=80).pack(side="left", padx=3)
+        choices = presets.profile_choices()
+        self.pr_more = tk.StringVar(value="More programs...")
+        ctk.CTkOptionMenu(sug, values=[c[0] for c in choices], variable=self.pr_more, width=150,
+                          command=lambda n: self.profile_add(*next((c[0], c[1], c[2], int(self.pr_layer.get().split()[-1]) - 1) for c in choices if c[0] == n))).pack(side="left", padx=8)
+        pre = ctk.CTkFrame(box, fg_color=CARD2, corner_radius=10, border_width=0)
+        pre.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
+        ctk.CTkLabel(pre, text="Ready-made key layouts", font=ui.font(13, "bold")).pack(anchor="w", padx=12, pady=(10, 0))
+        ui.muted(pre, "Fills one layer with the usual shortcuts of a program (meetings, drawing, video editing, spreadsheets, writing, 3D, coding) - "
+                 "and can add the program rule. Uses each program's default shortcuts.", wraplength=820).pack(anchor="w", padx=12)
+        r = ctk.CTkFrame(pre, fg_color="transparent")
+        r.pack(fill="x", padx=12, pady=(6, 10))
+        self.preset_var = tk.StringVar(value=list(presets.PRESETS)[0])
+        ctk.CTkOptionMenu(r, values=list(presets.PRESETS), variable=self.preset_var, width=260).pack(side="left")
+        ctk.CTkLabel(r, text="onto").pack(side="left", padx=6)
+        self.preset_layer = tk.StringVar(value="Layer 3")
+        ctk.CTkOptionMenu(r, values=["Layer 1", "Layer 2", "Layer 3"], variable=self.preset_layer, width=90).pack(side="left")
+        self.preset_rule = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(r, text="also add the program rule", variable=self.preset_rule).pack(side="left", padx=12)
+        ctk.CTkButton(r, text="Apply", width=80, command=self.apply_preset).pack(side="left")
         self._refresh_profiles()
 
     @staticmethod
@@ -5910,6 +5956,24 @@ class App(ctk.CTk):
         save_config(self.cfg)
         self._refresh_profiles()
         self._profile_state["win"] = None
+
+    def apply_preset(self):
+        name, layer = self.preset_var.get(), int(self.preset_layer.get().split()[-1]) - 1
+        if layer and self.dev.connected and not self._layers_supported():
+            return self.set_status("This pad's firmware has no layers - update it (Device -> Firmware)", error=True)
+        try:
+            slots, rule = presets.apply(self.cfg, name, layer, bool(self.preset_rule.get()), lambda c, a: (c, a) in ACTION_INDEX)
+        except (KeyError, ValueError) as e:
+            return self.set_status(f"Preset failed: {e}", error=True)
+        if layer == self.edit_layer:
+            self.refresh_action_lists()
+            self.padview.refresh()
+        save_config(self.cfg)
+        self.recompute_pending()
+        self._refresh_profiles()
+        self._profile_state["win"] = None
+        self.set_status(f"'{name}' applied to layer {layer + 1}" + (f"; rule added for {rule['match']}" if rule else "") +
+                        " - press 'Upload to pad' on the Pad page to send it")
 
     def profile_add(self, name=None, match=None, kind=None, layer=None):
         name = name if name is not None else self.pr_name.get().strip()
