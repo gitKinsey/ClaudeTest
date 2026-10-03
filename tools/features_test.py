@@ -52,6 +52,15 @@ assert act("Mouse click", "right") == ("mouse", {"btn": "right", "act": "click"}
 assert act("Mouse double click") == ("mouse", {"btn": "left", "act": "double"})
 assert act("Mouse scroll", "-3") == ("mouse", {"wheel": -3})
 assert act("Switch layer", "2") == ("layer", 1) and act("Switch layer", "") == ("layer", "next")
+assert act("Type a snippet", "Hi {date}") == ("host", {"op": "snippet", "arg": "Hi {date}"})
+app.act_transform.set("snake_case")
+assert act("Transform the clipboard") == ("host", {"op": "clip", "arg": "snake"})
+assert app.act_transform_menu.winfo_manager() == "grid" and not app.act_arg.winfo_manager(), "the transform picker replaces the text field"
+act("Open website", "x.org"); app.update()
+assert app.act_arg.winfo_manager() == "grid" and not app.act_transform_menu.winfo_manager()
+assert m.describe_spec(("host", {"op": "clip", "arg": "snake"})) == "clipboard: snake_case" and m.describe_spec(("host", {"op": "snippet", "arg": "Hi"})) == "type snippet: Hi"
+assert m.spec_ok({"type": "host", "val": {"op": "snippet", "arg": "x"}}) and not m.spec_ok({"type": "host", "val": {"op": "snippet", "arg": ""}})
+assert app._next_counter("t") == 1 and app._next_counter("t") == 2 and app.cfg["counters"]["t"] == 2
 for bad in (("Open website", ""), ("Mouse click", "banana"), ("Mouse scroll", "0"), ("Mouse scroll", "99"), ("Mouse scroll", "x"), ("Switch layer", "7")):
     try:
         act(*bad); raise SystemExit(f"accepted bad action {bad}")

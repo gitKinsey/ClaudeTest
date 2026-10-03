@@ -10,6 +10,8 @@ import subprocess
 import webbrowser
 from urllib.parse import urlparse
 
+from desk_lib import textops
+
 SAFE_URL_SCHEMES = ("http", "https", "mailto")
 
 
@@ -40,9 +42,11 @@ def collect_allowed(layer_maps, customs, resolve):
 
 
 class HostActions:
-    def __init__(self, allowed_fn, allow_shell_fn, type_clipboard=None, notify=None, opener=None, runner=None, system=None):
+    def __init__(self, allowed_fn, allow_shell_fn, type_clipboard=None, notify=None, opener=None, runner=None, system=None,
+                 type_text=None, read_clipboard=None, counter=None):
         self.allowed_fn, self.allow_shell_fn = allowed_fn, allow_shell_fn
         self.type_clipboard, self.notify = type_clipboard, notify
+        self.type_text, self.read_clipboard, self.counter = type_text, read_clipboard, counter   # snippets / clipboard transforms
         self.open_url = opener or webbrowser.open
         self.popen = runner or subprocess.Popen
         self.system = system or platform.system()
@@ -74,6 +78,19 @@ class HostActions:
                     return False, "typing the clipboard is not available here"
                 self.type_clipboard()
                 return True, "typed the clipboard"
+            if op in ("snippet", "clip"):
+                if not self.type_text:
+                    return False, "typing text is not available here (pip install pynput)"
+                if op == "snippet":
+                    ctx = {"counter": self.counter}
+                    if "{clipboard}" in arg and self.read_clipboard:
+                        ctx["clipboard"] = self.read_clipboard()
+                    out = textops.expand(arg, ctx)
+                else:
+                    out = textops.transform(arg, self.read_clipboard() if self.read_clipboard else "")
+                if out:
+                    self.type_text(out)
+                return True, f"typed {len(out)} characters"
             if op == "notify":
                 if self.notify:
                     self.notify("Desk Companion", arg)

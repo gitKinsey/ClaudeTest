@@ -43,7 +43,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, backup, espota, feeds, hostactions, recorder, wizards     # noqa: E402
+from desk_lib import activewin, backup, espota, feeds, hostactions, recorder, textops, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
@@ -161,6 +161,8 @@ DEFAULT_LAYER_MAPS = [
 ACTION_KINDS = [("Open website", "url", "https://example.com", True), ("Start program", "app", "program name or path", True),
                 ("Run shell command", "shell", "command line (needs the shell switch)", True), ("Open file or folder", "file", "path", True),
                 ("Show notification", "notify", "message", True), ("Type the clipboard", "clipboard", "", False),
+                ("Type a snippet", "snippet", "text with {date} {time} {clipboard} {counter:name} {uuid} {random:1-6}", True),
+                ("Transform the clipboard", "clip", "", False),
                 ("Mouse click", "click", "left / right / middle / back / forward  (default: left)", False),
                 ("Mouse double click", "click", "left / right / middle  (default: left)", False),
                 ("Mouse scroll", "scroll", "amount: 1..20 up, -1..-20 down", True), ("Switch layer", "layer", "1, 2, 3, next or prev (default: next)", False)]
@@ -229,6 +231,7 @@ def normalize_config(cfg):
     for k, v in INFO_DEFAULTS.items():
         info.setdefault(k, v)
     cfg.setdefault("usage", {})                  # key press counters
+    cfg.setdefault("counters", {})               # {counter:name} values used by snippets
     cfg.setdefault("wizard_done", False)
     return cfg
 
@@ -758,7 +761,7 @@ def rgb565be_image(raw, w=240, h=240):
 
 FW_BUNDLED = "1.2.0"                     # version of firmware/DeskCompanion.bin shipped with this app
 LAYERS, GIF_SLOTS = 3, 4
-HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify")
+HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip")
 DEFAULT_LAYERS = [
     [{"type": "combo", "val": ["PRIMARY", "c"]}, {"type": "combo", "val": ["PRIMARY", "v"]}, {"type": "combo", "val": ["PRIMARY", "z"]},
      {"type": "media", "val": "PLAY_PAUSE"}, {"type": "media", "val": "MUTE"}, {"type": "media", "val": "VOL_UP"}, {"type": "media", "val": "VOL_DOWN"}],
@@ -1564,8 +1567,10 @@ def describe_spec(spec):
             return f"move the pointer by {v['move'][0]}, {v['move'][1]}"
         return f"mouse {v.get('act', 'click')} ({v.get('btn', 'left')} button)"
     if t == "host":
-        return {"url": "open ", "app": "start ", "shell": "run ", "file": "open file ", "clipboard": "type the clipboard", "notify": "notify: "}.get(v.get("op"), "") \
-            + (v.get("arg", "") if v.get("op") != "clipboard" else "")
+        if v.get("op") == "clip":
+            return "clipboard: " + textops.TRANSFORMS.get(v.get("arg"), (v.get("arg", ""),))[0]
+        return {"url": "open ", "app": "start ", "shell": "run ", "file": "open file ", "clipboard": "type the clipboard", "notify": "notify: ",
+                "snippet": "type snippet: "}.get(v.get("op"), "") + (v.get("arg", "") if v.get("op") != "clipboard" else "")
     return "nothing"
 
 
@@ -3536,7 +3541,8 @@ class App(ctk.CTk):
             self.cfg["info"]["token"], self.cfg["info"]["port"] = self.badges.token, self.badges.port
         self._profile_state = {"win": None, "layer": None, "text": "profiles are off"}
         self.hostact = hostactions.HostActions(self._allowed_host, lambda: bool(self.cfg.get("allow_shell")),
-                                               type_clipboard=self._type_clipboard,
+                                               type_clipboard=self._type_clipboard, type_text=self._type_text,
+                                               read_clipboard=self._clipboard_text, counter=self._next_counter,
                                                notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok")))
         if self.host.impl is not None:
             self.host.impl.host_cb = self._host_cb
@@ -4619,7 +4625,7 @@ class App(ctk.CTk):
         if not ok:
             raise RuntimeError(msg)
 
-    def _type_clipboard(self):
+    def _clipboard_text(self):
         ev, box = threading.Event(), {}
 
         def grab():
@@ -4630,11 +4636,23 @@ class App(ctk.CTk):
             ev.set()
         self.post(grab)
         ev.wait(2.0)
-        txt = (box.get("t") or "")[:2000]
+        return (box.get("t") or "")[:2000]
+
+    def _type_text(self, txt):
+        if self.host.impl is None:
+            raise RuntimeError("typing needs the key sender (pip install pynput)")
+        self.host.impl.text(txt)
+
+    def _type_clipboard(self):
+        txt = self._clipboard_text()
         if txt:
-            if self.host.impl is None:
-                raise RuntimeError("typing needs the key sender (pip install pynput)")
-            self.host.impl.text(txt)
+            self._type_text(txt)
+
+    def _next_counter(self, name):
+        c = self.cfg["counters"]
+        c[name] = int(c.get(name, 0)) + 1
+        save_config(self.cfg)
+        return c[name]
 
     def refresh_ports(self):
         self.port_map = {f"{p.device} - {p.description}": p.device for p in list_ports.comports()}
@@ -4792,6 +4810,8 @@ class App(ctk.CTk):
         ctk.CTkOptionMenu(ac, values=[k[0] for k in ACTION_KINDS], variable=self.act_kind, width=200, command=self._act_kind_changed).grid(row=2, column=0, padx=(16, 6), pady=(8, 14))
         self.act_arg = ctk.CTkEntry(ac, width=330, placeholder_text=ACTION_KINDS[0][2])
         self.act_arg.grid(row=2, column=1, padx=6)
+        self.act_transform = tk.StringVar(value=textops.TRANSFORMS["upper"][0])
+        self.act_transform_menu = ctk.CTkOptionMenu(ac, values=[v[0] for v in textops.TRANSFORMS.values()], variable=self.act_transform, width=330)
         ctk.CTkButton(ac, text="Assign to key", width=110, command=self.assign_action).grid(row=2, column=2, padx=4)
         ui.secondary_button(ac, "Add to sequence", self.seq_add_action, width=120).grid(row=2, column=3, padx=4)
         ctk.CTkButton(ac, text="Test", width=70, fg_color="#2f7d4f", command=self.test_action).grid(row=2, column=4, padx=4)
@@ -4827,6 +4847,13 @@ class App(ctk.CTk):
     # ---- computer / mouse / layer actions
     def _act_kind_changed(self, kind):
         placeholder = next(k[2] for k in ACTION_KINDS if k[0] == kind)
+        is_clip = next(k[1] for k in ACTION_KINDS if k[0] == kind) == "clip"
+        if is_clip:
+            self.act_arg.grid_remove()
+            self.act_transform_menu.grid(row=2, column=1, padx=6)
+        else:
+            self.act_transform_menu.grid_remove()
+            self.act_arg.grid(row=2, column=1, padx=6)
         self.act_arg.delete(0, "end")
         self.act_arg.configure(placeholder_text=placeholder, state="normal" if next(k[3] for k in ACTION_KINDS if k[0] == kind) else "disabled")
 
@@ -4843,6 +4870,11 @@ class App(ctk.CTk):
             return ("host", {"op": "url", "arg": arg})
         if op in ("app", "file", "notify"):
             return ("host", {"op": op, "arg": arg})
+        if op == "snippet":
+            return ("host", {"op": "snippet", "arg": arg})
+        if op == "clip":
+            key = next(k for k, v in textops.TRANSFORMS.items() if v[0] == self.act_transform.get())
+            return ("host", {"op": "clip", "arg": key})
         if op == "shell":
             if not self.cfg.get("allow_shell"):
                 raise ValueError("Shell commands are switched off. Turn on 'Allow the pad to run shell commands' on the Device page first.")
