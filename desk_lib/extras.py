@@ -5,14 +5,30 @@ import datetime as dt
 import json
 import re
 import subprocess
+import urllib.error
 import urllib.parse
 import urllib.request
 
 from desk_lib.feeds import ascii_fold
 
 KINDS = {"countdown": "Countdown to a date", "worldclock": "World clock", "git": "Git repository status",
-         "ci": "GitHub Actions status", "crypto": "Crypto price"}
-TTL = {"countdown": 30, "worldclock": 15, "git": 20, "ci": 120, "crypto": 120}       # seconds between refreshes
+         "ci": "GitHub Actions status", "crypto": "Crypto price", "quote": "Quote of the day", "birthday": "Birthdays / anniversaries",
+         "ping": "Is a server up? (ping)", "http": "Is a website up? (HTTP)", "lyrics": "Lyrics of the playing song"}
+TTL = {"countdown": 30, "worldclock": 15, "git": 20, "ci": 120, "crypto": 120, "quote": 600, "birthday": 600, "ping": 20, "http": 30, "lyrics": 2}       # seconds between refreshes
+
+QUOTES = [
+    ("Well begun is half done.", "Aristotle"), ("Simplicity is the ultimate sophistication.", "Leonardo da Vinci"),
+    ("Done is better than perfect.", "Sheryl Sandberg"), ("What we think, we become.", "Buddha"),
+    ("The only way to do great work is to love what you do.", "Steve Jobs"), ("Make it work, make it right, make it fast.", "Kent Beck"),
+    ("Premature optimization is the root of all evil.", "Donald Knuth"), ("Programs must be written for people to read.", "Harold Abelson"),
+    ("Stay hungry, stay foolish.", "Stewart Brand"), ("A journey of a thousand miles begins with a single step.", "Lao Tzu"),
+    ("It always seems impossible until it is done.", "Nelson Mandela"), ("Fall seven times, stand up eight.", "Japanese proverb"),
+    ("Slow is smooth, smooth is fast.", "Navy SEAL saying"), ("Perfection is achieved when nothing is left to take away.", "Antoine de Saint-Exupery"),
+    ("The best way out is always through.", "Robert Frost"), ("Quality is not an act, it is a habit.", "Will Durant"),
+    ("Talk is cheap. Show me the code.", "Linus Torvalds"), ("Measure twice, cut once.", "Carpenter's rule"),
+    ("Energy and persistence conquer all things.", "Benjamin Franklin"), ("You miss 100% of the shots you do not take.", "Wayne Gretzky"),
+    ("Everything should be made as simple as possible.", "Albert Einstein"), ("Small steps every day.", "Anonymous"),
+]
 
 
 def _fetch_json(url, timeout=8):
@@ -52,6 +68,17 @@ def validate(item):
         a = a.lower()
         if not re.fullmatch(r"[a-z0-9\-]{2,40}(:[a-z]{3,4})?", a):
             raise ValueError("enter a coin id like bitcoin or ethereum:eur")
+    elif t == "quote":
+        a = a[:200]                                          # optional: a text file with one  quote | author  per line
+    elif t == "birthday":
+        a = ", ".join(f"{n} {d}" for n, d in parse_dates(a))
+    elif t == "ping":
+        parse_hostport(a)
+    elif t == "http":
+        if not re.fullmatch(r"https?://[^\s]+", a):
+            raise ValueError("enter a web address starting with http:// or https://")
+    elif t == "lyrics":
+        a = ""
     return {"type": t, "label": label, "arg": a}
 
 
@@ -147,6 +174,121 @@ def crypto_card(label, coin, fetch=None):
             "a": "" if chg is None else f"{float(chg):+.1f}% in 24 h", "b": ""}
 
 
+# ---------------------------------------------------------------- quote of the day
+def quote_card(label, source="", today=None, read=None):
+    """Same quote all day (by date). source: optional text file, one 'quote | author' per line (else the built-in list)."""
+    today = today or dt.date.today()
+    pool = QUOTES
+    if source:
+        try:
+            lines = (read or (lambda p: open(p, encoding="utf-8").read()))(source).splitlines()
+        except OSError as e:
+            raise ValueError(f"cannot read {source}: {e.strerror or e}") from None
+        mine = [(q.strip(), a.strip()) for q, _, a in (ln.partition("|") for ln in lines) if q.strip()]
+        if not mine:
+            raise ValueError("the quote file is empty")
+        pool = mine
+    q, who = pool[today.toordinal() % len(pool)]
+    words, rows = q.split(), [""]
+    for w in words:                                          # wrap onto 3 short lines of the card
+        if len(rows[-1]) + len(w) + 1 > 26 and len(rows) < 3:
+            rows.append("")
+        rows[-1] = (rows[-1] + " " + w).strip()
+    rows += [""] * (3 - len(rows))
+    f = ascii_fold
+    return {"k": "c", "label": f(label or "QUOTE", 24).upper(), "t": f(rows[0], 28), "a": f(rows[1], 40), "b": f((rows[2] + "  - " + who).strip(" -"), 40)}
+
+
+# ---------------------------------------------------------------- birthdays / anniversaries
+def parse_dates(text):
+    """'Anna 03-14, Max 1990-07-02' -> [('Anna', '03-14'), ('Max', '1990-07-02')]. Raises ValueError."""
+    out = []
+    for part in [p.strip() for p in str(text).split(",") if p.strip()]:
+        name, _, d = part.rpartition(" ")
+        if not name or not re.fullmatch(r"(\d{4}-)?\d{2}-\d{2}", d):
+            raise ValueError(f"'{part}' should look like  Anna 03-14  or  Max 1990-07-02")
+        try:
+            dt.date.fromisoformat(d if len(d) == 10 else "2000-" + d)
+        except ValueError:
+            raise ValueError(f"'{d}' is not a real date") from None
+        out.append((name.strip()[:16], d))
+    if not 1 <= len(out) <= 12:
+        raise ValueError("enter 1 to 12 entries like  Anna 03-14, Max 1990-07-02")
+    return out
+
+
+def birthday_card(label, arg, today=None):
+    """The next birthday / anniversary: who, in how many days, and (with a year) the age they turn."""
+    today = today or dt.date.today()
+    best = None
+    for name, d in parse_dates(arg):
+        year, md = (int(d[:4]), d[5:]) if len(d) == 10 else (None, d)
+        month, day = int(md[:2]), int(md[3:])
+        for y in (today.year, today.year + 1):
+            try:
+                nxt = dt.date(y, month, day)
+            except ValueError:                               # 29 Feb in a non-leap year -> 28 Feb
+                nxt = dt.date(y, month, 28)
+            if nxt >= today:
+                break
+        n = (nxt - today).days
+        if best is None or n < best[0]:
+            best = (n, name, nxt, None if year is None else nxt.year - year)
+    n, name, nxt, age = best
+    when = "TODAY!" if n == 0 else "tomorrow" if n == 1 else f"in {n} days"
+    return {"k": "c", "label": ascii_fold(label or "BIRTHDAY", 24).upper(), "t": ascii_fold(name, 24), "a": when,
+            "b": (f"turns {age}" if age is not None and age > 0 else "") + ("" if age is None or age <= 0 else "  ") + nxt.strftime("%d %b")}
+
+
+# ---------------------------------------------------------------- is it up?
+def parse_hostport(arg):
+    m = re.fullmatch(r"([A-Za-z0-9.\-]{1,253})(?::(\d{1,5}))?", str(arg).strip())
+    if not m or (m.group(2) and not 1 <= int(m.group(2)) <= 65535):
+        raise ValueError("enter a server like  example.com  or  192.168.1.1:22  (default port 443)")
+    return m.group(1), int(m.group(2) or 443)
+
+
+def ping_card(label, arg, connect=None, clock=None):
+    """TCP connect time to host:port (no admin rights needed, unlike ICMP ping)."""
+    import socket                                            # noqa: PLC0415
+    import time                                              # noqa: PLC0415
+    host, port = parse_hostport(arg)
+    clock = clock or time.perf_counter
+    t0 = clock()
+    try:
+        (connect or (lambda h, p: socket.create_connection((h, p), timeout=3).close()))(host, port)
+        ms = (clock() - t0) * 1000
+        t, b = f"{ms:.0f} ms", "reachable"
+    except OSError as e:
+        t, b = "DOWN", ascii_fold(str(e.strerror or e), 30)
+    return {"k": "c", "label": ascii_fold(label or "PING", 24).upper(), "t": t, "a": f"{host}:{port}", "b": b}
+
+
+def http_card(label, url, fetch=None, clock=None):
+    import time                                              # noqa: PLC0415
+    clock = clock or time.perf_counter
+
+    def default(u):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(u, method="HEAD", headers={"User-Agent": "DeskCompanion"}), timeout=6) as r:      # noqa: S310
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+    t0 = clock()
+    try:
+        status = (fetch or default)(url)
+        ms = (clock() - t0) * 1000
+        ok = 200 <= status < 400
+        t, b = ("UP" if ok else "ERROR"), f"HTTP {status}  {ms:.0f} ms"
+    except (OSError, ValueError) as e:
+        t, b = "DOWN", ascii_fold(str(getattr(e, "reason", None) or e), 30)
+    host = urllib.parse.urlparse(url).netloc
+    return {"k": "c", "label": ascii_fold(label or "WEBSITE", 24).upper(), "t": t, "a": ascii_fold(host, 40), "b": b}
+
+
+_LYRICS = None
+
+
 def build(item, **kw):
     """Card for a validated definition. kw: today/now/zone_factory/run/fetch overrides for tests."""
     t, label, arg = item["type"], item["label"], item["arg"]
@@ -158,4 +300,17 @@ def build(item, **kw):
         return git_card(label, arg, kw.get("run"))
     if t == "ci":
         return ci_card(label, arg, kw.get("fetch"), kw.get("now"))
+    if t == "quote":
+        return quote_card(label, arg, kw.get("today"), kw.get("read"))
+    if t == "birthday":
+        return birthday_card(label, arg, kw.get("today"))
+    if t == "ping":
+        return ping_card(label, arg, kw.get("connect"), kw.get("clock"))
+    if t == "http":
+        return http_card(label, arg, kw.get("fetch"), kw.get("clock"))
+    if t == "lyrics":
+        global _LYRICS
+        from desk_lib import feeds, lyrics                   # noqa: PLC0415
+        _LYRICS = _LYRICS or lyrics.Lyrics()
+        return _LYRICS.card(kw.get("np") or feeds.now_playing(), kw.get("pos"))
     return crypto_card(label, arg, kw.get("fetch"))

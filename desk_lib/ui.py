@@ -6,6 +6,8 @@ import tempfile
 
 import customtkinter as ctk
 
+from desk_lib import i18n
+
 # ---- palette  (light, dark)
 BG = ("#f6f6f7", "#09090b")
 SIDE = ("#ececef", "#0d0d10")
@@ -83,6 +85,23 @@ def build_theme():
     }
 
 
+ACCENTS = {   # name -> (text accent (light, dark), fill (light, dark), fill hover (light, dark))
+    "cyan": (("#0891b2", "#22d3ee"), ("#0e7490", "#0e7490"), ("#155e75", "#0891b2")),
+    "pink": (("#db2777", "#ff4fa8"), ("#be185d", "#be185d"), ("#9d174d", "#db2777")),
+    "green": (("#15803d", "#34d399"), ("#15803d", "#15803d"), ("#166534", "#16a34a")),
+    "amber": (("#b45309", "#fbbf24"), ("#b45309", "#b45309"), ("#92400e", "#d97706")),
+    "violet": (("#6d28d9", "#a78bfa"), ("#6d28d9", "#6d28d9"), ("#5b21b6", "#7c3aed")),
+}
+
+
+def set_accent(name):
+    """Choose the accent colour. Must be called before install_theme() (the theme file is written once). Unknown names -> cyan."""
+    global ACCENT, ACCENT_FILL, ACCENT_FILL_H
+    ACCENT, ACCENT_FILL, ACCENT_FILL_H = ACCENTS.get(name, ACCENTS["cyan"])
+    DARK["accent"] = ACCENT[1]
+    return name if name in ACCENTS else "cyan"
+
+
 _installed = False
 
 
@@ -136,7 +155,31 @@ def _patch_widgets():
                 kw.setdefault("text_color", TEXT)
             super().__init__(master, *a, **kw)
 
-    ctk.CTkFrame, ctk.CTkButton = Frame, Button
+    base_label, base_switch = ctk.CTkLabel, ctk.CTkSwitch
+
+    def _tr_kw(kw):
+        if isinstance(kw.get("text"), str):
+            kw["text"] = i18n.tr(kw["text"])
+        return kw
+
+    class Label(base_label):
+        def __init__(self, master, *a, **kw):
+            super().__init__(master, *a, **_tr_kw(kw))
+
+        def configure(self, require_redraw=False, **kw):
+            super().configure(require_redraw=require_redraw, **_tr_kw(kw))
+
+    class Switch(base_switch):
+        def __init__(self, master, *a, **kw):
+            super().__init__(master, *a, **_tr_kw(kw))
+
+    ButtonBase = Button
+
+    class TButton(ButtonBase):
+        def __init__(self, master, *a, **kw):
+            super().__init__(master, *a, **_tr_kw(kw))
+
+    ctk.CTkFrame, ctk.CTkButton, ctk.CTkLabel, ctk.CTkSwitch = Frame, TButton, Label, Switch
 
 
 # ---- small building blocks

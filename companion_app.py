@@ -13,6 +13,7 @@ and one-click upload of everything to the physical pad. The pad works fine witho
 """
 import base64
 import colorsys
+import copy
 import ctypes
 import ctypes.wintypes
 from datetime import datetime
@@ -46,8 +47,10 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, netactions, padextras, presets, recorder, scheduler, screenstate, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
-from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
+from desk_lib import appcard, hotkey, history, i18n, plugins, tips, updates, activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, netactions, padextras, presets, recorder, scheduler, screenstate, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
+from desk_lib.ui import (CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
+
+ACCENT = ui.ACCENT                                                   # rebound in App.__init__ when the user picked another accent colour
 
 APP_NAME = "Desk Companion"
 APP_VERSION = "1.4.0"
@@ -63,7 +66,23 @@ PAGES = [("Control", [("Dashboard", "Home", "Connection, health and quick action
                      ("Dev", "Diagnostics", "Bring-up tests, terminal and reports")])]
 BAUD = 115200
 ESPRESSIF_VID = 0x303A
-CONFIG_PATH = Path(os.environ.get("DESK_COMPANION_CONFIG") or Path.home() / ".desk_companion.json")
+
+
+def _cli_opt(name, argv=None):
+    """Value of  --name VALUE  or  --name=VALUE  on the command line, else None."""
+    argv = sys.argv[1:] if argv is None else argv
+    for i, a in enumerate(argv):
+        if a == name and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith(name + "="):
+            return a.split("=", 1)[1]
+    return None
+
+
+# several pads on one PC: start one app per pad,   --config pad2.json --port COM7 --api-port 8766
+CONFIG_PATH = Path(_cli_opt("--config") or os.environ.get("DESK_COMPANION_CONFIG") or Path.home() / ".desk_companion.json")
+FIXED_PORT = _cli_opt("--port")                  # only ever connect to this serial port
+API_PORT_OVERRIDE = _cli_opt("--api-port")
 LCD = 240
 MAX_GIF_FRAMES = 300
 
@@ -205,6 +224,7 @@ ACTION_KINDS = [("Open website", "url", "https://example.com", True), ("Start pr
                 ("Translate the clipboard", "translate", "language code: de, es, fr, ja ...", True),
                 ("Ask the AI", "ai", "prompt, e.g.  Summarize: {clipboard}", True), ("Call a web address", "webhook", "[GET|POST] https://address [body]", True),
                 ("Window layout", "layout", "save work   (or just: work  to restore it)", True), ("Type from clipboard history", "cliphist", "1 = latest copy ... 9", True),
+                ("Run a plugin", "plugin", "name  or  name:argument  (Device page -> Plugins)", True),
                 ("Mouse click", "click", "left / right / middle / back / forward  (default: left)", False),
                 ("Mouse double click", "click", "left / right / middle  (default: left)", False),
                 ("Mouse scroll", "scroll", "amount: 1..20 up, -1..-20 down", True), ("Switch layer", "layer", "1, 2, 3, next or prev (default: next)", False)]
@@ -264,7 +284,24 @@ def normalize_config(cfg):
     cfg.setdefault("layout", "auto")
     cfg.setdefault("online_keys", {})
     cfg.setdefault("host_media_sync", True)
-    cfg.setdefault("appearance", "dark")
+    cfg.setdefault("language", "en")
+    if cfg["language"] not in i18n.LANGS:
+        cfg["language"] = "en"
+    cfg.setdefault("tips", True)
+    cfg.setdefault("tips_dismissed", [])
+    cfg.setdefault("update_check", False)
+    cfg.setdefault("plugins_on", False)
+    cfg.setdefault("hotkey_on", False)
+    cfg.setdefault("hotkey", "ctrl+alt+k")
+    cfg.setdefault("appearance", "dark")         # dark | light | system
+    if cfg["appearance"] not in ("dark", "light", "system"):
+        cfg["appearance"] = "dark"
+    if cfg.get("accent") not in ui.ACCENTS:
+        cfg["accent"] = "cyan"
+    try:
+        cfg["ui_scale"] = min(1.5, max(0.8, float(cfg.get("ui_scale", 1.0))))
+    except (TypeError, ValueError):
+        cfg["ui_scale"] = 1.0
     cfg.setdefault("profiles", [])               # per-program layer rules: {"name","match","kind","layer","enabled"}
     cfg.setdefault("profiles_on", False)
     cfg.setdefault("profile_default", 0)
@@ -855,7 +892,7 @@ def rgb565be_image(raw, w=240, h=240):
 FW_BUNDLED = "1.5.0"                     # version of firmware/DeskCompanion.bin shipped with this app
 LAYERS, GIF_SLOTS = 3, 4
 HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip", "script",
-            "appvol", "dnd", "audio_out", "mic", "shot", "translate", "ai", "webhook", "layout", "cliphist")
+            "appvol", "dnd", "audio_out", "mic", "shot", "translate", "ai", "webhook", "layout", "cliphist", "plugin")
 DEFAULT_LAYERS = [
     [{"type": "combo", "val": ["PRIMARY", "c"]}, {"type": "combo", "val": ["PRIMARY", "v"]}, {"type": "combo", "val": ["PRIMARY", "z"]},
      {"type": "media", "val": "PLAY_PAUSE"}, {"type": "media", "val": "MUTE"}, {"type": "media", "val": "VOL_UP"}, {"type": "media", "val": "VOL_DOWN"}],
@@ -3566,6 +3603,8 @@ class DevTab:
             ctk.CTkButton(r, text=text, width=100, fg_color="#555", command=lambda t=t: self.req({"cmd": "display", "test": t}, None, "Display test failed")).pack(side="left", padx=2)
         r = self.row(c)
         ctk.CTkButton(r, text="Screenshot of the pad's screen", width=220, command=self.snapshot).pack(side="left", padx=2)
+        self.mirror_var, self._mirror_busy = tk.BooleanVar(value=False), False
+        ctk.CTkSwitch(r, text="Live mirror (every 3 s)", variable=self.mirror_var, command=self.mirror_toggle).pack(side="left", padx=12)
         self.snap_canvas = tk.Canvas(c, width=240, height=240, bg="#111", highlightthickness=1, highlightbackground="#333")
         self.snap_canvas.pack(pady=6)
         ctk.CTkLabel(c, text="Test patterns stay for 8 s. A screenshot shows the firmware's frame buffer (not GIF mode).", text_color=MUTED).pack(anchor="w", padx=10, pady=(0, 6))
@@ -3576,11 +3615,28 @@ class DevTab:
         self.sys("downloading screen snapshot ...")
         self.app.bg(lambda: self.app.dev.snapshot(), self._show_snap, "Snapshot failed")
 
-    def _show_snap(self, img):
+    def _show_snap(self, img, quiet=False):
         self._snap_img = ImageTk.PhotoImage(img)
         self.snap_canvas.delete("all")
         self.snap_canvas.create_image(0, 0, anchor="nw", image=self._snap_img)
-        self.sys("snapshot received")
+        if not quiet:
+            self.sys("snapshot received")
+
+    def mirror_toggle(self):
+        if self.mirror_var.get():
+            self._mirror_tick()
+
+    def _mirror_tick(self):
+        """Live view of the pad's real screen: one snapshot every 3 s while the switch is on (not while the pad is busy)."""
+        if not self.mirror_var.get() or self.app.closing:
+            return
+        if self.app.dev.connected and not self.app.dev.busy and not self._mirror_busy:
+            self._mirror_busy = True
+
+            def fin():
+                self._mirror_busy = False
+            self.app.bg(lambda: self.app.dev.snapshot(), lambda img: (fin(), self._show_snap(img, quiet=True)), "Mirror stopped", fail=lambda: (fin(), self.mirror_var.set(False)))
+        self.app.after(3000, self._mirror_tick)
 
     # ---------------------------------------------------------------- HID
     def _build_hid(self, parent):
@@ -3792,11 +3848,35 @@ class DevTab:
         self.sys("diagnostic report copied")
 
 
+class _PluginApi:
+    """What a plugin gets as `api` (see desk_lib/plugins.py)."""
+
+    def __init__(self, app):
+        self._app = app
+
+    def type_text(self, text):
+        self._app._type_text(str(text))
+
+    def notify(self, title, text):
+        self._app.post(lambda: self._app.notify(str(title), str(text), "ok"))
+
+    def clipboard(self):
+        return self._app._clipboard_text()
+
+    def set_card(self, label, title, a="", b=""):
+        self._app.set_custom_card(label, title, a, b)
+
+
 class App(ctk.CTk):
     def __init__(self):
-        ui.install_theme()
-        super().__init__()
         self.cfg = load_config()
+        global ACCENT
+        i18n.set_language(self.cfg.get("language", "en"))
+        ui.set_accent(self.cfg.get("accent", "cyan"))                             # before the theme file is written
+        ACCENT = ui.ACCENT
+        ui.install_theme()
+        ctk.set_widget_scaling(float(self.cfg.get("ui_scale", 1.0)))
+        super().__init__()
         ctk.set_appearance_mode(self.cfg.get("appearance", "dark"))
         self.title(APP_NAME)
         self.geometry("1400x880")
@@ -3839,7 +3919,12 @@ class App(ctk.CTk):
                                                read_clipboard=self._clipboard_text, counter=self._next_counter, script_runner=self.run_script,
                                                sysact=sysactions.SysActions(), layouts=winlayout.WinLayouts(), layout_store=lambda: self.cfg["layouts"], cliphist=self.cliphist,
                                                cfg_get=lambda k, d=None: self.cfg.get(k, d), focus_program=lambda: (self.active_win.get()[0] or ""),
-                                               notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok")))
+                                               notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok")), plugin_runner=self._run_plugin)
+        self.plugins = plugins.PluginHost(CONFIG_PATH.parent / (CONFIG_PATH.name + ".plugins"), api=_PluginApi(self))
+        if self.cfg.get("plugins_on"):
+            self.plugins.load()
+        self.hotkey_obj = None
+        self.history = history.EditHistory()
         if self.host.impl is not None:
             self.host.impl.host_cb = self._host_cb
         self._script_lock, self.script_stop = threading.Lock(), threading.Event()
@@ -3851,9 +3936,18 @@ class App(ctk.CTk):
         self._build()
         self.bind_all("<Control-k>", lambda e: self.open_palette())
         self.bind_all("<Control-K>", lambda e: self.open_palette())
+        self.bind_all("<Control-z>", lambda e: self._undo_key(e, False))
+        self.bind_all("<Control-y>", lambda e: self._undo_key(e, True))
+        self.bind_all("<Control-Shift-Z>", lambda e: self._undo_key(e, True))
         self.padview.refresh()
         self.refresh_library()
         self.recompute_pending()
+        self.history.record(self._edit_snapshot())
+        if self.cfg.get("hotkey_on"):
+            self.hotkey_set(True, self.cfg["hotkey"])
+        if self.cfg.get("update_check"):
+            self.after(4000, self._startup_update_check)
+        self.refresh_tip()
         self.after(50, self._pump)
         self.after(100, self._twin_loop)
         if self.focus:
@@ -4043,7 +4137,7 @@ class App(ctk.CTk):
         while not self.closing:
             allp = list_serial_ports()
             info = {p["device"]: p for p in allp}
-            ports = [p["device"] for p in allp if p["esp"]]
+            ports = [p["device"] for p in allp if p["esp"] and (not FIXED_PORT or p["device"] == FIXED_PORT)]
             for d in set(ports) - seen:                      # a pad (or any Espressif device) just appeared
                 p = info[d]
                 self.post(lambda p=p: self._dev_note(f"Espressif USB device appeared: {p['device']}  {fmt_vidpid(p)}  {p['desc']}  - {p['hint']}"))
@@ -4165,11 +4259,105 @@ class App(ctk.CTk):
             self.refresh_fw_status()
 
     def _theme_toggled(self):
-        mode = "light" if self.theme_var.get() else "dark"
+        self.set_appearance("light" if self.theme_var.get() else "dark")
+
+    def set_appearance(self, mode):
+        """dark | light | system"""
+        mode = mode if mode in ("dark", "light", "system") else "dark"
         self.cfg["appearance"] = mode
         save_config(self.cfg)
         ctk.set_appearance_mode(mode)
+        if hasattr(self, "theme_var"):
+            self.theme_var.set(ctk.get_appearance_mode() == "Light")
         self._restyle_plain_widgets()
+
+    def version_string(self):
+        return APP_VERSION
+
+    # ---- plugins, global hotkey, updates, tips, undo/redo
+    def _run_plugin(self, spec):
+        if not self.cfg.get("plugins_on"):
+            raise ValueError("plugins are switched off (Device page -> Plugins)")
+        return self.plugins.run(spec)
+
+    def hotkey_set(self, on, combo):
+        """Returns '' or the reason it is not possible."""
+        if self.hotkey_obj is not None:
+            self.hotkey_obj.stop()
+            self.hotkey_obj = None
+        if not on:
+            return ""
+        try:
+            self.hotkey_obj = hotkey.GlobalHotkey(combo, lambda: self.post(self._hotkey_fired))
+            self.hotkey_obj.start()
+        except Exception as e:                                # noqa: BLE001  (no pynput, no display, Wayland ...)
+            self.hotkey_obj = None
+            return f"the global hotkey is not possible here: {e}"
+        return ""
+
+    def _hotkey_fired(self):
+        self.show_window()
+        self.open_palette()
+
+    def _startup_update_check(self):
+        def done(r):
+            if r["newer"]:
+                self.set_status(r["message"] + "  -  Device page -> Updates and tips")
+                self.notify("Desk Companion update", r["message"], "ok")
+        self.bg(lambda: updates.check(APP_VERSION), done, "Update check failed")
+
+    def refresh_tip(self):
+        if not hasattr(self, "tip_card"):
+            return
+        t = tips.pick(self.cfg, self.dev.info.get("caps") or [] if self.dev.connected else [], self.cfg["tips_dismissed"], seed=int(time.time() // 86400)) \
+            if self.cfg.get("tips", True) else None
+        if t is None:
+            self.tip_card.pack_forget()
+            self._tip_id = None
+            return
+        self._tip_id = t[0]
+        self.tip_lbl.configure(text="Tip:  " + t[1])
+        self.tip_card.pack(fill="x", padx=2, pady=(0, 8), before=self.home_first)
+
+    def dismiss_tip(self):
+        if getattr(self, "_tip_id", None):
+            self.cfg["tips_dismissed"].append(self._tip_id)
+            save_config(self.cfg)
+        self.refresh_tip()
+
+    def _edit_snapshot(self):
+        return {"layers": copy.deepcopy(self.cfg["layers"]), "custom": copy.deepcopy(self.cfg["custom"])}
+
+    def _undo_key(self, event, redo):
+        w = str(event.widget.winfo_class()) if hasattr(event.widget, "winfo_class") else ""
+        if w in ("Entry", "Text", "TEntry", "TCombobox", "Spinbox"):
+            return None                                      # let a text field undo its own typing
+        self.edit_redo() if redo else self.edit_undo()
+        return "break"
+
+    def edit_undo(self):
+        st = self.history.undo()
+        self._edit_apply(st, "Undone") if st else self.set_status("Nothing to undo")
+
+    def edit_redo(self):
+        st = self.history.redo()
+        self._edit_apply(st, "Redone") if st else self.set_status("Nothing to redo")
+
+    def _edit_apply(self, state, word):
+        for n in range(LAYERS):                              # in place: cfg["map"] is one of these dicts
+            lm = self.cfg["layers"][n]
+            lm.clear()
+            lm.update(copy.deepcopy(state["layers"][n]))
+        self.cfg["custom"].clear()
+        self.cfg["custom"].update(copy.deepcopy(state["custom"]))
+        save_config(self.cfg)
+        self.refresh_action_lists()
+        self.refresh_library()
+        self.padview.refresh()
+        self.recompute_pending()
+        if self.autoup_var.get() and self.dev.connected:
+            self.upload_slots(list(range(1, 8)))
+        self.set_status(f"{word}: key assignments")
 
     def _restyle_plain_widgets(self):
         """Widgets that are not customtkinter's (Treeview, Listbox, Canvas) do not follow the theme by themselves."""
@@ -4376,6 +4564,7 @@ class App(ctk.CTk):
             self.vp_log(f"{SLOT_LABELS[slot]} = {payload['action']}")
 
     def mapping_changed(self, slots):
+        self.history.record(self._edit_snapshot())
         save_config(self.cfg)
         self.refresh_action_lists()
         self.padview.refresh()
@@ -4574,7 +4763,15 @@ class App(ctk.CTk):
             self.dev.request({"cmd": "brightness", "val": bright})
             self.dev.request({"cmd": "mode", "val": mode})
             self.post(lambda: self._mark_display_pushed(mode, bright))
-            return self._verify_keys_sync()
+            bad = self._verify_keys_sync()
+            self._healed = False
+            if bad:                                                  # auto-heal: send everything once more, then look again
+                for lay, sl, spec in jobs:
+                    self.dev.request(self._remap_msg(lay, sl, spec))
+                again = self._verify_keys_sync()
+                self._healed = not again
+                bad = again
+            return bad
 
         def done(bad):
             self.upload_btn2.configure(state="normal")
@@ -4583,7 +4780,7 @@ class App(ctk.CTk):
                 self.set_status("Uploaded, but the read-back check found problems: " + "; ".join(bad), error=True)
             else:
                 self.set_status(f"Uploaded to the pad: {n} layer{'s' if n > 1 else ''} x 7 key slots, brightness and mode" +
-                                ("" if bad is None else " (read back and verified)"))
+                                ("" if bad is None else " (read back and verified" + (" after one automatic re-send)" if getattr(self, "_healed", False) else ")")))
             self.vp_log("uploaded everything to the physical pad")
         self.bg(work, done, "Upload failed", fail=lambda: self.upload_btn2.configure(state="normal"))
 
@@ -4783,6 +4980,11 @@ class App(ctk.CTk):
         ctk.CTkButton(self.safe_banner, text="Recovery options", width=140, fg_color=ui.WHITE, hover_color="#f0f0f0", text_color="#111111",
                       command=lambda: self.tabs.set("Device")).pack(side="right", padx=12)
 
+        self.tip_card = ctk.CTkFrame(sc, fg_color=ui.CARD2, border_width=0)
+        self.tip_lbl = ctk.CTkLabel(self.tip_card, text="", wraplength=780, justify="left", anchor="w")
+        self.tip_lbl.pack(side="left", padx=14, pady=10, fill="x", expand=True)
+        ui.secondary_button(self.tip_card, "Got it", self.dismiss_tip, width=70).pack(side="right", padx=10)
+
         box = self.home_first = ctk.CTkFrame(sc)
         box.pack(fill="x", pady=6, padx=2)
         ui.heading(box, "Connection").grid(row=0, column=0, columnspan=6, sticky="w", padx=16, pady=(14, 4))
@@ -4973,6 +5175,7 @@ class App(ctk.CTk):
         lm = self.cfg["layers"][lay]
         lm.clear()
         lm.update({str(sl): {"cat": c, "action": n} for sl, (c, n) in DEFAULT_LAYER_MAPS[lay].items()})
+        self.history.record(self._edit_snapshot())
         save_config(self.cfg)
         self.refresh_action_lists()
         self.padview.refresh()
@@ -5059,7 +5262,7 @@ class App(ctk.CTk):
         self.api_stop()
         a = self.cfg["api"]
         try:
-            self.api = bridge.Bridge(self._api_handle, token=a["token"], port=int(a["port"]), status=self._api_status)
+            self.api = bridge.Bridge(self._api_handle, token=a["token"], port=int(API_PORT_OVERRIDE or a["port"]), status=self._api_status)
             self.api_error = ""
         except OSError as e:
             self.api, self.api_error = None, f"port {a['port']} is not available ({e.strerror or e})"
@@ -6773,6 +6976,9 @@ class App(ctk.CTk):
         wizards.HardwareTest(self, APP_VERSION)
 
     def open_palette(self):
+        if not self.cfg.get("palette_used"):
+            self.cfg["palette_used"] = True
+            save_config(self.cfg)
         cmds = [(f"Go to {label}  -  {sub}", lambda n=name: self.tabs.set(n)) for _g, pages in PAGES for name, label, sub in pages]
         cmds += [("Upload everything to the pad", self.upload_all), ("Connect / disconnect the simulated pad", self.toggle_simulate),
                  ("Rescan serial ports", self.refresh_ports), ("Verify the keys stored on the pad", self.verify_pad_keys),
@@ -6780,7 +6986,9 @@ class App(ctk.CTk):
                  ("Run the guided hardware test", self.open_hwtest), ("Run the setup wizard", self.open_wizard),
                  ("Back up everything...", self.backup_export), ("Restore from a backup...", self.backup_import),
                  ("Show the Info screen on the pad", self.info_show_on_pad), ("Send info cards now", lambda: self.info_send_now(force=True)),
-                 ("Check the pad's state (safe mode?)", self.recovery_check)]
+                 ("Check the pad's state (safe mode?)", self.recovery_check),
+                 ("Undo the last key assignment  (Ctrl+Z)", self.edit_undo), ("Redo  (Ctrl+Y)", self.edit_redo),
+                 ("Check for app updates", self.app_card.check_updates), ("Latency test", self.app_card.latency)]
         for n in range(LAYERS):
             cmds.append((f"Pad: switch to layer {n + 1}", lambda n=n: (self.set_edit_layer(n), self.show_layer_on_pad())))
         for i, label in enumerate(MODE_CHOICES, start=1):
@@ -7147,6 +7355,8 @@ class App(ctk.CTk):
         if not tray.available():
             self.tray_sw.configure(state="disabled", text="Tray icon: not available (pip install pystray)")
 
+        box = self._card(sc, "This app", "Appearance, a global hotkey, plugins, update check, tips, link latency and power estimate.")
+        self.app_card = appcard.AppCard(self, box)
         box = self._card(sc, "Pad behaviour", "Dial acceleration, clock face, screensaver and night dimming - stored on the pad (firmware 1.3).")
         self.behaviour = padextras.BehaviourCard(self, box)
         box = self._card(sc, "Computer actions", "Settings for the key actions that act on this PC: the AI action, screenshots, clipboard history and window layouts.")
