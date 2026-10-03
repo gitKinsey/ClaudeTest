@@ -756,7 +756,7 @@ def t_gestures(c):
     e.msgs.clear(); e.request({"cmd": "input", "k": 3, "g": "hold"}); e.pump(0.3)
     expect(not [m for m in e.msgs if m.get("evt") == "host"], "a gesture that is not set does nothing")
     # persistence across a power cycle, clearing, reset
-    e.power_cycle(); e.wait_boot(90, need_fs=False)
+    e.power_cycle(); e.wait_boot(120)
     g0 = e.request({"cmd": "getkeys", "layer": 0})
     expect(g0["slots"][1]["h"] is True and g0["slots"][1]["d"] is True, f"gesture flags after power cycle: {g0['slots'][1]}")
     expect(e.request({"cmd": "remap", "key": 2, "gesture": "hold", "clear": True})["ok"], "clear a gesture")
@@ -852,7 +852,7 @@ def t_settings(c):
     expect(e.request({"cmd": "info"})["saver_on"] is False, "saver off wakes the screen")
     # ---- everything persists across a power cycle
     e.request({"cmd": "settings", "dial_accel": 2, "clock_style": 3, "saver_s": 600, "saver_style": 2, "night_on": True, "night_from": 21, "night_to": 6, "night_level": 33})
-    e.power_cycle(); e.wait_boot(90, need_fs=False)
+    e.power_cycle(); e.wait_boot(120)
     st = e.request({"cmd": "settings"})
     expect((st["dial_accel"], st["clock_style"], st["saver_s"], st["saver_style"], st["night_on"], st["night_from"], st["night_to"], st["night_level"]) ==
            (2, 3, 600, 2, True, 21, 6, 33), f"settings after power cycle: {st}")
