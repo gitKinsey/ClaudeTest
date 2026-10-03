@@ -41,7 +41,9 @@ PRESETS = {
 }
 
 # programs worth a quick profile rule even without a key preset: (name, match, kind)
-EXTRA_PROFILES = [("Spotify", "spotify", "process"), ("Discord", "discord", "process"), ("Slack", "slack", "process"), ("Figma", "figma", "process"),
+EXTRA_PROFILES = [("YouTube (tab)", "- YouTube", "title"), ("Netflix (tab)", "Netflix", "title"), ("Twitch (tab)", "Twitch", "title"), ("GitHub (tab)", "GitHub", "title"),
+                  ("Gmail (tab)", "Gmail", "title"), ("Google Docs (tab)", "Google Docs", "title"), ("Google Sheets (tab)", "Google Sheets", "title"),
+                  ("Figma (tab)", "Figma", "title"), ("Steam (game mode)", "steam", "process"), ("Spotify", "spotify", "process"), ("Discord", "discord", "process"), ("Slack", "slack", "process"), ("Figma", "figma", "process"),
                   ("OBS Studio", "obs", "process"), ("DaVinci Resolve", "resolve", "process"), ("Chrome", "chrome", "process"), ("Edge", "msedge", "process")]
 
 

@@ -98,12 +98,50 @@ def rule_matches(rule, proc, title):
     return needle in proc or needle in title.lower()
 
 
-def pick_layer(rules, proc, title, default=None):
-    """First matching enabled rule wins; returns its layer (0..2) or `default` when nothing matches."""
+def rule_in_time(rule, now=None):
+    """Optional time window of a rule: "time": "09:00-17:00" (may wrap midnight) and "days": "mon-fri" / "sat,sun" / "mon,wed"."""
+    from datetime import datetime
+    from desk_lib import scripting
+    now = now or datetime.now()
+    t, d = str(rule.get("time") or "").strip(), str(rule.get("days") or "").strip()
+    if d and now.weekday() not in scripting._days(d, None):
+        return False
+    if t:
+        a, _, b = t.partition("-")
+        lo, hi = scripting._hhmm(a, None), scripting._hhmm(b, None)
+        m = now.hour * 60 + now.minute
+        if not (lo <= m < hi if lo <= hi else (m >= lo or m < hi)):
+            return False
+    return True
+
+
+def validate_window(time_text="", days_text=""):
+    """UI helper: raises ValueError with a readable message for a bad time window / days list."""
+    from desk_lib import scripting
+    try:
+        if time_text.strip():
+            a, sep, b = time_text.strip().partition("-")
+            if not sep:
+                raise scripting.ScriptError("write the time as 09:00-17:00")
+            scripting._hhmm(a, None), scripting._hhmm(b, None)
+        if days_text.strip():
+            scripting._days(days_text.strip(), None)
+    except scripting.ScriptError as e:
+        raise ValueError(str(e)) from None
+
+
+def pick_rule(rules, proc, title, now=None):
+    """The first enabled rule that matches the program AND is inside its time window, or None."""
     for r in rules:
-        if r.get("enabled", True) and rule_matches(r, proc, title):
-            return int(r.get("layer", 0))
-    return default
+        if r.get("enabled", True) and rule_matches(r, proc, title) and rule_in_time(r, now):
+            return r
+    return None
+
+
+def pick_layer(rules, proc, title, default=None, now=None):
+    """First matching enabled rule wins; returns its layer (0..2) or `default` when nothing matches."""
+    r = pick_rule(rules, proc, title, now)
+    return int(r.get("layer", 0)) if r else default
 
 
 def have_tools():

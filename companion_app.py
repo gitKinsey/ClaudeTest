@@ -46,7 +46,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, netactions, padextras, presets, recorder, scheduler, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
+from desk_lib import activewin, automation, autobackup, autostart, backup, bridge, cliphist, espota, extras, feeds, hostactions, netactions, padextras, presets, recorder, scheduler, screenstate, scripting, scripts_page, sysactions, textops, tray, winlayout, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
@@ -273,6 +273,10 @@ def normalize_config(cfg):
     for k, v in INFO_DEFAULTS.items():
         info.setdefault(k, v)
     cfg.setdefault("usage", {})                  # key press counters
+    cfg.setdefault("dim_lock", False)            # dim the pad while the PC is locked
+    cfg.setdefault("dim_fullscreen", False)      # dim the pad while a fullscreen window (video, game, presentation) is in front
+    cfg.setdefault("dim_level", 25)
+    cfg.setdefault("remember_layers", False)     # programs without a profile rule: the pad returns to the layer you last chose there
     cfg.setdefault("cliphist_on", False)         # remember the last copied texts (memory only)
     cfg.setdefault("shot_dir", "")               # screenshot action folder ("" = Pictures)
     ai = cfg.setdefault("ai", {})                # AI action: the user's own Anthropic API key (kept in this file in plain text) and model
@@ -932,7 +936,7 @@ def spec_ok(spec):
 
 NEW13_CAPS = ["hostx", "gestures", "dialaccel", "clockstyle", "saver", "nightdim"]       # firmware 1.3 additions (see hello "caps")
 NEW14_CAPS = ["screens", "pressturn", "toggle", "wheelmods", "ledfx", "reminders", "habits"]     # firmware 1.4 additions
-NEW15_CAPS = ["hostx2"]                                                                           # firmware 1.5 additions (more host ops; see hello "caps")
+NEW15_CAPS = ["hostx2", "dimcmd"]                                                                           # firmware 1.5 additions (more host ops; see hello "caps")
 SETTINGS_DEFAULT = {"dial_accel": 0, "clock_style": 0, "saver_s": 0, "saver_style": 1, "night_on": False, "night_from": 22, "night_to": 7, "night_level": 30, "mode_mask": 0x3F}
 SETTINGS_RANGE = {"dial_accel": (0, 2), "clock_style": (0, 3), "saver_s": (0, 3600), "saver_style": (1, 3), "night_from": (0, 23), "night_to": (0, 23), "night_level": (5, 255), "mode_mask": (1, 4095)}
 LEGACY_CMDS = {"layer", "info_cards", "gif_list", "gif_cfg", "factory", "boot_opt", "safe_retry", "ota"}   # unknown to firmware 1.1
@@ -953,6 +957,7 @@ class SimFirmware:
         self.fw13 = bool(os.environ.get("DESK_COMPANION_SIM_V13"))          # behave like firmware 1.3.0 (everything but the 1.4 screens / actions)
         self.fw14 = bool(os.environ.get("DESK_COMPANION_SIM_V14"))          # behave like firmware 1.4.0 (everything but the 1.5 additions)
         self.reminders = [{"m": 0, "t": ""} for _ in range(3)]
+        self.dim = 0                          # temporary dim level (0 = off) set by {"cmd":"dim"}
         self.habits = {"names": ["WATER", "MOVE", "READ", "SLEEP", "FOCUS"], "today": [0] * 5}
         self._tgl = {}
         self.gest = {}                        # (layer, key, "hold"|"double") -> spec
@@ -1069,7 +1074,8 @@ class SimFirmware:
             self._send(obj)
 
         self.cmd_count[cmd] = self.cmd_count.get(cmd, 0) + 1
-        if (self.fw12 and cmd in ("settings", "gesture_test")) or ((self.fw12 or self.fw13) and cmd in ("screens", "habits", "reminders")):
+        if (self.fw12 and cmd in ("settings", "gesture_test")) or ((self.fw12 or self.fw13) and cmd in ("screens", "habits", "reminders")) or \
+                ((self.fw12 or self.fw13 or self.fw14) and cmd == "dim"):
             reply({"ok": False, "err": "unknown_cmd"})
             return
         if self.core:
@@ -1364,6 +1370,13 @@ class SimFirmware:
                     for k in [k for k in self.gest if k[0] == n]:
                         del self.gest[k]
             reply({"ok": True, "evt": "reset_keys"})
+        elif cmd == "dim":
+            v = msg.get("val", 0)
+            if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 255:
+                reply({"ok": False, "err": "dim"})
+                return
+            self.dim = v
+            reply({"ok": True, "evt": "dim", "val": v})
         elif cmd == "screens":
             reply({"ok": True, "evt": "screens", "mask": self.settings["mode_mask"], "reminder_active": False})
         elif cmd == "habits":
@@ -3818,6 +3831,9 @@ class App(ctk.CTk):
         if self.badges:
             self.cfg["info"]["token"], self.cfg["info"]["port"] = self.badges.token, self.badges.port
         self._profile_state = {"win": None, "layer": None, "text": "profiles are off"}
+        self.game_mode, self._app_layers = False, {}
+        self.screen = screenstate.ScreenState()
+        self._dim = {"locked": None, "fs": None, "applied": None, "saved": None, "tick": time.monotonic()}
         self.hostact = hostactions.HostActions(self._allowed_host, lambda: bool(self.cfg.get("allow_shell")),
                                                type_clipboard=self._type_clipboard, type_text=self._type_text,
                                                read_clipboard=self._clipboard_text, counter=self._next_counter, script_runner=self.run_script,
@@ -3850,6 +3866,7 @@ class App(ctk.CTk):
         threading.Thread(target=self._info_loop, daemon=True).start()
         threading.Thread(target=self._schedule_loop, daemon=True).start()
         threading.Thread(target=self._clip_loop, daemon=True).start()
+        threading.Thread(target=self._screen_loop, daemon=True).start()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---------------------------------------------------------------- thread plumbing
@@ -4996,6 +5013,9 @@ class App(ctk.CTk):
         self.bg(lambda: self.dev.request({"cmd": "layer", "val": self.edit_layer}), None, "Layer switch failed")
 
     def _pad_layer_changed(self, n):
+        st = self._profile_state
+        if self.cfg.get("remember_layers") and st.get("win") and not st.get("rule") and st.get("layer") != n:
+            self._app_layers[st["win"][0]] = n                               # the user chose this layer in a program that has no rule
         self.pad_layer = n
         if hasattr(self, "pad_layer_pill"):
             self.pad_layer_pill.set(f"pad is on layer {n + 1}", (ACCENT, PINK, WARN)[n % 3])
@@ -5010,6 +5030,8 @@ class App(ctk.CTk):
             self.post(lambda n=m["n"]: self._pad_layer_changed(n))
         elif evt == "host" and self.hw_listener:
             self.post(lambda: self.vp_log("host action ignored while the hardware test is running"))
+        elif evt == "host" and self.game_mode:
+            self.post(lambda: self.vp_log("host action ignored: game mode (the program in front has a game profile)"))
         elif evt == "host":
             self.host_q.put((("host", {"op": m.get("op"), "arg": m.get("arg", "")}), "pad action", f"{m.get('op')}", False))
         elif evt == "reminder":                                            # the pad's reminder fired: also tell the user on the computer
@@ -5105,6 +5127,8 @@ class App(ctk.CTk):
                 self.post(lambda: (self.save_cfg(), self.automation.refresh()))
 
     def run_schedule(self, entry, manual=False):
+        if self.game_mode and not manual:
+            return
         def work():
             def request(msg):
                 if not self.dev.connected:
@@ -5150,6 +5174,48 @@ class App(ctk.CTk):
         txt = self._clipboard_text()
         if txt:
             self._type_text(txt)
+
+    # ---- dim the pad while the PC is locked / a fullscreen window is in front; re-sync after the PC woke up
+    def _screen_loop(self):
+        while not self.closing:
+            time.sleep(3)
+            try:
+                self._screen_step()
+            except Exception:                                    # noqa: BLE001
+                traceback.print_exc()
+
+    def _screen_step(self, now=None):
+        d, now = self._dim, now if now is not None else time.monotonic()
+        gap, d["tick"] = now - d["tick"], now
+        if not self.dev.connected or self.dev.busy or self.dev.info.get("core_only"):
+            d["applied"] = None
+            return
+        if gap > 25:                                             # the loop did not run for a while: the PC slept - send the clock and the display state again
+            self._resync_pad()
+        want = None
+        if self.cfg.get("dim_lock") and self.screen.locked():
+            want = int(self.cfg.get("dim_level", 25))
+        if want is None and self.cfg.get("dim_fullscreen") and self.screen.fullscreen():
+            want = int(self.cfg.get("dim_level", 25))
+        if want == d["applied"]:
+            return
+        d["applied"] = want
+        if self._pad_cap("dimcmd"):
+            self.dev.request({"cmd": "dim", "val": want if want is not None else 0})
+        elif want is not None:                                   # older firmware: use (and later restore) the saved brightness
+            d["saved"] = d["saved"] or int(self.pad.brightness)
+            self.dev.request({"cmd": "brightness", "val": want})
+        elif d["saved"]:
+            self.dev.request({"cmd": "brightness", "val": d["saved"]})
+            d["saved"] = None
+
+    def _resync_pad(self):
+        for msg in (time_msg(), {"cmd": "brightness", "val": int(self.pad.brightness)}, {"cmd": "mode", "val": int(self.pad.mode)}):
+            try:
+                self.dev.request(msg, timeout=2)
+            except DeviceError:
+                break
+        self._info_sent = (None, 0.0)
 
     def _clip_loop(self):
         """Clipboard history (opt-in): remember the last copied texts, in memory only."""
@@ -6206,6 +6272,18 @@ class App(ctk.CTk):
         self.preset_rule = tk.BooleanVar(value=True)
         ctk.CTkCheckBox(r, text="also add the program rule", variable=self.preset_rule).pack(side="left", padx=12)
         ctk.CTkButton(r, text="Apply", width=80, command=self.apply_preset).pack(side="left")
+        opt = ctk.CTkFrame(box, fg_color="transparent")
+        opt.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 12))
+        ui.muted(opt, "Options for the next rule you add:").pack(side="left", padx=(0, 8))
+        self.pr_time = ctk.CTkEntry(opt, width=140, placeholder_text="time 09:00-17:00")
+        self.pr_time.pack(side="left", padx=4)
+        self.pr_days = ctk.CTkEntry(opt, width=110, placeholder_text="days mon-fri")
+        self.pr_days.pack(side="left", padx=4)
+        self.pr_game = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(opt, text="game mode", variable=self.pr_game).pack(side="left", padx=10)
+        self.remember_var = tk.BooleanVar(value=bool(self.cfg.get("remember_layers")))
+        ctk.CTkCheckBox(opt, text="remember my layer per program (when no rule matches)", variable=self.remember_var,
+                        command=lambda: (self.cfg.__setitem__("remember_layers", bool(self.remember_var.get())), save_config(self.cfg))).pack(side="left", padx=10)
         self._refresh_profiles()
 
     @staticmethod
@@ -6234,7 +6312,8 @@ class App(ctk.CTk):
             v = tk.BooleanVar(value=r.get("enabled", True))
             ctk.CTkCheckBox(row, text="", variable=v, width=24, command=lambda i=i, v=v: self._profile_edit(i, enabled=bool(v.get()))).pack(side="left", padx=(10, 2), pady=8)
             ctk.CTkLabel(row, text=r.get("name") or r["match"], font=ui.font(13, "bold"), width=130, anchor="w").pack(side="left", padx=6)
-            ui.muted(row, f"{r.get('kind', 'either')}: \"{r['match']}\"", width=260).pack(side="left", padx=6)
+            extra = "".join([f"  {r['time']}" if r.get("time") else "", f"  {r['days']}" if r.get("days") else "", "  GAME" if r.get("game") else ""])
+            ui.muted(row, f"{r.get('kind', 'either')}: \"{r['match']}\"{extra}", width=300).pack(side="left", padx=6)
             lay = tk.StringVar(value=f"Layer {int(r.get('layer', 0)) + 1}")
             ctk.CTkOptionMenu(row, values=["Layer 1", "Layer 2", "Layer 3"], variable=lay, width=90,
                               command=lambda val, i=i: self._profile_edit(i, layer=int(val.split()[-1]) - 1)).pack(side="left", padx=6)
@@ -6285,7 +6364,19 @@ class App(ctk.CTk):
         layer = layer if layer is not None else int(self.pr_layer.get().split()[-1]) - 1
         if not match:
             return self.set_status("Enter the program or window text to match first", error=True)
-        self.cfg["profiles"].append({"name": name or match, "match": match, "kind": kind, "layer": layer, "enabled": True})
+        tw, dy = self.pr_time.get().strip(), self.pr_days.get().strip()
+        try:
+            activewin.validate_window(tw, dy)
+        except ValueError as e:
+            return self.set_status(f"Rule not added: {e}", error=True)
+        rule = {"name": name or match, "match": match, "kind": kind, "layer": layer, "enabled": True}
+        if tw:
+            rule["time"] = tw
+        if dy:
+            rule["days"] = dy
+        if self.pr_game.get():
+            rule["game"] = True
+        self.cfg["profiles"].append(rule)
         save_config(self.cfg)
         self.pr_name.delete(0, "end")
         self.pr_match.delete(0, "end")
@@ -6337,8 +6428,16 @@ class App(ctk.CTk):
                 continue
             st["win"] = (proc, title)
             default = self.cfg.get("profile_default", 0)
-            lay = activewin.pick_layer(self.cfg["profiles"], proc, title, default=None if default is None or int(default) < 0 else int(default))
-            st["text"] = f"focused: {proc or '?'} | {title[:50]}   ->   " + (f"layer {lay + 1}" if lay is not None else "no change")
+            rule = activewin.pick_rule(self.cfg["profiles"], proc, title)
+            self.game_mode = bool(rule and rule.get("game"))
+            if rule:
+                lay = int(rule.get("layer", 0))
+            elif self.cfg.get("remember_layers") and proc in self._app_layers:
+                lay = self._app_layers[proc]                                 # no rule: back to what the user last chose in this program
+            else:
+                lay = None if default is None or int(default) < 0 else int(default)
+            st["rule"] = bool(rule)
+            st["text"] = f"focused: {proc or '?'} | {title[:50]}   ->   " + (f"layer {lay + 1}" if lay is not None else "no change") + ("   [game mode: pad actions paused]" if self.game_mode else "")
             if lay is not None and lay != st["layer"]:
                 try:
                     self.dev.request({"cmd": "layer", "val": lay})
@@ -7029,6 +7128,16 @@ class App(ctk.CTk):
         self.ledcpu_var = tk.BooleanVar(value=bool(self.cfg.get("led_cpu")))
         ctk.CTkSwitch(box, text="Pad LED follows this PC's CPU load (green to red)", variable=self.ledcpu_var,
                       command=lambda: (self.cfg.__setitem__("led_cpu", bool(self.ledcpu_var.get())), save_config(self.cfg))).grid(row=7, column=0, columnspan=3, padx=6, pady=4, sticky="w")
+        self.dimlock_var = tk.BooleanVar(value=bool(self.cfg.get("dim_lock")))
+        ctk.CTkSwitch(box, text="Dim the pad while this PC is locked", variable=self.dimlock_var,
+                      command=lambda: (self.cfg.__setitem__("dim_lock", bool(self.dimlock_var.get())), save_config(self.cfg))).grid(row=10, column=0, columnspan=3, padx=6, pady=4, sticky="w")
+        self.dimfs_var = tk.BooleanVar(value=bool(self.cfg.get("dim_fullscreen")))
+        ctk.CTkSwitch(box, text="Dim the pad while a fullscreen window (video, game, presentation) is in front", variable=self.dimfs_var,
+                      command=lambda: (self.cfg.__setitem__("dim_fullscreen", bool(self.dimfs_var.get())), save_config(self.cfg))).grid(row=11, column=0, columnspan=3, padx=6, pady=4, sticky="w")
+        ctk.CTkLabel(box, text="Dimmed brightness").grid(row=12, column=0, padx=6, pady=4, sticky="w")
+        self.dimlevel = ctk.CTkSlider(box, from_=5, to=120, number_of_steps=23, width=220, command=lambda v: (self.cfg.__setitem__("dim_level", int(v)), save_config(self.cfg)))
+        self.dimlevel.set(int(self.cfg.get("dim_level", 25)))
+        self.dimlevel.grid(row=12, column=1, padx=6, sticky="w")
         self.autostart_var = tk.BooleanVar(value=autostart.is_enabled())
         ctk.CTkSwitch(box, text="Start this app when I log in (minimised)", variable=self.autostart_var, command=self._autostart_toggled).grid(
             row=8, column=0, columnspan=3, padx=6, pady=4, sticky="w")

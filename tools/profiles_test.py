@@ -116,5 +116,83 @@ try:
 except ValueError:
     pass
 assert any(c[0] == "Spotify" for c in presets.profile_choices()) and any(c[0] == "Zoom" for c in presets.profile_choices())
+# ---- time windows, game rules, remembered layers
+from datetime import datetime   # noqa: E402
+from desk_lib import activewin as aw   # noqa: E402
+mon10, sat10, mon23 = datetime(2026, 10, 5, 10, 0), datetime(2026, 10, 10, 10, 0), datetime(2026, 10, 5, 23, 30)
+rules = [{"match": "slack", "kind": "process", "layer": 1, "time": "09:00-17:00", "days": "mon-fri"}, {"match": "slack", "kind": "process", "layer": 2},
+         {"match": "steam", "kind": "process", "layer": 0, "game": True, "enabled": True}, {"match": "vlc", "kind": "process", "layer": 1, "time": "22:00-06:00"}]
+assert aw.pick_layer(rules, "slack", "", now=mon10) == 1 and aw.pick_layer(rules, "slack", "", now=sat10) == 2 and aw.pick_layer(rules, "slack", "", now=mon23) == 2
+assert aw.pick_layer(rules, "vlc", "", default=-1, now=mon23) == 1 and aw.pick_layer(rules, "vlc", "", default=-1, now=mon10) == -1, "a rule that wraps midnight"
+assert aw.pick_rule(rules, "steam", "", mon10)["game"] is True and aw.pick_rule(rules, "nothing", "", mon10) is None
+for t, d in (("9am", ""), ("09:00", ""), ("25:00-26:00", ""), ("", "someday"), ("", "mon-xyz")):
+    try:
+        aw.validate_window(t, d); raise SystemExit(f"accepted window {t!r} {d!r}")
+    except ValueError:
+        pass
+aw.validate_window("", ""); aw.validate_window("09:00-17:00", "mon,wed-fri")
+app.cfg["profiles"].clear(); app.pr_name.delete(0, "end"); app.pr_match.delete(0, "end")
+app.pr_match.insert(0, "slack"); app.pr_time.insert(0, "09:00-17:00"); app.pr_days.insert(0, "mon-fri"); app.pr_game.set(True); app.profile_add()
+assert app.cfg["profiles"][-1] == {"name": "slack", "match": "slack", "kind": "process", "layer": 2, "enabled": True, "time": "09:00-17:00", "days": "mon-fri", "game": True}
+app.pr_time.delete(0, "end"); app.pr_time.insert(0, "nine"); app.pr_match.insert(0, "x"); app.profile_add()
+assert len(app.cfg["profiles"]) == 1 and "Rule not added" in app.status.cget("text")
+app.cfg["profiles"].clear(); app.cfg["profiles_on"] = True; app.prof_on.set(True)
+# game mode: set by the profile loop, silences pad host actions and scheduled actions
+app.cfg["profiles"].append({"name": "g", "match": "steam", "kind": "process", "layer": 0, "enabled": True, "game": True})
+fw.cur = ("steam", "Some Game"); app._profile_state.update(win=None)
+assert pump(80, lambda: app.game_mode is True) and "game mode" in app._profile_state["text"]
+sim.host_log.clear()
+app._on_pad_event({"evt": "host", "op": "notify", "arg": "x"}); app.update()
+assert app.host_q.empty(), "game mode: the pad's host actions are ignored"
+n_cmds = sim.cmd_count.get("layer", 0)
+app.run_schedule({"id": "x", "name": "t", "do": {"kind": "layer", "n": 1}, "when": {"kind": "every", "minutes": 1}}); time.sleep(0.3); app.update()
+assert sim.cmd_count.get("layer", 0) == n_cmds, "scheduled actions pause too (a manual 'Run now' still works)"
+fw.cur = ("notepad", "Untitled"); app._profile_state.update(win=None)
+assert pump(80, lambda: app.game_mode is False)
+# remembered layers
+app.cfg["profiles"].clear(); app.cfg["remember_layers"] = True
+fw.cur = ("krita", "Painting"); app._profile_state.update(win=None, layer=None)
+assert pump(60, lambda: app._profile_state["win"] == ("krita", "Painting"))
+app._pad_layer_changed(2)                                           # the user switches the layer by hand while Krita is in front
+assert app._app_layers == {"krita": 2}
+fw.cur = ("notepad", "Untitled"); app._profile_state.update(win=None)
+assert pump(60, lambda: app._profile_state["win"] == ("notepad", "Untitled"))
+fw.cur = ("krita", "Painting"); app._profile_state.update(win=None)
+assert pump(80, lambda: "layer 3" in app._profile_state["text"]), app._profile_state["text"]
+app.cfg["remember_layers"] = False; app.cfg["profiles_on"] = False; app.prof_on.set(False)
+
+# ---- lock / fullscreen dim and resume re-sync
+from desk_lib import screenstate   # noqa: E402
+class FakeScreen:
+    lock, fs = False, False
+    def locked(self): return self.lock
+    def fullscreen(self): return self.fs
+fsx = FakeScreen(); app.screen = fsx
+app.dev.info["caps"] = list(app.dev.info["caps"]) + [c for c in ("dimcmd",) if c not in app.dev.info["caps"]]
+app.cfg.update(dim_lock=True, dim_fullscreen=False, dim_level=20)
+app._screen_step(); assert sim.dim == 0
+fsx.lock = True; app._screen_step(); assert sim.dim == 20, sim.dim
+app._screen_step(); n = sim.cmd_count["dim"]; app._screen_step(); assert sim.cmd_count["dim"] == n, "an unchanged state is not re-sent"
+fsx.lock = False; fsx.fs = True; app._screen_step(); assert sim.dim == 0, "fullscreen dimming is off"
+app.cfg["dim_fullscreen"] = True; app._screen_step(); assert sim.dim == 20
+fsx.fs = False; app._screen_step(); assert sim.dim == 0
+app.dev.info["caps"] = [c for c in app.dev.info["caps"] if c != "dimcmd"]        # a pad without the dim command: the brightness is changed and restored
+app.pad.brightness = 150; fsx.lock = True; app._screen_step(); assert sim.bright == 20
+fsx.lock = False; app._screen_step(); assert sim.bright == 150
+t0 = sim.cmd_count.get("time", 0); app._dim["tick"] -= 100; app._screen_step()
+assert sim.cmd_count.get("time", 0) == t0 + 1, "a long gap between two checks = the PC slept: the pad gets the clock again"
+ss = screenstate.ScreenState
+def fake_run(outs):
+    return lambda args, timeout=3: outs.get(args[0] if args[0] not in ("loginctl", "xprop") else args[0])
+assert ss(fake_run({"loginctl": "LockedHint=yes\n"}), "Linux", {"XDG_SESSION_ID": "2"}).locked() is True
+assert ss(fake_run({"loginctl": "LockedHint=no\n"}), "Linux", {"XDG_SESSION_ID": "2"}).locked() is False
+assert ss(fake_run({"loginctl": "x", "gnome-screensaver-command": "The screensaver is active\n"}), "Linux", {}).locked() is True
+assert ss(fake_run({}), "Linux", {}).locked() is None
+assert ss(fake_run({"ioreg": '"CGSSessionScreenIsLocked" = Yes'}), "Darwin").locked() is True and ss(fake_run({"ioreg": "nothing"}), "Darwin").locked() is False
+assert ss(lambda a, timeout=3: "0x4a00007\n" if a[0] == "xdotool" else "_NET_WM_STATE(ATOM) = _NET_WM_STATE_FULLSCREEN\n", "Linux", {}).fullscreen() is True
+assert ss(lambda a, timeout=3: "0x4a00007\n" if a[0] == "xdotool" else "_NET_WM_STATE(ATOM) =\n", "Linux", {}).fullscreen() is False and ss(fake_run({}), "Linux", {}).fullscreen() is None
+assert ss(fake_run({"osascript": "true\n"}), "Darwin").fullscreen() is True
+assert ss(system="Windows", win_locked=lambda: True, win_fullscreen=lambda: False).locked() is True and ss(system="Windows", win_locked=lambda: True, win_fullscreen=lambda: False).fullscreen() is False
+assert ss(system="Plan9").locked() is None
 app.destroy()
 print("ALL PROFILE TESTS PASSED")
