@@ -1060,10 +1060,13 @@ class EngineCore:
         from core.base import HOST_OS
         return dict(self.cfg, os=HOST_OS)             # tests act on THIS computer, so resolve variants for its OS
 
-    def twin_step(self):
-        """One 40 ms tick of the virtual pad. Returns the rendered 240x240 image when it changed (else None)."""
+    def twin_step(self, render=True):
+        """One 40 ms tick of the virtual pad. Returns the rendered 240x240 image when it changed (else None). render=False only advances the model."""
         try:
             need = self.pad.tick()
+            if need and not render:
+                self.pad.dirty = True                           # draw it as soon as something is looking
+                return None
             return self.pad.render() if need else None
         except Exception:                                      # noqa: BLE001
             traceback.print_exc()
