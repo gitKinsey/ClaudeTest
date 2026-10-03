@@ -234,6 +234,9 @@ class EngineCore:
                 fn(*args)
             except Exception:                                   # noqa: BLE001
                 traceback.print_exc()
+                errs = self.__dict__.setdefault("handler_errors", [])      # the tests assert that no handler ever raised
+                errs.append((name, traceback.format_exc()))
+                del errs[:-50]
 
     def emit(self, name, *args):
         """Deliver an event on the main thread (at once when already there, queued otherwise)."""

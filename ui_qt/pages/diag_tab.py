@@ -89,10 +89,9 @@ def build_diag_tab(page):
     job = QTimer(t)
     job.setSingleShot(True)
 
+    job.timeout.connect(lambda: e.led_color(*(s.value() for s in sliders)))
+
     def led_apply(immediate=False):
-        r, g, b = (s.value() for s in sliders)
-        job.timeout.disconnect() if job.receivers(job.timeout) else None
-        job.timeout.connect(lambda: e.led_color(r, g, b))
         job.start(0 if immediate else 120)
     for name in ("R", "G", "B"):
         s = QSlider(Qt.Orientation.Horizontal)

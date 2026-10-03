@@ -71,7 +71,8 @@ class ScriptsPage(Page):
     def refresh(self, select=None):
         e = self.engine
         names = e.script_names()
-        cur = val(self.pick) if val(self.pick) in names else (names[0] if names else "")
+        typed = self.name.text().strip()
+        cur = typed if typed in names else val(self.pick) if val(self.pick) in names else (names[0] if names else "")
         if isinstance(select, str) and select in names:
             cur = select
         self.pick.blockSignals(True)

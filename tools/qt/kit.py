@@ -59,7 +59,12 @@ class QtKit:
         self.spin(8)
         return self.shell.pages[page]
 
+    def check_handlers(self):
+        errs = self.e.__dict__.get("handler_errors", [])
+        assert not errs, "an engine event handler raised:\n" + "\n".join(f"{n}: {t}" for n, t in errs[:3])
+
     def close(self):
+        self.check_handlers()
         self.shell._really_quit = True
         self.shell.close()
 

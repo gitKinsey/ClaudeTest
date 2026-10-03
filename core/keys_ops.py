@@ -883,8 +883,9 @@ class KeysOps:
         save_config(self.cfg)
         self.emit("map_changed")
         self.recompute_pending()
-        for ev in ("profiles", "schedules", "library", "gestures", "scripts", "info_cfg", "mine_gifs", "cfg_replaced"):
+        for ev in ("profiles", "schedules", "library", "gestures", "scripts", "info_cfg", "cfg_replaced"):
             self.emit(ev)
+        self.refresh_my_gifs()
 
     # ------------------------------------------------------------------ pad display / layout / os settings
     def effective_layout(self):
