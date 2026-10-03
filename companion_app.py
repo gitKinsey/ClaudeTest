@@ -15,6 +15,7 @@ import base64
 import colorsys
 import ctypes
 import ctypes.wintypes
+from datetime import datetime
 import functools
 import io
 import json
@@ -43,7 +44,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, backup, espota, feeds, hostactions, recorder, textops, wizards     # noqa: E402
+from desk_lib import activewin, automation, backup, espota, feeds, hostactions, recorder, scheduler, textops, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
@@ -51,7 +52,8 @@ APP_VERSION = "1.3.0"
 PAGES = [("Control", [("Dashboard", "Home", "Connection, health and quick actions"),
                       ("Virtual Pad", "Pad", "Your keys on three layers, with a live twin of the device"),
                       ("Macro Creator", "Macros", "Key combinations, text, delays, mouse, computer actions"),
-                      ("Profiles", "Profiles", "Switch the pad's layer automatically for each program")]),
+                      ("Profiles", "Profiles", "Switch the pad's layer automatically for each program"),
+                      ("Automation", "Automation", "Scheduled actions and the local API")]),
          ("Display", [("GIF Upload", "GIFs", "Pick or upload animations for the round screen"),
                       ("Info Screen", "Info", "Now playing, weather, calendar and notification badges")]),
          ("System", [("Device", "Device", "Settings, firmware, backup and recovery"),
@@ -232,6 +234,13 @@ def normalize_config(cfg):
         info.setdefault(k, v)
     cfg.setdefault("usage", {})                  # key press counters
     cfg.setdefault("counters", {})               # {counter:name} values used by snippets
+    good = []                                    # scheduled actions: drop anything that no longer validates
+    for e in cfg.get("schedules") or []:
+        try:
+            good.append(scheduler.validate(e))
+        except (ValueError, TypeError):
+            pass
+    cfg["schedules"] = good
     cfg.setdefault("wizard_done", False)
     return cfg
 
@@ -3546,6 +3555,7 @@ class App(ctk.CTk):
                                                notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok")))
         if self.host.impl is not None:
             self.host.impl.host_cb = self._host_cb
+        self.scheduler = scheduler.Scheduler(lambda: self.cfg["schedules"])
         self.pad = VirtualPad(self.exec_slot, self.exec_media, self.on_pad_change)
         self.pad.mode, self.pad.brightness = int(self.cfg["twin_mode"]), int(self.cfg["twin_bright"])
         self._build()
@@ -3564,6 +3574,7 @@ class App(ctk.CTk):
         threading.Thread(target=self._media_loop, daemon=True).start()
         threading.Thread(target=self._profile_loop, daemon=True).start()
         threading.Thread(target=self._info_loop, daemon=True).start()
+        threading.Thread(target=self._schedule_loop, daemon=True).start()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---------------------------------------------------------------- thread plumbing
@@ -3790,6 +3801,7 @@ class App(ctk.CTk):
         self._build_gif(self.tabs.tab("GIF Upload"))
         self._build_profiles(self.tabs.tab("Profiles"))
         self._build_info(self.tabs.tab("Info Screen"))
+        self.automation = automation.AutomationPage(self, self.tabs.tab("Automation"))
         self.devtab = DevTab(self, self.tabs.tab("Dev"))
         self.dev.on_line, self.dev.on_event = self.devtab.log, self._on_pad_event
         self.refresh_ports()
@@ -4618,7 +4630,37 @@ class App(ctk.CTk):
 
     # ---- host actions (open URL / app / command / type clipboard) - only ones that are part of YOUR configuration
     def _allowed_host(self):
-        return hostactions.collect_allowed(self.cfg["layers"], self.cfg["custom"], lambda c, a: resolve_spec(self.host_cfg(), c, a))
+        allowed = hostactions.collect_allowed(self.cfg["layers"], self.cfg["custom"], lambda c, a: resolve_spec(self.host_cfg(), c, a))
+        for e in self.cfg["schedules"]:                           # a scheduled rule is part of the user's own configuration too
+            if e["do"]["kind"] == "host":
+                allowed.add((e["do"]["op"], e["do"].get("arg", "")))
+        return allowed
+
+    # ---- scheduled actions
+    def _schedule_loop(self):
+        while not self.closing:
+            time.sleep(5)
+            if self.closing:
+                return
+            try:
+                due = self.scheduler.tick(datetime.now())
+            except Exception:                                     # noqa: BLE001
+                traceback.print_exc()
+                continue
+            for e in due:
+                self.run_schedule(e)
+            if any(e.pop("_retired", None) for e in self.cfg["schedules"]):
+                self.post(lambda: (self.save_cfg(), self.automation.refresh()))
+
+    def run_schedule(self, entry, manual=False):
+        def work():
+            def request(msg):
+                if not self.dev.connected:
+                    raise RuntimeError("the pad is not connected")
+                self.dev.request(msg)
+            return automation.run_entry(entry, request, self.hostact.run, lambda t: self.post(lambda: self.notify("Reminder", t, "ok")))
+        label = entry.get("name") or "Scheduled action"
+        self.bg(work, lambda desc: self.set_status(f"{label}: {desc}"), f"{label} failed")
 
     def _host_cb(self, spec):
         ok, msg = self.hostact.run(spec.get("op"), spec.get("arg", ""))
