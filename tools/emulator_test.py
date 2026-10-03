@@ -267,7 +267,7 @@ def t_modes_render(c):
         c.save(img, f"mode_{m}_{n}.png")
         expect(len(set(img.getdata())) >= 4, f"mode {m} ({n}) renders an almost empty screen")
         expect(e.request({"cmd": "ping"})["ok"], "alive")
-    expect(e.request({"cmd": "mode", "val": 9})["ok"] is True, "out-of-range mode is ignored, not fatal")
+    expect(e.request({"cmd": "mode", "val": 13})["ok"] is True, "out-of-range mode is ignored, not fatal")
     expect(e.request({"cmd": "hello"})["mode"] in (1, 2, 3, 4), "mode unchanged by invalid value")
 
 
@@ -322,7 +322,7 @@ def t_remap_persistence(c):
     expect(e.request({"cmd": "remap", "key": 6, "type": "combo", "val": ["CTRL", "SHIFT", "ALT", "t"]})["ok"], "remap combo")
     expect(e.request({"cmd": "remap", "key": 2, "type": "macro", "val": [{"combo": ["GUI", "r"]}, {"delay": 200}, {"text": "cmd"}, {"media": "MUTE"}]})["ok"], "remap macro")
     expect(e.request({"cmd": "remap", "key": 3, "type": "media", "val": "NEXT"})["ok"], "remap media")
-    expect(e.request({"cmd": "remap", "key": 8, **spec})["err"] == "key", "key 8 invalid")
+    expect(e.request({"cmd": "remap", "key": 10, **spec})["err"] == "key", "key 10 invalid (8 / 9 are the dial press+turn slots since firmware 1.4)")
     expect(e.request({"cmd": "remap", "key": 1, "type": "combo", "val": ["NOPE"]})["err"] == "spec", "bad key name")
     expect(e.request({"cmd": "remap", "key": 1, "type": "text", "val": "x" * 4000})["err"] == "too_long", "too long")
     j = json.dumps(spec, separators=(",", ":"))
@@ -525,7 +525,7 @@ def t_layers(c):
     e = c.e
     e.request({"cmd": "reset_keys"})
     h = e.request({"cmd": "hello"})
-    expect(h["layers"] == 3 and h["layer"] == 0 and h["modes"] == 6, f"hello layers/modes: {h}")
+    expect(h["layers"] == 3 and h["layer"] == 0 and h["modes"] == 12, f"hello layers/modes: {h}")
     for cap in ("layers", "mouse", "host", "info", "gifslots", "factory"):
         expect(cap in h["caps"], f"capability {cap} missing: {h['caps']}")
     expect("wifi" not in h["caps"] and "ota" not in h["caps"], f"the default build is cable-only: {h['caps']}")
