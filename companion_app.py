@@ -45,11 +45,11 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageSequence, ImageT
 APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)    # next to this file, or the PyInstaller bundle folder
 sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import ui                                              # noqa: E402
-from desk_lib import activewin, automation, backup, bridge, espota, extras, feeds, hostactions, recorder, scheduler, textops, wizards     # noqa: E402
+from desk_lib import activewin, automation, backup, bridge, espota, extras, feeds, hostactions, padextras, recorder, scheduler, textops, wizards     # noqa: E402
 from desk_lib.ui import (ACCENT, CARD2, CARD3, ERR, FAINT, MUTED, OK, PINK, TEXT, WARN, SideTabs, Pill)   # noqa: E402
 
 APP_NAME = "Desk Companion"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 PAGES = [("Control", [("Dashboard", "Home", "Connection, health and quick actions"),
                       ("Virtual Pad", "Pad", "Your keys on three layers, with a live twin of the device"),
                       ("Macro Creator", "Macros", "Key combinations, text, delays, mouse, computer actions"),
@@ -249,6 +249,9 @@ def normalize_config(cfg):
         except (ValueError, TypeError):
             pass
     info["extras"] = good[:4]
+    gs = cfg.get("gestures")                     # hold / double-tap actions: {"layer:slot:hold": {"cat","action"}}
+    cfg["gestures"] = {k: v for k, v in gs.items() if isinstance(v, dict) and "cat" in v and "action" in v and re.fullmatch(r"[0-2]:[1-5]:(hold|double)", str(k))} \
+        if isinstance(gs, dict) else {}
     api = cfg.setdefault("api", {})              # local API for scripts (off unless switched on)
     api.setdefault("on", False)
     api.setdefault("port", 47651)
@@ -781,7 +784,7 @@ def rgb565be_image(raw, w=240, h=240):
     return img
 
 
-FW_BUNDLED = "1.2.0"                     # version of firmware/DeskCompanion.bin shipped with this app
+FW_BUNDLED = "1.3.0"                     # version of firmware/DeskCompanion.bin shipped with this app
 LAYERS, GIF_SLOTS = 3, 4
 HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip")
 DEFAULT_LAYERS = [
@@ -853,6 +856,9 @@ def spec_ok(spec):
     return False
 
 
+NEW13_CAPS = ["hostx", "gestures", "dialaccel", "clockstyle", "saver", "nightdim"]       # firmware 1.3 additions (see hello "caps")
+SETTINGS_DEFAULT = {"dial_accel": 0, "clock_style": 0, "saver_s": 0, "saver_style": 1, "night_on": False, "night_from": 22, "night_to": 7, "night_level": 30}
+SETTINGS_RANGE = {"dial_accel": (0, 2), "clock_style": (0, 3), "saver_s": (0, 3600), "saver_style": (1, 3), "night_from": (0, 23), "night_to": (0, 23), "night_level": (5, 255)}
 LEGACY_CMDS = {"layer", "info_cards", "gif_list", "gif_cfg", "factory", "boot_opt", "safe_retry", "ota"}   # unknown to firmware 1.1
 
 
@@ -867,6 +873,9 @@ class SimFirmware:
         self.emit = emit                      # callable(bytes) -> pushes firmware->app bytes
         self.legacy = bool(os.environ.get("DESK_COMPANION_SIM_LEGACY")) if legacy is None else legacy   # behave like firmware 1.1.0 (single layer, 5 modes)
         self.wifi = bool(os.environ.get("DESK_COMPANION_SIM_WIFI"))        # firmware built with DC_ENABLE_WIFI=1 (default build: cable only)
+        self.fw12 = bool(os.environ.get("DESK_COMPANION_SIM_V12"))          # behave like firmware 1.2.0 (layers, no gestures / settings / new host ops)
+        self.gest = {}                        # (layer, key, "hold"|"double") -> spec
+        self.settings = dict(SETTINGS_DEFAULT)
         self.core = bool(os.environ.get("DESK_COMPANION_SIM_CORE"))        # behave like the CoreBringup diagnostic sketch (diagnostic commands only)
         self.cmd_count = {}                   # cmd -> times received (tests: no command spam)
         self._buf = b""
@@ -967,6 +976,9 @@ class SimFirmware:
             self._send(obj)
 
         self.cmd_count[cmd] = self.cmd_count.get(cmd, 0) + 1
+        if self.fw12 and cmd in ("settings", "gesture_test"):
+            reply({"ok": False, "err": "unknown_cmd"})
+            return
         if self.core:
             if cmd not in CORE_CMDS:
                 reply({"ok": False, "err": "unknown_cmd"})
@@ -994,9 +1006,9 @@ class SimFirmware:
         if cmd == "stats":
             return                             # 1 Hz telemetry, no reply - matches the real firmware
         if cmd == "hello":
-            reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": FW_BUNDLED,
+            reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": "1.2.0" if self.fw12 else FW_BUNDLED,
                    "layer": self.layer, "layers": LAYERS, "modes": 6, "gifs": len(self.gifs), "gif_rot": self.gif_rot,
-                   "caps": ["layers", "mouse", "host", "info", "gifslots", "factory"] + (["wifi", "ota"] if self.wifi else []),
+                   "caps": ["layers", "mouse", "host", "info", "gifslots", "factory"] + ([] if self.fw12 else NEW13_CAPS) + (["wifi", "ota"] if self.wifi else []),
                    "mode": self.mode, "bright": self.bright, "os": self.osv, "gif": self.gif_present,
                    "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "synced": False, "layout": self.layout,
                    "hid": True, "disp": True, "fs": True, "fs_state": "ready", "safe": False, "led_pin": 21})
@@ -1008,7 +1020,7 @@ class SimFirmware:
         elif cmd == "echo":
             reply({"ok": True, "evt": "echo", "data": msg.get("data")})
         elif cmd == "info":
-            reply({"ok": True, "evt": "info", "fw": FW_BUNDLED, "build": "simulated", "safe_why": "", "disp_why": self.disp_why, "nodisp": self.nodisp, "ota": self.ota, "ip": "", "layer": self.layer, "chip": "ESP32-S3 (simulated)", "rev": 0,
+            reply({"ok": True, "evt": "info", "fw": "1.2.0" if self.fw12 else FW_BUNDLED, "build": "simulated", "safe_why": "", "disp_why": self.disp_why, "bl": self.bright, "saver_on": False, "nodisp": self.nodisp, "ota": self.ota, "ip": "", "layer": self.layer, "chip": "ESP32-S3 (simulated)", "rev": 0,
                    "cores": 2, "cpu_mhz": 240, "flash": 4194304,
                    "heap": 210_000, "heap_min": 190_000, "heap_blk": 110_000, "psram": 0, "temp": 31.5, "up_ms": self._up_ms(),
                    "reset": "power-on", "crashes": self.crashes, "safe": False, "core": "sim", "usb_mode": 0, "cdc_boot": 1, "hid": True,
@@ -1084,7 +1096,16 @@ class SimFirmware:
                 if self.events:
                     self._send({"evt": "key", "k": k, "v": 1})
                     self._send({"evt": "key", "k": k, "v": 0})
-                self._run_spec(self._spec_for(self.layer, k))
+                g = msg.get("g", "tap") if not self.fw12 else "tap"
+                if g == "tap":
+                    self._run_spec(self._spec_for(self.layer, k))
+                elif g in ("hold", "double"):
+                    sp = self.gest.get((self.layer, k, g))
+                    if sp:
+                        self._run_spec(sp)
+                else:
+                    reply({"ok": False, "err": "gesture"})
+                    return
             elif "turn" in msg:
                 t = msg["turn"]
                 if not isinstance(t, int) or t == 0 or abs(t) > 20:
@@ -1092,7 +1113,17 @@ class SimFirmware:
                     return
                 if self.events:
                     self._send({"evt": "enc", "d": 1 if t > 0 else -1, "pos": t})
-                self._run_spec(self._spec_for(self.layer, 6 if t > 0 else 7))
+                runs = 1
+                if not self.fw12:
+                    dt = msg.get("dt", 1000)
+                    per = dt / abs(t)
+                    lvl = self.settings["dial_accel"]
+                    mult = 1 if lvl == 0 else (3 if lvl == 1 else 6) if per < 35 else (2 if lvl == 1 else 4) if per < 80 else 2 if (lvl == 2 and per < 140) else 1
+                    runs = min(24, abs(t) * mult)
+                for _ in range(runs):
+                    self._run_spec(self._spec_for(self.layer, 6 if t > 0 else 7))
+                reply({"ok": True, "evt": "input", "runs": runs})
+                return
             elif msg.get("click") or msg.get("hold"):
                 if self.events:
                     self._send({"evt": "encsw", "v": 1})
@@ -1112,6 +1143,14 @@ class SimFirmware:
                 if not isinstance(sl, int) or not 1 <= sl <= 7:
                     reply({"ok": False, "err": "key"})
                     return
+                g = msg.get("gesture", "tap")
+                if g != "tap" and not self.fw12:
+                    if g not in ("hold", "double") or sl > 5:
+                        reply({"ok": False, "err": "gesture"})
+                        return
+                    sp = self.gest.get((lay, sl, g))
+                    reply(dict(base, s=sl, g=g, set=sp is not None, **({"spec": sp} if sp else {})))
+                    return
                 reply(dict(base, s=sl, spec=self._spec_for(lay, sl), **{"def": sl not in self.layers[lay]}))
                 return
             slots = []
@@ -1119,6 +1158,8 @@ class SimFirmware:
                 s = self.layers[lay].get(i)
                 j = compact_json({"type": s["type"], "val": s["val"]}) if s else ""
                 slots.append({"s": i, "def": not s, "len": len(j.encode()), "crc": zlib.crc32(j.encode()) & 0xFFFFFFFF if s else 0})
+                if i <= 5 and not self.fw12:
+                    slots[-1].update(h=(lay, i, "hold") in self.gest, d=(lay, i, "double") in self.gest)
             reply(dict(base, slots=slots))
         elif cmd == "layer":
             v = msg.get("val")
@@ -1188,17 +1229,49 @@ class SimFirmware:
                 reply({"ok": False, "err": "key"})
             elif not isinstance(lay, int) or not 0 <= lay < LAYERS:
                 reply({"ok": False, "err": "layer"})
+            elif not self.fw12 and msg.get("gesture", "tap") not in ("tap", "hold", "double"):
+                reply({"ok": False, "err": "gesture"})
+            elif not self.fw12 and msg.get("gesture", "tap") != "tap" and key > 5:
+                reply({"ok": False, "err": "key"})
+            elif not self.fw12 and msg.get("gesture", "tap") != "tap" and msg.get("clear"):
+                self.gest.pop((lay, key, msg["gesture"]), None)
+                reply({"ok": True, "evt": "remap"})
             elif not spec_ok({"type": msg.get("type"), "val": msg.get("val")}):
                 reply({"ok": False, "err": "spec"})
             else:
-                self.layers[lay][key] = {"type": msg.get("type"), "val": msg.get("val")}
+                spec = {"type": msg.get("type"), "val": msg.get("val")}
+                g = msg.get("gesture", "tap")
+                if g != "tap" and not self.fw12:
+                    self.gest[(lay, key, g)] = spec
+                else:
+                    self.layers[lay][key] = spec                  # firmware 1.2 ignores the unknown "gesture" field and stores a tap action
                 reply({"ok": True, "evt": "remap"})
         elif cmd == "reset_keys":
             only = msg.get("layer")
             for n, lay in enumerate(self.layers):
                 if only is None or only == n:
                     lay.clear()
+                    for k in [k for k in self.gest if k[0] == n]:
+                        del self.gest[k]
             reply({"ok": True, "evt": "reset_keys"})
+        elif cmd == "settings":
+            new = {}
+            for k, v in msg.items():
+                if k in ("cmd", "id"):
+                    continue
+                if k == "night_on":
+                    if not isinstance(v, bool):
+                        reply({"ok": False, "err": "settings"})
+                        return
+                    new[k] = v
+                elif k in SETTINGS_RANGE:
+                    lo, hi = SETTINGS_RANGE[k]
+                    if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                        reply({"ok": False, "err": "settings"})
+                        return
+                    new[k] = v
+            self.settings.update(new)
+            reply(dict({"ok": True, "evt": "settings", "bl": self.bright, "saver_on": False}, **self.settings))
         elif cmd == "brightness":
             self.bright = max(5, min(255, int(msg.get("val", 200))))
             reply({"ok": True, "evt": "brightness"})
@@ -3982,6 +4055,8 @@ class App(ctk.CTk):
             self.tree_cat[parent] = cat
             for n in names:
                 self.tree_items[self.tree.insert(parent, "end", text="    " + n)] = {"cat": cat, "action": n}
+        if hasattr(self, "automation") and hasattr(self.automation, "gestures"):
+            self.automation.gestures.reload_categories()
 
     def _tree_press(self, e):
         it = self.tree_items.get(self.tree.identify_row(e.y))
@@ -4084,6 +4159,31 @@ class App(ctk.CTk):
             msg["layer"] = layer
         return msg
 
+    def _pad_cap(self, cap):
+        return bool(self.dev.connected and cap in (self.dev.info.get("caps") or []))
+
+    # ---- key gestures (hold / double-tap): the pad must end up with exactly the gestures in cfg["gestures"]
+    def _sync_gestures(self):
+        existing = set()
+        for lay in range(LAYERS):
+            r = self.dev.request({"cmd": "getkeys", **({"layer": lay} if lay else {})}, timeout=4)
+            for sl in r.get("slots", []):
+                if sl.get("h"):
+                    existing.add((lay, sl["s"], "hold"))
+                if sl.get("d"):
+                    existing.add((lay, sl["s"], "double"))
+        msgs = padextras.gesture_msgs(self, existing, lambda c, a: resolve_spec(self.cfg, c, a))
+        for m in msgs:
+            self.dev.request(m)
+        return len(msgs)
+
+    def push_gestures(self, what=""):
+        if not self.dev.connected:
+            return self.set_status((what + " - " if what else "") + "saved; it is sent to the pad with the next upload")
+        if not self._pad_cap("gestures"):
+            return self.set_status("Hold / double-tap actions need firmware 1.3 - update the pad (Device -> Firmware). The setting is saved.", error=True)
+        self.bg(self._sync_gestures, lambda n: self.set_status(f"{what or 'Gestures'} - sent to the pad"), "Sending the gesture failed")
+
     def _core_only(self, what="that"):
         if self.dev.connected and self.dev.info.get("core_only"):
             self.set_status(f"The pad runs the CoreBringup diagnostic sketch, which cannot do {what}. Flash the full firmware first (Device -> Update).", error=True)
@@ -4177,6 +4277,8 @@ class App(ctk.CTk):
             for lay, sl, spec in jobs:
                 self.dev.request(self._remap_msg(lay, sl, spec))
                 self.post(lambda lay=lay, sl=sl, j=spec_json(spec): self._mark_pushed(sl, j, lay))
+            if self._pad_cap("gestures"):
+                self._sync_gestures()
             self.dev.request({"cmd": "brightness", "val": bright})
             self.dev.request({"cmd": "mode", "val": mode})
             self.post(lambda: self._mark_display_pushed(mode, bright))
@@ -4647,7 +4749,7 @@ class App(ctk.CTk):
 
     # ---- host actions (open URL / app / command / type clipboard) - only ones that are part of YOUR configuration
     def _allowed_host(self):
-        allowed = hostactions.collect_allowed(self.cfg["layers"], self.cfg["custom"], lambda c, a: resolve_spec(self.host_cfg(), c, a))
+        allowed = hostactions.collect_allowed(list(self.cfg["layers"]) + [self.cfg["gestures"]], self.cfg["custom"], lambda c, a: resolve_spec(self.host_cfg(), c, a))
         for e in self.cfg["schedules"]:                           # a scheduled rule is part of the user's own configuration too
             if e["do"]["kind"] == "host":
                 allowed.add((e["do"]["op"], e["do"].get("arg", "")))
@@ -4835,6 +4937,7 @@ class App(ctk.CTk):
         self.refresh_fw_status()
         self.refresh_health()
         self.refresh_pad_gifs()
+        self.behaviour.on_connected()
         if not self.cfg.get("wizard_done") and not simulated and not getattr(self, "_wizard_offered", False):
             self._wizard_offered = True
             self.after(800, self.open_wizard)
@@ -4853,6 +4956,7 @@ class App(ctk.CTk):
         self.conn_lbl.configure(text="Not connected", text_color=WARN)
         self.conn_pill.set("Not connected", WARN)
         self.refresh_fw_status()
+        self.behaviour.refresh()
         if hasattr(self, "pad_gif_box"):
             self.refresh_pad_gifs()
         self.conn_btn.configure(text="Connect")
@@ -4985,6 +5089,8 @@ class App(ctk.CTk):
             return ("host", {"op": "url", "arg": arg})
         if op in ("app", "file", "notify"):
             return ("host", {"op": op, "arg": arg})
+        if op in ("snippet", "clip") and self.dev.connected and not self._pad_cap("hostx"):
+            raise ValueError("Snippets and clipboard transforms need firmware 1.3 on the pad - update it (Device -> Firmware).")
         if op == "snippet":
             return ("host", {"op": "snippet", "arg": arg})
         if op == "clip":
@@ -6502,6 +6608,9 @@ class App(ctk.CTk):
         hm.grid(row=6, column=0, columnspan=3, padx=6, pady=4, sticky="w")
         if not self.hostmedia.available:
             hm.configure(state="disabled", text="Mirror PC volume: not available here (Linux: pactl/amixer, macOS: built in, Windows: pip install pycaw)")
+
+        box = self._card(sc, "Pad behaviour", "Dial acceleration, clock face, screensaver and night dimming - stored on the pad (firmware 1.3).")
+        self.behaviour = padextras.BehaviourCard(self, box)
 
         # ---- firmware
         box = self._card(sc, "Firmware", "Version check, one-click update over USB, and an experimental Wi-Fi update.")

@@ -140,6 +140,22 @@ static uint32_t crc32u(uint32_t crc, const uint8_t* p, size_t n);
 static int b64dec(const char* in, size_t n, uint8_t* out);
 static void localTm(struct tm& t);
 static void uiTouch();
+static void activity();
+static void applyBacklight();
+static void loadGestureFlags();
+static void sceneClockAlt(const struct tm& t);
+static void sceneSaver();
+static void cmdSettings(JsonDocument& doc);
+static void cmdGestureTest(JsonDocument& doc);
+static bool nightActive(int hour, uint8_t from, uint8_t to);
+static uint8_t effBright();
+static void gestureKey(uint8_t lay, uint8_t i, char g, char* out);
+static void runGesture(uint8_t i, char g);
+static uint8_t accelMult(uint32_t dtPerDetent, uint8_t level);
+static void onKeyGesture(int i, char g);
+static void settingsReply();
+static bool optInt(JsonDocument& doc, const char* key, int lo, int hi, int& out, bool& bad);
+static uint32_t sRand();
 static uint32_t fsFreeBytes();
 static void sendDoc(JsonDocument& d);
 static void ack(const char* evt);
@@ -281,7 +297,7 @@ static const float    VCC_DIVIDER = 2.0f;
 static const size_t   RX_MAX = 6000;              // longest accepted JSON line
 static const bool     DC_IS_SIM = DC_SIM_FLAG;
 static const uint8_t  PIN_RGB = DC_RGB_PIN;       // onboard WS2812 (Waveshare ESP32-S3-Zero: GPIO21)
-static const char*    FW_VERSION = "1.2.0";
+static const char*    FW_VERSION = "1.3.0";
 static const char*    MODE_NAME[7] = {"", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO"};
 static const uint8_t  NUM_MODES = 6;
 static const uint8_t  LAYERS = 3;                 // key layers (each has K1..K5 + dial right / left)
@@ -306,6 +322,18 @@ Bounce keyBtn[5];
 Bounce encBtn;
 
 uint8_t  mode = M_CLOCK, brightness = 200, osMac = 0, pomoMinutes = 25;
+// ---- v1.3 settings (all persisted in NVS, changed with {"cmd":"settings"})
+uint8_t  dialAccel = 0;                          // 0 off, 1 normal, 2 fast: fast turns of the dial repeat the action 2-6x
+uint8_t  clockStyle = 0;                         // 0 classic, 1 digital, 2 binary, 3 minimal
+uint16_t saverSec = 0;                           // idle seconds before the screensaver starts (0 = off)
+uint8_t  saverStyle = 1;                         // 1 stars, 2 rain, 3 dim clock
+bool     nightOn = false;                        // night dimming: cap the backlight between nightFrom and nightTo (local time, needs a synced clock)
+uint8_t  nightFrom = 22, nightTo = 7, nightLevel = 30, lastBl = 255;
+uint32_t lastActivity = 0, lastTurnAt = 0;
+bool     saverOn = false;
+int32_t  turnDtOverride = -1;                    // tests: pretend the previous detent was this many ms ago
+uint8_t  lastTurnRuns = 0;                       // how many times the dial action ran for the last turn (after acceleration)
+uint8_t  gHold[LAYERS], gDbl[LAYERS];            // bit i = key i of that layer has a stored hold / double-tap action
 uint8_t  curLayer = 0, menuLayer = 0;
 uint32_t layerToastUntil = 0, flashAt = 0, ledFlashUntil = 0;
 uint8_t  ledFlashR = 0, ledFlashG = 0, ledFlashB = 0;
@@ -439,6 +467,17 @@ static int b64dec(const char* in, size_t n, uint8_t* out) {
 }
 static void localTm(struct tm& t) { time_t n = time(nullptr) + tzOff; gmtime_r(&n, &t); }
 static void uiTouch() { menuTouched = millis(); }
+static void activity() { lastActivity = millis(); if (saverOn) { saverOn = false; needRedraw = true; } }   // any physical input wakes the screensaver
+static bool nightActive(int hour, uint8_t from, uint8_t to) {                  // pure: is `hour` inside [from, to) - the window may wrap midnight
+  if (from == to) return false;
+  return from < to ? (hour >= from && hour < to) : (hour >= from || hour < to);
+}
+static uint8_t effBright() {
+  if (!nightOn || !timeSynced) return brightness;
+  struct tm t; localTm(t);
+  return nightActive(t.tm_hour, nightFrom, nightTo) ? (uint8_t)min((int)brightness, (int)nightLevel) : brightness;
+}
+static void applyBacklight() { lastBl = effBright(); backlightSet(lastBl); }
 static uint32_t fsFreeBytes() { return (uint32_t)(LittleFS.totalBytes() - LittleFS.usedBytes()); }   // raw free space (an upload replaces its own slot first)
 
 // ================================================================ serial TX (bounded: never stalls the firmware)
@@ -843,8 +882,38 @@ static void dimSprite() {                              // halve brightness of ev
 static const char* const DOW[7] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
 static const char* const MON[12] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
 
+static void sceneClockAlt(const struct tm& t) {
+  char b[24];
+  spr.fillSprite(C_BG);
+  spr.setTextDatum(MC_DATUM);
+  if (clockStyle == 1) {                                       // digital: big 7-segment time, seconds ring, date
+    gauge(120, 120, 117, 107, t.tm_sec / 59.0f, C_ACC);
+    snprintf(b, sizeof b, "%02d:%02d", t.tm_hour, t.tm_min);
+    spr.setTextColor(C_TXT); spr.drawString(b, 120, 112, 7);
+    spr.setTextColor(C_GRAY); snprintf(b, sizeof b, "%s %02d %s", DOW[t.tm_wday], t.tm_mday, MON[t.tm_mon]); spr.drawString(b, 120, 166, 2);
+    spr.fillCircle(120, 196, 3, timeSynced ? C_OK : C_WARN);
+  } else if (clockStyle == 2) {                                // binary-coded decimal: columns H H M M S S, 4 rows, lit dot = 1
+    int v[6] = {t.tm_hour / 10, t.tm_hour % 10, t.tm_min / 10, t.tm_min % 10, t.tm_sec / 10, t.tm_sec % 10};
+    static const uint8_t bits[6] = {2, 4, 3, 4, 3, 4};
+    for (int c = 0; c < 6; c++) {
+      int x = 40 + c * 32 + (c / 2) * 8 - 8;
+      for (int r = 0; r < 4; r++) {
+        int bit = 3 - r; if (bit >= bits[c]) continue;
+        bool on = (v[c] >> bit) & 1;
+        if (on) spr.fillCircle(x, 70 + r * 28, 10, c < 2 ? C_ACC : c < 4 ? C_ACC2 : C_OK); else spr.drawCircle(x, 70 + r * 28, 10, C_DIM2);
+      }
+    }
+    spr.setTextColor(C_GRAY); snprintf(b, sizeof b, "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec); spr.drawString(b, 120, 186, 4);
+  } else {                                                     // 3 minimal: huge time, one thin minute ring
+    arcBand(120, 120, 118, 114, 0, (t.tm_sec / 60.0f) * 360.0f, C_ACC);
+    snprintf(b, sizeof b, "%02d", t.tm_hour); spr.setTextColor(C_TXT); spr.drawString(b, 120, 86, 7);
+    snprintf(b, sizeof b, "%02d", t.tm_min); spr.setTextColor(C_ACC); spr.drawString(b, 120, 156, 7);
+  }
+}
+
 static void sceneClock() {
   struct tm t; localTm(t);
+  if (clockStyle >= 1 && clockStyle <= 3) { sceneClockAlt(t); return; }
   spr.fillSprite(C_BG);
   spr.drawCircle(120, 120, 119, C_DIM2);
   spr.drawCircle(120, 120, 118, C_DIM);
@@ -1044,6 +1113,38 @@ static void sceneInfo() {
   }
 }
 
+// ---- screensaver (starts after saverSec seconds without input; any key / dial action wakes it)
+static uint32_t sRng = 0x1234ABCDu;
+static uint32_t sRand() { sRng ^= sRng << 13; sRng ^= sRng >> 17; sRng ^= sRng << 5; return sRng; }
+static void sceneSaver() {
+  spr.fillSprite(C_BG);
+  if (saverStyle == 1) {                                       // starfield: 60 stars fly out of the centre
+    static int16_t sx[60], sy[60], sz[60]; static bool init = false;
+    if (!init) { init = true; for (int i = 0; i < 60; i++) { sx[i] = (int)(sRand() % 200) - 100; sy[i] = (int)(sRand() % 200) - 100; sz[i] = 1 + sRand() % 120; } }
+    for (int i = 0; i < 60; i++) {
+      sz[i] -= 2;
+      if (sz[i] < 1) { sx[i] = (int)(sRand() % 200) - 100; sy[i] = (int)(sRand() % 200) - 100; sz[i] = 120; }
+      int px = 120 + sx[i] * 60 / sz[i], py = 120 + sy[i] * 60 / sz[i];
+      if (px < 0 || px > 239 || py < 0 || py > 239) { sz[i] = 120; continue; }
+      uint8_t l = (uint8_t)(255 - sz[i] * 2);
+      spr.fillRect(px, py, sz[i] < 40 ? 3 : 2, sz[i] < 40 ? 3 : 2, rgb(l, l, l));
+    }
+  } else if (saverStyle == 2) {                                // matrix rain: 16 columns of falling trails
+    static int16_t ry[16], rv[16]; static bool init = false;
+    if (!init) { init = true; for (int i = 0; i < 16; i++) { ry[i] = (int)(sRand() % 240); rv[i] = 3 + sRand() % 6; } }
+    for (int i = 0; i < 16; i++) {
+      int x = 8 + i * 15;
+      ry[i] += rv[i]; if (ry[i] > 300) { ry[i] = -(int)(sRand() % 80); rv[i] = 3 + sRand() % 6; }
+      for (int k = 0; k < 8; k++) { int y = ry[i] - k * 10; if (y < 0 || y > 239) continue; spr.fillRect(x, y, 6, 8, rgb(0, (uint8_t)(255 - k * 32), (uint8_t)(40 - k * 4))); }
+    }
+  } else {                                                     // dim clock that drifts every minute (no burn-in)
+    struct tm t; localTm(t); char b[8];
+    snprintf(b, sizeof b, "%02d:%02d", t.tm_hour, t.tm_min);
+    spr.setTextDatum(MC_DATUM); spr.setTextColor(rgb(60, 66, 80));
+    spr.drawString(b, 120 + ((t.tm_min * 7) % 41) - 20, 120 + ((t.tm_min * 13) % 41) - 20, 6);
+  }
+}
+
 static void renderScene() {
   switch (mode) {
     case M_CLOCK: sceneClock(); break;
@@ -1062,6 +1163,7 @@ static void pushScreen() {
 static void renderFrame() {
   if (!okSprite) return;
   if (uploading) sceneUpload();
+  else if (saverOn && !menuOpen) sceneSaver();
   else {
     if (menuOpen && mode == M_GIF) spr.fillSprite(C_BG); else renderScene();
     if (menuOpen) sceneMenu();
@@ -1071,6 +1173,7 @@ static void renderFrame() {
 }
 static uint32_t renderInterval() {
   if (uploading || menuOpen) return 100;
+  if (saverOn) return saverStyle == 3 ? 5000 : 45;
   if (flashAt && millis() - flashAt < 280 && mode != M_GIF) return 30;
   switch (mode) {
     case M_POMO:  return (pomoState == PS_RUN || pomoState == PS_DONE) ? 250 : 100000;
@@ -1328,7 +1431,7 @@ static void menuTurn(int steps) {
   uiTouch();
   int n = steps < 0 ? -steps : steps, dir = steps > 0 ? 1 : -1;
   if (!menuEdit) { for (int i = 0; i < n; i++) menuSel = (menuSel + (dir > 0 ? 1 : 4)) % 5; }
-  else if (menuEdit == 1) { int b = (int)brightness + steps * 8; brightness = (uint8_t)constrain(b, 5, 255); backlightSet(brightness); }
+  else if (menuEdit == 1) { int b = (int)brightness + steps * 8; brightness = (uint8_t)constrain(b, 5, 255); applyBacklight(); }
   else if (menuEdit == 2) { for (int i = 0; i < n; i++) sendMedia(dir > 0 ? 0xE9 : 0xEA); }
   else if (menuEdit == 3) { menuMode = (uint8_t)((((int)menuMode - 1 + steps) % NUM_MODES + NUM_MODES) % NUM_MODES + 1); }
   else if (menuEdit == 4) { menuLayer = (uint8_t)((((int)menuLayer + steps) % LAYERS + LAYERS) % LAYERS); }
@@ -1350,11 +1453,77 @@ static void menuClick() {
 }
 
 // ================================================================ input handling
-static void onKey(int i) {
+// ---- key gestures. A key with only a tap action acts the instant it is pressed (as before). A key that also has a HOLD and / or a
+// DOUBLE-TAP action decides on release: tap = released before G_HOLD_MS (and, with a double-tap action, not followed by a second press
+// within G_DBL_MS); hold = still down after G_HOLD_MS; double = second press within G_DBL_MS. Pure state machine, driven with explicit
+// timestamps so it can be tested with synthetic timing (see cmdGestureTest).
+enum : uint8_t { G_TAP = 1, G_HOLD = 2, G_DOUBLE = 4 };
+static const uint32_t G_HOLD_MS = 450, G_DBL_MS = 260;
+struct GestureFsm {
+  bool down = false, holdFired = false, consumed = false, pending = false;
+  uint32_t downAt = 0, upAt = 0;
+  uint8_t step(bool isDown, uint32_t now, bool hasHold, bool hasDbl) {
+    uint8_t m = 0;
+    if (pending && !down && (uint32_t)(now - upAt) > G_DBL_MS) { pending = false; m |= G_TAP; }          // the double-tap window closed
+    if (down && !holdFired && !consumed && hasHold && (uint32_t)(now - downAt) >= G_HOLD_MS) { holdFired = true; m |= G_HOLD; }
+    if (isDown && !down) {                                      // press
+      down = true; downAt = now; holdFired = false; consumed = false;
+      if (!hasHold && !hasDbl && !pending) { consumed = true; m |= G_TAP; }                             // plain key: act at once
+      else if (pending) { pending = false; consumed = true; m |= hasDbl ? G_DOUBLE : G_TAP; }
+    } else if (!isDown && down) {                               // release
+      down = false; upAt = now;
+      if (!consumed && !holdFired) { if (hasDbl) pending = true; else m |= G_TAP; }
+      consumed = false; holdFired = false;
+    }
+    return m;
+  }
+  uint32_t deadline(bool hasHold) const {                       // next moment step() has something to say without a new edge (0 = none)
+    if (down && !holdFired && !consumed && hasHold) return downAt + G_HOLD_MS;
+    if (pending && !down) return upAt + G_DBL_MS + 1;
+    return 0;
+  }
+};
+static GestureFsm gFsm[5];
+static void gestureKey(uint8_t lay, uint8_t i, char g, char* out) {          // NVS key of a hold ('h') / double-tap ('d') action: "hs3", "dL1s3"
+  char b[8]; slotKey(lay, i, b); out[0] = g; strcpy(out + 1, b);
+}
+static void loadGestureFlags() {
+  for (uint8_t l = 0; l < LAYERS; l++) {
+    gHold[l] = gDbl[l] = 0;
+    for (uint8_t i = 0; i < 5; i++) {
+      char k[10]; gestureKey(l, i, 'h', k); if (prefs.isKey(k)) gHold[l] |= (1 << i);
+      gestureKey(l, i, 'd', k); if (prefs.isKey(k)) gDbl[l] |= (1 << i);
+    }
+  }
+}
+static void runGesture(uint8_t i, char g) {
+  char k[10]; gestureKey(curLayer, i, g, k);
+  String js = prefs.getString(k, "");
+  if (!js.length()) return;
+  JsonDocument d;
+  if (deserializeJson(d, js)) return;
+  std::vector<Step> steps;
+  if (parseSpec(d.as<JsonVariantConst>(), steps)) macroStart(steps);
+}
+// ---- dial acceleration: the faster the dial turns, the more often the action (volume ...) repeats
+static uint8_t accelMult(uint32_t dtPerDetent, uint8_t level) {
+  if (level == 0) return 1;
+  if (dtPerDetent < 35) return level == 1 ? 3 : 6;
+  if (dtPerDetent < 80) return level == 1 ? 2 : 4;
+  if (level == 2 && dtPerDetent < 140) return 2;
+  return 1;
+}
+static void onKey(int i) {                              // the key's TAP action
   flashAt = millis(); needRedraw = true;                  // key-press ring (sprite screens)
+  activity();
   if (menuOpen) uiTouch();
   if (mode == M_POMO && i < 2) { if (i == 0) pomoToggle(); else pomoReset(); return; }   // K1/K2 = timer controls in focus mode
   runSlot(i);
+}
+static void onKeyGesture(int i, char g) {               // 'h' hold / 'd' double-tap
+  flashAt = millis(); needRedraw = true; activity();
+  if (menuOpen) { uiTouch(); return; }
+  runGesture(i, g);
 }
 static void onEncSteps(int steps) {
   if (menuOpen) { menuTurn(steps); return; }
@@ -1362,18 +1531,27 @@ static void onEncSteps(int steps) {
     pomoMinutes = (uint8_t)constrain((int)pomoMinutes + steps, 1, 90);
     pomoRemain = pomoMinutes * 60000UL; needRedraw = true; return;
   }
+  uint32_t now = millis();
+  uint32_t dt = turnDtOverride >= 0 ? (uint32_t)turnDtOverride : (lastTurnAt ? now - lastTurnAt : 1000);
+  turnDtOverride = -1; lastTurnAt = now;
   int n = steps < 0 ? -steps : steps;
+  n *= accelMult(dt / (uint32_t)(n ? n : 1), dialAccel);
+  if (n > 24) n = 24;
+  lastTurnRuns = (uint8_t)n;
   for (int i = 0; i < n; i++) runSlot(steps > 0 ? 5 : 6);
 }
 static void encTurned(int steps) {                       // every detent, whatever screen / menu state: counter + event for the Dev tab
+  activity();
   encPos += steps;
   evtEnc(steps > 0 ? 1 : -1, encPos);
 }
 static void onEncClick() {
+  activity();
   if (menuOpen) { menuClick(); return; }
   menuOpen = true; menuSel = 0; menuEdit = 0; menuMode = mode; savedBright = brightness; uiTouch(); needRedraw = true;
 }
 static void onEncLong() {
+  activity();
   if (menuOpen) { menuCloseNow(); return; }
   setMode(mode % NUM_MODES + 1);
 }
@@ -1384,10 +1562,21 @@ static void IRAM_ATTR encISR() {
   encAccum += (gpio_get_level((gpio_num_t)PIN_ENC_A) != gpio_get_level((gpio_num_t)PIN_ENC_B)) ? 1 : -1;   // IRAM-safe reads
 }
 static void inputsService() {
+  uint32_t now = millis();
+  static bool gInit = false;
+  if (!gInit) {                                                 // a key already held at power-up must not count as a press
+    gInit = true;
+    for (int i = 0; i < 5; i++) if (keyBtn[i].read() == LOW) { gFsm[i].down = true; gFsm[i].consumed = true; gFsm[i].downAt = now; }
+  }
   for (int i = 0; i < 5; i++) {
     keyBtn[i].update();
-    if (keyBtn[i].fell()) { evtKey(i + 1, 1); onKey(i); }
+    if (keyBtn[i].fell()) { evtKey(i + 1, 1); flashAt = now; needRedraw = true; activity(); }
     if (keyBtn[i].rose()) evtKey(i + 1, 0);
+    bool hh = (gHold[curLayer] >> i) & 1, dd = (gDbl[curLayer] >> i) & 1;
+    uint8_t m = gFsm[i].step(keyBtn[i].read() == LOW, now, hh, dd);          // INPUT_PULLUP: pressed = LOW
+    if (m & G_TAP) onKey(i);
+    if (m & G_HOLD) onKeyGesture(i, 'h');
+    if (m & G_DOUBLE) onKeyGesture(i, 'd');
   }
   encBtn.update();
   if (encBtn.fell()) { encDownAt = millis(); encHeld = true; encLongDone = false; evtEncSw(1); }
@@ -1491,6 +1680,7 @@ static void cmdHello() {
   d["layer"] = curLayer; d["layers"] = LAYERS; d["modes"] = NUM_MODES;
   JsonArray cp = d["caps"].to<JsonArray>();
   cp.add("layers"); cp.add("mouse"); cp.add("host"); cp.add("info"); cp.add("gifslots"); cp.add("factory");
+  cp.add("hostx"); cp.add("gestures"); cp.add("dialaccel"); cp.add("clockstyle"); cp.add("saver"); cp.add("nightdim");   // firmware 1.3
   if (DC_ENABLE_WIFI) cp.add("wifi");
   if (DC_HAS_OTA) cp.add("ota");
   sendDoc(d);
@@ -1518,7 +1708,8 @@ static void cmdInfo() {
   d["fs_free"] = okFs ? fsFreeBytes() : 0; d["fs_total"] = okFs ? (uint32_t)LittleFS.totalBytes() : 0;
   d["rx_ms_ago"] = lastRxMs ? (uint32_t)(millis() - lastRxMs) : 0; d["events"] = eventsOn; d["gpio_touched"] = gpioTouched;
   d["led_pin"] = PIN_RGB; d["led_mode"] = ledMode; d["mode"] = mode; d["bright"] = brightness;
-  d["safe_why"] = !safeMode ? "" : DC_FORCE_SAFE ? "forced" : "crash_loop"; d["nodisp"] = dispOff; d["disp_why"] = dispWhy; d["ota"] = otaOn; d["layer"] = curLayer;
+  d["safe_why"] = !safeMode ? "" : DC_FORCE_SAFE ? "forced" : "crash_loop"; d["nodisp"] = dispOff; d["disp_why"] = dispWhy;
+  d["bl"] = lastBl; d["saver_on"] = saverOn; d["ota"] = otaOn; d["layer"] = curLayer;
   d["ip"] = wifiIp(); d["wifi_build"] = (bool)DC_ENABLE_WIFI;
   d["boot"] = bootLog;
   sendDoc(d);
@@ -1699,6 +1890,16 @@ static void cmdGetKeys(JsonDocument& doc) {                // lets the app verif
   if (!doc["slot"].isNull()) {                              // one slot with its full spec (stored or default)
     int sl = doc["slot"].as<int>();
     if (sl < 1 || sl > 7) { nack("key"); return; }
+    const char* gest = doc["gesture"] | "tap";
+    if (strcmp(gest, "tap")) {                                // a hold / double-tap action: stored or absent (there is no default)
+      char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : 0;
+      if (!gch || sl > 5) { nack("gesture"); return; }
+      char gk[10]; gestureKey((uint8_t)lay, (uint8_t)(sl - 1), gch, gk);
+      String gj = prefs.getString(gk, "");
+      d["s"] = sl; d["g"] = gest; d["set"] = gj.length() > 0;
+      if (gj.length()) { JsonDocument sp; if (!deserializeJson(sp, gj)) d["spec"] = sp; }
+      sendDoc(d); return;
+    }
     char k[8]; slotKey((uint8_t)lay, (uint8_t)(sl - 1), k);
     String js = prefs.getString(k, "");
     d["s"] = sl; d["def"] = js.length() == 0;
@@ -1713,6 +1914,7 @@ static void cmdGetKeys(JsonDocument& doc) {                // lets the app verif
     String js = prefs.getString(k, "");
     JsonObject o = a.add<JsonObject>();
     o["s"] = i + 1; o["def"] = js.length() == 0; o["len"] = (uint32_t)js.length();
+    if (i < 5) { o["h"] = (bool)((gHold[lay] >> i) & 1); o["d"] = (bool)((gDbl[lay] >> i) & 1); }
     o["crc"] = js.length() ? crc32u(0, (const uint8_t*)js.c_str(), js.length()) : 0u;
   }
   sendDoc(d);
@@ -1759,7 +1961,8 @@ static void cmdFactory(JsonDocument& doc) {
   const char* what = doc["what"] | "settings";
   bool reboot = doc["reboot"] | true;
   if (!strcmp(what, "keys")) {
-    for (uint8_t l = 0; l < LAYERS; l++) for (uint8_t i = 0; i < 7; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); }
+    for (uint8_t l = 0; l < LAYERS; l++) for (uint8_t i = 0; i < 7; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); if (i < 5) { char g[10]; gestureKey(l, i, 'h', g); prefs.remove(g); gestureKey(l, i, 'd', g); prefs.remove(g); } }
+    loadGestureFlags();
     ack("factory");
   } else if (!strcmp(what, "settings")) {
     prefs.clear();
@@ -1820,11 +2023,18 @@ static void cmdInput(JsonDocument& doc) {               // virtual key presses: 
   if (!doc["k"].isNull()) {
     int k = doc["k"] | 0;
     if (k < 1 || k > 5) { nack("key"); return; }
+    const char* g = doc["g"] | "tap";
+    if (!strcmp(g, "hold") || !strcmp(g, "double")) { evtKey(k, 1); onKeyGesture(k - 1, g[0] == 'h' ? 'h' : 'd'); evtKey(k, 0); ack("input"); return; }
+    if (strcmp(g, "tap")) { nack("gesture"); return; }
     evtKey(k, 1); onKey(k - 1); evtKey(k, 0);
   } else if (!doc["turn"].isNull()) {
     int t = doc["turn"] | 0;
     if (t == 0 || t > 20 || t < -20) { nack("turn"); return; }
+    turnDtOverride = doc["dt"].isNull() ? -1 : (int32_t)constrain(doc["dt"].as<int>(), 0, 5000);
+    lastTurnRuns = 0;
     encTurned(t); onEncSteps(t);
+    turnDtOverride = -1;
+    JsonDocument r; r["ok"] = true; r["evt"] = "input"; r["runs"] = lastTurnRuns; sendDoc(r); return;
   } else if (doc["click"] | false) onEncClick();
   else if (doc["hold"] | false) onEncLong();
   else { nack("input"); return; }
@@ -1838,6 +2048,67 @@ static bool cmdDebug(const char* cmd) {                  // emulator-only: provo
 #else
 static bool cmdDebug(const char* cmd) { (void)cmd; return false; }
 #endif
+// ---- {"cmd":"settings", ...}: v1.3 behaviour settings; every field optional, no field = just read. Validates everything before changing anything.
+static void settingsReply() {
+  JsonDocument d; d["ok"] = true; d["evt"] = "settings";
+  d["dial_accel"] = dialAccel; d["clock_style"] = clockStyle; d["saver_s"] = saverSec; d["saver_style"] = saverStyle;
+  d["night_on"] = nightOn; d["night_from"] = nightFrom; d["night_to"] = nightTo; d["night_level"] = nightLevel;
+  d["bl"] = lastBl; d["saver_on"] = saverOn;
+  sendDoc(d);
+}
+static bool optInt(JsonDocument& doc, const char* key, int lo, int hi, int& out, bool& bad) {
+  if (doc[key].isNull()) return false;
+  if (!doc[key].is<int>()) { bad = true; return false; }
+  int v = doc[key].as<int>();
+  if (v < lo || v > hi) { bad = true; return false; }
+  out = v; return true;
+}
+static void cmdSettings(JsonDocument& doc) {
+  bool bad = false; int da = dialAccel, cs = clockStyle, ss = saverSec, st = saverStyle, nf = nightFrom, nt = nightTo, nl = nightLevel;
+  bool hDa = optInt(doc, "dial_accel", 0, 2, da, bad), hCs = optInt(doc, "clock_style", 0, 3, cs, bad), hSs = optInt(doc, "saver_s", 0, 3600, ss, bad),
+       hSt = optInt(doc, "saver_style", 1, 3, st, bad), hNf = optInt(doc, "night_from", 0, 23, nf, bad), hNt = optInt(doc, "night_to", 0, 23, nt, bad),
+       hNl = optInt(doc, "night_level", 5, 255, nl, bad);
+  bool hNo = !doc["night_on"].isNull();
+  if (hNo && !doc["night_on"].is<bool>()) bad = true;
+  if (bad) { nack("settings"); return; }
+  if (hDa) { dialAccel = (uint8_t)da; prefs.putUChar("dacc", dialAccel); }
+  if (hCs) { clockStyle = (uint8_t)cs; prefs.putUChar("cstyle", clockStyle); needRedraw = true; }
+  if (hSs) { saverSec = (uint16_t)ss; prefs.putUShort("savs", saverSec); activity(); }
+  if (hSt) { saverStyle = (uint8_t)st; prefs.putUChar("savst", saverStyle); needRedraw = true; }
+  if (hNf) { nightFrom = (uint8_t)nf; prefs.putUChar("nd_f", nightFrom); }
+  if (hNt) { nightTo = (uint8_t)nt; prefs.putUChar("nd_t", nightTo); }
+  if (hNl) { nightLevel = (uint8_t)nl; prefs.putUChar("nd_l", nightLevel); }
+  if (hNo) { nightOn = doc["night_on"].as<bool>(); prefs.putBool("nd_on", nightOn); }
+  if (hNf || hNt || hNl || hNo) applyBacklight();
+  settingsReply();
+}
+// ---- {"cmd":"gesture_test","hold":true,"dbl":false,"seq":[[1,0],[0,120],...]}: replays [pressed, ms] events through the gesture state
+// machine with the given timing and answers with what it would fire, as [[ms,"tap|hold|double"],...]. Does not run any action.
+static void cmdGestureTest(JsonDocument& doc) {
+  bool hh = doc["hold"] | false, dd = doc["dbl"] | false;
+  JsonArrayConst seq = doc["seq"].as<JsonArrayConst>();
+  if (seq.isNull() || seq.size() == 0 || seq.size() > 24) { nack("seq"); return; }
+  JsonDocument out; out["ok"] = true; out["evt"] = "gesture_test"; JsonArray fired = out["fired"].to<JsonArray>();
+  GestureFsm f; uint32_t last = 0;
+  auto emit = [&](uint8_t m, uint32_t t) {
+    if (m & G_TAP) { JsonArray a = fired.add<JsonArray>(); a.add(t); a.add("tap"); }
+    if (m & G_HOLD) { JsonArray a = fired.add<JsonArray>(); a.add(t); a.add("hold"); }
+    if (m & G_DOUBLE) { JsonArray a = fired.add<JsonArray>(); a.add(t); a.add("double"); }
+  };
+  for (JsonVariantConst ev : seq) {
+    if (ev.size() != 2) { nack("seq"); return; }
+    bool down = ev[0].as<int>() != 0; uint32_t t = ev[1].as<uint32_t>();
+    if (t < last) { nack("seq"); return; }
+    for (int guard = 0; guard < 4; guard++) {                       // idle moments before this event (the real loop calls step() every ms)
+      uint32_t dl = f.deadline(hh);
+      if (!dl || dl > t) break;
+      emit(f.step(f.down, dl, hh, dd), dl);
+    }
+    emit(f.step(down, t, hh, dd), t); last = t;
+  }
+  for (int guard = 0; guard < 4; guard++) { uint32_t dl = f.deadline(hh); if (!dl) break; emit(f.step(f.down, dl, hh, dd), dl); }
+  sendDoc(out);
+}
 static void cmdReboot(JsonDocument& doc) {
   const char* m = doc["mode"] | "normal";
   ack("reboot");
@@ -1889,6 +2160,15 @@ static void handleLine(const String& line) {
   else if (!strcmp(cmd, "remap")) {
     int key = doc["key"] | 0;
     if (key < 1 || key > 7) { nack("key"); return; }
+    const char* gest = doc["gesture"] | "tap";
+    char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : 0;
+    if (strcmp(gest, "tap") && !gch) { nack("gesture"); return; }
+    if (gch && key > 5) { nack("key"); return; }                      // only the five keys have hold / double-tap actions
+    int glay = doc["layer"] | 0;
+    if (glay < 0 || glay >= LAYERS) { nack("layer"); return; }
+    if (gch && (doc["clear"] | false)) {                             // remove a hold / double-tap action again
+      char gk[10]; gestureKey((uint8_t)glay, (uint8_t)(key - 1), gch, gk); prefs.remove(gk); loadGestureFlags(); ack("remap"); return;
+    }
     JsonDocument spec;
     spec["type"] = doc["type"]; spec["val"] = doc["val"];
     std::vector<Step> tmp;
@@ -1897,17 +2177,22 @@ static void handleLine(const String& line) {
     if (s.length() > 3800) { nack("too_long"); return; }
     int lay = doc["layer"] | 0;
     if (lay < 0 || lay >= LAYERS) { nack("layer"); return; }
-    char k[8]; slotKey((uint8_t)lay, (uint8_t)(key - 1), k);
+    char k[10];
+    if (gch) gestureKey((uint8_t)lay, (uint8_t)(key - 1), gch, k); else slotKey((uint8_t)lay, (uint8_t)(key - 1), k);
     if (prefs.putString(k, s) == 0) { nack("nvs_full"); return; }   // NVS (~20KB) can fill up with several large macros
+    if (gch) loadGestureFlags();
     ack("remap");
   }
+  else if (!strcmp(cmd, "settings")) cmdSettings(doc);
+  else if (!strcmp(cmd, "gesture_test")) cmdGestureTest(doc);
   else if (!strcmp(cmd, "reset_keys")) {
     int only = doc["layer"] | -1;                                    // omitted = every layer
-    for (uint8_t l = 0; l < LAYERS; l++) { if (only >= 0 && l != only) continue; for (uint8_t i = 0; i < 7; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); } }
+    for (uint8_t l = 0; l < LAYERS; l++) { if (only >= 0 && l != only) continue; for (uint8_t i = 0; i < 7; i++) { char k[8]; slotKey(l, i, k); prefs.remove(k); if (i < 5) { char g[10]; gestureKey(l, i, 'h', g); prefs.remove(g); gestureKey(l, i, 'd', g); prefs.remove(g); } } }
+    loadGestureFlags();
     ack("reset_keys");
   }
   else if (!strcmp(cmd, "brightness")) {
-    brightness = (uint8_t)constrain(doc["val"].as<int>(), 5, 255); backlightSet(brightness);
+    brightness = (uint8_t)constrain(doc["val"].as<int>(), 5, 255); applyBacklight();
     if (brightness != savedBright) { prefs.putUChar("bright", brightness); savedBright = brightness; }
     ack("brightness");
   }
@@ -2031,6 +2316,14 @@ static void loadSettings() {
   tzOff = prefs.getInt("tz", 0);
   gifRot = prefs.getUShort("grot", 0); if (gifRot > 3600) gifRot = 0;
   dispOff = prefs.getBool("nodisp", false);
+  dialAccel = prefs.getUChar("dacc", 0); if (dialAccel > 2) dialAccel = 0;
+  clockStyle = prefs.getUChar("cstyle", 0); if (clockStyle > 3) clockStyle = 0;
+  saverSec = prefs.getUShort("savs", 0); if (saverSec > 3600) saverSec = 0;
+  saverStyle = prefs.getUChar("savst", 1); if (saverStyle < 1 || saverStyle > 3) saverStyle = 1;
+  nightOn = prefs.getBool("nd_on", false);
+  nightFrom = prefs.getUChar("nd_f", 22); if (nightFrom > 23) nightFrom = 22;
+  nightTo = prefs.getUChar("nd_t", 7); if (nightTo > 23) nightTo = 7;
+  nightLevel = prefs.getUChar("nd_l", 30); if (nightLevel < 5) nightLevel = 30;
   otaOn = prefs.getBool("ota", false); otaPw = prefs.getString("otapw", "");
   ledMode = prefs.getUChar("ledm", 0) == 1 ? LM_OFF : LM_AUTO;
   wifiSsid = prefs.getString("ssid", ""); wifiPass = prefs.getString("wpass", "");
@@ -2061,6 +2354,8 @@ void setup() {
   okPrefs = prefs.begin("deskcomp", false);
   bootNote("prefs", okPrefs);
   loadSettings();                    // needs kbLayout before Keyboard.begin() below
+  loadGestureFlags();
+  lastActivity = millis();
 
   upChunk = (Serial.setRxBufferSize(8192) >= 4096) ? 768 : 128;  // core 2.0.x cannot grow the RX queue after boot -> small chunks
   Serial.begin(115200);
@@ -2128,7 +2423,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), encISR, CHANGE);
   if (mode == M_GIF && okDisp) gifRestart = true;
   else renderFrame();
-  backlightSet(brightness);
+  applyBacklight();
 
   ledReady = true;                   // from here the LED shows the heartbeat (green = ok, amber = degraded, red = safe mode)
   ledNextAt = 0;
@@ -2147,6 +2442,15 @@ void loop() {
   if (mode == M_INFO && nCards > 1 && cardRotSec && (uint32_t)(now - cardAt) >= (uint32_t)cardRotSec * 1000UL) { cardIdx = (cardIdx + 1) % nCards; cardAt = now; needRedraw = true; }
 
   if (fsStartAt && (int32_t)(now - fsStartAt) >= 0) { fsStartAt = 0; fsStartAsync(fsTask, FS_MOUNTING); }
+  { static uint32_t svAt = 0, ndAt = 0;                         // screensaver start / night dimming follow the clock, twice a second / every 15 s
+    if ((uint32_t)(now - svAt) >= 500) {
+      svAt = now;
+      bool can = saverSec > 0 && okSprite && mode != M_GIF && !menuOpen && !uploading && !dispHoldUntil && !(mode == M_POMO && pomoState == PS_RUN);
+      bool want = can && (uint32_t)(now - lastActivity) >= (uint32_t)saverSec * 1000UL;
+      if (want != saverOn) { saverOn = want; needRedraw = true; }
+    }
+    if ((uint32_t)(now - ndAt) >= 15000) { ndAt = now; if (nightOn && effBright() != lastBl) applyBacklight(); }
+  }
   if (uploading && now - upLast > 6000) uploadAbort();           // host vanished mid-upload
   if (menuOpen && now - menuTouched > MENU_TIMEOUT_MS) menuCloseNow();
   if (timeSynced && now - lastEpochSave > 1800000UL) { lastEpochSave = now; prefs.putULong("epoch", (uint32_t)time(nullptr)); }

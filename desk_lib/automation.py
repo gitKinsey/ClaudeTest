@@ -4,7 +4,7 @@ from datetime import datetime
 
 import customtkinter as ctk
 
-from desk_lib import scheduler, ui
+from desk_lib import padextras, scheduler, ui
 
 WHEN_KINDS = ["Every day", "Weekdays", "Weekends", "Every N minutes", "Once"]
 # label -> (kind of rule action, host op or None, hint)
@@ -107,6 +107,7 @@ class AutomationPage:
         ctk.CTkButton(r3, text="Add rule", width=100, command=self.add).pack(side="left", padx=6)
         self._when_changed()
         self.refresh()
+        self.gestures = padextras.GesturePanel(app, sc)
         self._build_api(sc)
 
     # ---- local API

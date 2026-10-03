@@ -180,7 +180,7 @@ def t_first_boot_responsive(c):
 
 def t_hello(c):
     h = c.e.request({"cmd": "hello"})
-    expect(h["ok"] and h["dev"] == "desk-companion" and h["fw"] == "1.2.0", f"bad hello {h}")
+    expect(h["ok"] and h["dev"] == "desk-companion" and h["fw"] == "1.3.0", f"bad hello {h}")
     for k in ("mode", "bright", "os", "fs_free", "fs_total", "layout", "hid", "disp", "fs", "safe", "led_pin"):
         expect(k in h, f"hello lacks {k}")
     expect(h["led_pin"] == 21, "LED pin should default to GPIO21 (Waveshare ESP32-S3-Zero)")
@@ -698,6 +698,169 @@ def t_gif_slots(c):
     e.request({"cmd": "mode", "val": 1})
 
 
+def t_gestures(c):
+    """Hold / double-tap actions: stored per key and layer, and the gesture state machine with synthetic timing."""
+    e = c.e
+    e.request({"cmd": "reset_keys"})
+
+    def gt(seq, hold, dbl):
+        r = e.request({"cmd": "gesture_test", "hold": hold, "dbl": dbl, "seq": seq})
+        expect(r["ok"], f"gesture_test {r}")
+        return r["fired"]
+    # a plain key acts the moment it is pressed (nothing changes for keys without gestures)
+    expect(gt([[1, 0], [0, 100]], False, False) == [[0, "tap"]], "plain key: tap on press")
+    expect(gt([[1, 0], [0, 900]], False, False) == [[0, "tap"]], "plain key held long: still one tap")
+    # hold only: tap on release (short), hold after 450 ms (and no tap afterwards)
+    expect(gt([[1, 0], [0, 200]], True, False) == [[200, "tap"]], "hold-key short press = tap on release")
+    expect(gt([[1, 0], [0, 700]], True, False) == [[450, "hold"]], "hold-key long press = hold at 450 ms, no tap")
+    expect(gt([[1, 0], [0, 449]], True, False) == [[449, "tap"]], "449 ms is still a tap")
+    # double-tap only: single tap is delayed by the 260 ms window
+    expect(gt([[1, 0], [0, 80]], False, True) == [[341, "tap"]], "single tap fires when the double-tap window closes")
+    expect(gt([[1, 0], [0, 80], [1, 200], [0, 260]], False, True) == [[200, "double"]], "second press inside the window = double")
+    expect(gt([[1, 0], [0, 50], [1, 100], [0, 150], [1, 200], [0, 250]], False, True) == [[100, "double"], [511, "tap"]], "triple = double + tap")
+    expect(gt([[1, 0], [0, 100], [1, 400], [0, 450]], False, True) == [[361, "tap"], [711, "tap"]], "two slow taps = two taps")
+    # both
+    expect(gt([[1, 0], [0, 100]], True, True) == [[361, "tap"]], "both: single tap")
+    expect(gt([[1, 0], [0, 600]], True, True) == [[450, "hold"]], "both: hold")
+    expect(gt([[1, 0], [0, 100], [1, 300], [0, 400]], True, True) == [[300, "double"]], "both: double")
+    expect(gt([[1, 0], [0, 100], [1, 300], [0, 900]], True, True) == [[300, "double"]], "both: holding the 2nd press does not add a hold after a double")
+    # bad input
+    for bad in ([], [[1]], [[1, 100], [0, 50]], [[1, 0]] * 30):
+        expect(e.request({"cmd": "gesture_test", "seq": bad})["err"] == "seq", f"bad seq {bad[:2]}")
+    # storage: per key, per layer, per gesture; defaults do not exist for gestures
+    n = {"op": "notify"}
+    expect(e.request({"cmd": "remap", "key": 2, "gesture": "hold", "type": "host", "val": dict(n, arg="hold2")})["ok"], "remap hold")
+    expect(e.request({"cmd": "remap", "key": 2, "gesture": "double", "layer": 1, "type": "host", "val": dict(n, arg="dbl2")})["ok"], "remap double on layer 2")
+    g0, g1 = e.request({"cmd": "getkeys", "layer": 0}), e.request({"cmd": "getkeys", "layer": 1})
+    expect(g0["slots"][1]["h"] is True and g0["slots"][1]["d"] is False and g1["slots"][1]["d"] is True and g1["slots"][1]["h"] is False, f"flags {g0['slots'][1]} {g1['slots'][1]}")
+    expect(g0["slots"][0]["h"] is False and "h" not in g0["slots"][5], "keys 1-5 only carry gesture flags")
+    r = e.request({"cmd": "getkeys", "layer": 0, "slot": 2, "gesture": "hold"})
+    expect(r["set"] is True and r["spec"] == {"type": "host", "val": {"op": "notify", "arg": "hold2"}}, f"gesture spec {r}")
+    r = e.request({"cmd": "getkeys", "layer": 0, "slot": 2, "gesture": "double"})
+    expect(r["set"] is False and "spec" not in r, f"unset gesture {r}")
+    expect(e.request({"cmd": "remap", "key": 6, "gesture": "hold", "type": "text", "val": "x"})["err"] == "key", "dial has no gestures")
+    expect(e.request({"cmd": "remap", "key": 1, "gesture": "wiggle", "type": "text", "val": "x"})["err"] == "gesture", "unknown gesture")
+    expect(e.request({"cmd": "remap", "key": 1, "gesture": "hold", "type": "banana", "val": "x"})["err"] == "spec", "gesture spec is validated like a tap spec")
+    expect(e.request({"cmd": "getkeys", "slot": 6, "gesture": "hold"})["err"] == "gesture", "getkeys gesture on the dial")
+    # virtual presses: tap / hold / double run the matching action (the pad asks the app through host events)
+    expect(e.request({"cmd": "remap", "key": 2, "type": "host", "val": dict(n, arg="tap2")})["ok"], "tap action")
+    expect(e.request({"cmd": "remap", "key": 2, "gesture": "double", "type": "host", "val": dict(n, arg="dbl2-l1")})["ok"], "double on layer 1")
+    got = {}
+    for g in ("tap", "hold", "double"):
+        e.msgs.clear()
+        expect(e.request({"cmd": "input", "k": 2, "g": g})["ok"], f"virtual {g}")
+        e.pump(0.5)
+        got[g] = [m["arg"] for m in e.msgs if m.get("evt") == "host"]
+    expect(got == {"tap": ["tap2"], "hold": ["hold2"], "double": ["dbl2-l1"]}, f"virtual gestures: {got}")
+    expect(e.request({"cmd": "input", "k": 2, "g": "wiggle"})["err"] == "gesture", "virtual unknown gesture")
+    e.msgs.clear(); e.request({"cmd": "input", "k": 3, "g": "hold"}); e.pump(0.3)
+    expect(not [m for m in e.msgs if m.get("evt") == "host"], "a gesture that is not set does nothing")
+    # persistence across a power cycle, clearing, reset
+    e.power_cycle(); e.wait_boot(90, need_fs=False)
+    g0 = e.request({"cmd": "getkeys", "layer": 0})
+    expect(g0["slots"][1]["h"] is True and g0["slots"][1]["d"] is True, f"gesture flags after power cycle: {g0['slots'][1]}")
+    expect(e.request({"cmd": "remap", "key": 2, "gesture": "hold", "clear": True})["ok"], "clear a gesture")
+    expect(e.request({"cmd": "getkeys", "layer": 0})["slots"][1]["h"] is False, "cleared")
+    expect(e.request({"cmd": "reset_keys", "layer": 0})["ok"], "reset layer 1")
+    g0 = e.request({"cmd": "getkeys", "layer": 0})
+    expect(all(not s.get("h") and not s.get("d") for s in g0["slots"]) and e.request({"cmd": "getkeys", "layer": 1})["slots"][1]["d"] is True, "reset clears gestures of that layer only")
+    expect(e.request({"cmd": "factory", "confirm": True, "what": "keys"})["ok"], "factory keys")
+    expect(not any(s.get("d") for s in e.request({"cmd": "getkeys", "layer": 1})["slots"]), "factory keys also clears gestures")
+    e.request({"cmd": "reset_keys"})
+
+
+def t_settings(c):
+    """Dial acceleration, clock styles, screensaver and night dimming (the v1.3 behaviour settings)."""
+    e = c.e
+    h = e.request({"cmd": "hello"})
+    for cap in ("hostx", "gestures", "dialaccel", "clockstyle", "saver", "nightdim"):
+        expect(cap in h["caps"], f"capability {cap} missing: {h['caps']}")
+    expect(h["fw"] == "1.3.0", f"firmware version {h['fw']}")
+    st = e.request({"cmd": "settings"})
+    expect(st["evt"] == "settings" and st["dial_accel"] == 0 and st["clock_style"] == 0 and st["saver_s"] == 0 and st["night_on"] is False, f"defaults {st}")
+    for bad in ({"dial_accel": 3}, {"clock_style": 4}, {"saver_s": 3601}, {"saver_style": 0}, {"night_from": 24}, {"night_level": 4}, {"night_on": 1}, {"dial_accel": "x"}):
+        expect(e.request({"cmd": "settings", **bad})["err"] == "settings", f"accepted {bad}")
+    expect(e.request({"cmd": "settings"})["dial_accel"] == 0, "a refused settings call changes nothing")
+    # ---- dial acceleration (virtual turns with a pretend interval between detents)
+    expect(e.request({"cmd": "remap", "key": 6, "type": "host", "val": {"op": "notify", "arg": "cw"}})["ok"], "dial action")
+    def runs(turn, dt):
+        e.msgs.clear()
+        r = e.request({"cmd": "input", "turn": turn, "dt": dt})
+        e.pump(0.4)
+        return r["runs"], len([m for m in e.msgs if m.get("evt") == "host"])
+    expect(runs(1, 10) == (1, 1), "acceleration off: one run")
+    e.request({"cmd": "settings", "dial_accel": 1})
+    expect([runs(1, dt)[0] for dt in (10, 60, 200)] == [3, 2, 1], "level 1: fast = 3x, medium = 2x, slow = 1x")
+    expect(runs(2, 40)[0] == 6, "per-detent speed counts: 2 detents in 40 ms = 20 ms each")
+    e.request({"cmd": "settings", "dial_accel": 2})
+    expect([runs(1, dt)[0] for dt in (10, 60, 100, 200)] == [6, 4, 2, 1], "level 2")
+    expect(runs(20, 0)[0] == 24, "bounded to 24 runs")
+    r = runs(-1, 10); expect(r[0] == 6, "counter-clockwise accelerates too")
+    e.request({"cmd": "settings", "dial_accel": 0}); e.request({"cmd": "reset_keys"})
+    # ---- clock styles render different, non-empty pictures
+    import calendar
+    noon = calendar.timegm((2026, 10, 3, 23, 30, 5))
+    e.request({"cmd": "time", "epoch": noon, "tz": 0}); e.request({"cmd": "mode", "val": 1})
+    imgs = []
+    for style in range(4):
+        expect(e.request({"cmd": "settings", "clock_style": style})["clock_style"] == style, f"style {style}")
+        e.pump(0.6)
+        img = rgb565be_to_image(snapshot(e))
+        lit = sum(1 for px in img.getdata() if px != (0, 0, 0))
+        expect(lit > 800, f"clock style {style} looks empty ({lit} lit pixels)")
+        c.save(img, f"clock_style_{style}.png")
+        imgs.append(img.tobytes())
+    expect(len(set(imgs)) == 4, "the four clock styles must look different")
+    e.request({"cmd": "settings", "clock_style": 0})
+    # ---- night dimming
+    expect(e.request({"cmd": "brightness", "val": 200})["ok"], "brightness")
+    st = e.request({"cmd": "settings", "night_on": True, "night_from": 22, "night_to": 7, "night_level": 20})
+    expect(st["bl"] == 20, f"23:30 is inside 22-07: backlight capped to 20, got {st['bl']}")
+    expect(e.request({"cmd": "info"})["bl"] == 20 and e.request({"cmd": "info"})["bright"] == 200, "the user's brightness is kept, only the output is capped")
+    e.request({"cmd": "time", "epoch": calendar.timegm((2026, 10, 3, 12, 0, 0)), "tz": 0})
+    t0 = time.time()
+    while time.time() - t0 < 20 and e.request({"cmd": "info"})["bl"] != 200:
+        e.pump(1.0)
+    expect(e.request({"cmd": "info"})["bl"] == 200, "noon is outside the night window: the loop restores the brightness on its own")
+    e.request({"cmd": "time", "epoch": calendar.timegm((2026, 10, 3, 3, 0, 0)), "tz": 0})
+    expect(e.request({"cmd": "settings", "night_from": 2, "night_to": 5})["bl"] == 20, "a window that does not wrap midnight")
+    expect(e.request({"cmd": "settings", "night_from": 4, "night_to": 4})["bl"] == 200, "from == to = never")
+    expect(e.request({"cmd": "settings", "night_from": 0, "night_to": 23, "night_level": 250})["bl"] == 200, "the cap never raises the brightness")
+    e.request({"cmd": "settings", "night_on": False})
+    # ---- screensaver
+    e.request({"cmd": "mode", "val": 1})
+    expect(e.request({"cmd": "settings", "saver_s": 1, "saver_style": 1})["saver_s"] == 1, "saver on")
+    t0 = time.time()
+    while time.time() - t0 < 6 and not e.request({"cmd": "info"})["saver_on"]:
+        e.pump(0.5)
+    expect(e.request({"cmd": "info"})["saver_on"] is True, "screensaver did not start after 1 s idle")
+    for style in (1, 2, 3):
+        e.request({"cmd": "settings", "saver_style": style}); e.pump(0.8)
+        img = rgb565be_to_image(snapshot(e))
+        lit = sum(1 for px in img.getdata() if px != (0, 0, 0))
+        expect(0 < lit < 12000, f"saver style {style}: {lit} lit pixels")
+        c.save(img, f"saver_{style}.png")
+    e.request({"cmd": "input", "turn": 1})                       # any dial turn / key press wakes it
+    expect(e.request({"cmd": "info"})["saver_on"] is False, "input wakes the screensaver")
+    e.pump(1.8)
+    expect(e.request({"cmd": "info"})["saver_on"] is True, "and it comes back after the idle time")
+    e.request({"cmd": "mode", "val": 5}); e.pump(1.8)
+    expect(e.request({"cmd": "info"})["saver_on"] is False, "the GIF screen never gets a screensaver")
+    e.request({"cmd": "mode", "val": 1})
+    expect(e.request({"cmd": "settings", "saver_s": 0})["saver_s"] == 0, "saver off")
+    e.pump(1.2)
+    expect(e.request({"cmd": "info"})["saver_on"] is False, "saver off wakes the screen")
+    # ---- everything persists across a power cycle
+    e.request({"cmd": "settings", "dial_accel": 2, "clock_style": 3, "saver_s": 600, "saver_style": 2, "night_on": True, "night_from": 21, "night_to": 6, "night_level": 33})
+    e.power_cycle(); e.wait_boot(90, need_fs=False)
+    st = e.request({"cmd": "settings"})
+    expect((st["dial_accel"], st["clock_style"], st["saver_s"], st["saver_style"], st["night_on"], st["night_from"], st["night_to"], st["night_level"]) ==
+           (2, 3, 600, 2, True, 21, 6, 33), f"settings after power cycle: {st}")
+    e.request({"cmd": "settings", "dial_accel": 0, "clock_style": 0, "saver_s": 0, "saver_style": 1, "night_on": False, "night_from": 22, "night_to": 7, "night_level": 30})
+    e.request({"cmd": "brightness", "val": 200})
+    expect(not e.panicked(), "no crash")
+
+
 def t_recovery(c):
     e = c.e
     expect(e.request({"cmd": "factory"})["err"] == "confirm", "factory needs confirm")
@@ -722,7 +885,7 @@ def t_recovery(c):
 
 
 TESTS = [t_first_boot_responsive, t_hello, t_ping_echo_id, t_info, t_led, t_gpio, t_inputs, t_display_and_snapshot, t_modes_render, t_virtual_input,
-         t_events, t_remap_persistence, t_gif, t_layers, t_new_actions, t_info_screen, t_gif_slots, t_recovery, t_selftest_misc, t_fuzz, t_safe_mode]
+         t_events, t_remap_persistence, t_gif, t_layers, t_new_actions, t_info_screen, t_gif_slots, t_gestures, t_settings, t_recovery, t_selftest_misc, t_fuzz, t_safe_mode]
 
 
 def main():
