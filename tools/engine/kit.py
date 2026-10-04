@@ -47,5 +47,9 @@ class Kit:
     def status(self):
         return self.e.status[0]
 
+    def check_handlers(self):
+        errs = self.e.__dict__.get("handler_errors", [])
+        assert not errs, "an engine event handler raised:\n" + "\n".join(f"{n}: {t}" for n, t in errs[:3])
+
     def close(self):
         self.e.shutdown()

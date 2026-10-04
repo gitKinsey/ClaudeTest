@@ -194,3 +194,15 @@ Everything here needs **no extra hardware**. Items marked *firmware 1.3* are ign
   `~/.desk_companion.json` in plain text.
 * GIF size is bounded by the free flash (about 1.4 MB with the default partition scheme); the app reduces colours / frames
   automatically until it fits and tells you what it did.
+
+## Part 5 - firmware 1.6 helpers for the Qt app (see `docs/FIRMWARE_1_6_CHECKLIST.md`)
+
+| Requirement | Where | Test / what only hardware can prove |
+|---|---|---|
+| The twin, Look tab and layer pill follow the pad's own screen / brightness / layer changes | firmware `evtState`; `Fw16Ops._on_state_event` | `tools/engine/fw16_test.py`, `tools/qt/fw16_ui_test.py`; emulator `t_fw16` (CI). Real dial menu on a pad: not run |
+| Upload to the pad in a few requests | firmware `cmdRemapBatch`; `Fw16Ops._send_remaps` | `fw16_test.py` (batches, all-or-nothing, 1.5 pad falls back to single `remap`), `appglue_test.py` (auto-heal through a batch); real flash wear: not measured |
+| Program name, layer names, banners on the pad; the pad follows the app's accent | `cmdCtx`, `cmdLayerNames`, `cmdToast`, `accentIdx`; `Fw16Ops` | `fw16_test.py`, `fw16_ui_test.py`; emulator screenshots (CI); how they look on the real 240x240 panel: not seen |
+| 120x120 snapshots for the live mirror | `snapScale` in `cmdSnapshot` | `fw16_test.py`, `t_fw16`; allocation of the 28 KB buffer on the real pad: not run |
+| Protocol level, loop-time and over-long-request counters | `PROTO_LEVEL`, `cmdInfo`, `serialService` | `fw16_test.py`, `t_fw16` |
+| Nothing changes for a pad on firmware 1.5 | everything above is behind `caps` | `fw16_test.py` runs the whole app against a simulated 1.5 pad |
+| **The C++ itself** | `DeskCompanion/DeskCompanion.ino` | `tools/fw_snippet_check.py` (host g++ + ArduinoJson); the real compile is the CI matrix - **not run by me** |
