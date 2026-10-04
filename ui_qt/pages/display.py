@@ -25,7 +25,7 @@ class DisplayPage(Page):
         self.twin = PadViewQt(e, interactive=True)
         shell.add_twin(self.twin)
         t.add(self.twin, 1)
-        t.add(flow(button("Show on pad", "ghost", e.show_layer_on_pad)))
+        t.add(flow(button("Show on pad", "secondary", e.show_layer_on_pad)))
         self.grid = PageGrid({"main": self.tabs, "twin": t}, {"wide": [[("main", 4)], [("twin", 1)]], "medium": [[("main", 1)]]},
                              order=["main", "twin"], titles={"main": "Display", "twin": "Pad"}, tabs_factory=None, wide_min=1180, medium_min=720)
         self.root.addWidget(self.grid, 1)

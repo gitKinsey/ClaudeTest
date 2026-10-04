@@ -94,8 +94,6 @@ def main():
             assert k.until(lambda: e.dev.connected, 20), "pad did not come back"
         assert e.dev.request({"cmd": "ping"}), "pad does not answer after the round"
     assert not errors, "\n---\n".join(errors[:3])
-    for pid, page in sh.pages.items():
-        assert page.isVisibleTo(sh) or True
     print(f"monkey test: {n_clicks} clicks, {len(sh.pages)} pages, no exceptions")
     k.close()
     subprocess.Popen = _Popen

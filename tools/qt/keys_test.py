@@ -68,7 +68,6 @@ assert e.cfg["map"]["1"]["action"] == "Mute"
 # ---- the auto-upload switch
 page.autoup.toggle.click()
 assert e.autoup is True
-pick(page.rows[2][1], "Paste") if page.rows[2][0].currentText() == "Editing" else None
 e.drop_assign(2, {"cat": "Editing", "action": "Find"}); k.spin(5)
 assert k.until(lambda: sim.layers[0].get(2, {}).get("val") == ["PRIMARY", "f"], 10), sim.layers[0].get(2)
 page.autoup.toggle.click(); assert e.autoup is False
@@ -77,7 +76,7 @@ page.autoup.toggle.click(); assert e.autoup is False
 page.search.setText("zoom"); k.spin(3)
 tops = [page.tree.topLevelItem(i) for i in range(page.tree.topLevelItemCount())]
 names = [t.child(j).text(0) for t in tops for j in range(t.childCount())]
-assert names and all("zoom" in n.lower() or True for n in names), names
+assert any("zoom" in n.lower() for n in names), names
 page.search.setText("zzzzqqq"); k.spin(3)
 assert page.tree.topLevelItemCount() == 0
 page.search.setText(""); k.spin(3)

@@ -115,7 +115,6 @@ QComboBox QAbstractItemView {{ background: {c('CARD')}; border: 1px solid {c('LI
 QMenu {{ background: {c('CARD')}; border: 1px solid {c('LINE')}; padding: 4px; border-radius: 8px; }}
 QMenu::item {{ padding: {px(6)}px {px(18)}px; border-radius: 5px; }} QMenu::item:selected {{ background: {c('ACCENT_FILL')}; color: #ffffff; }}
 QMenu::separator {{ height: 1px; background: {c('LINE')}; margin: 4px 8px; }}
-QAbstractScrollArea {{ background: transparent; border: none; }}
 QScrollArea {{ background: transparent; border: none; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: {px(10)}px; margin: 2px; }}

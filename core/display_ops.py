@@ -437,9 +437,17 @@ class DisplayOps:
             sig = json.dumps([cards, badges], sort_keys=True)
             last_sig, last_t = self._info_sent
             sent = False
-            if self.dev.connected and not self.dev.busy and int(self.dev.info.get("modes", 5)) >= 6 and (force or sig != last_sig or time.time() - last_t > 60):
+            if not self.dev.connected:
+                self._info_reason = "not sent - the pad is not connected"
+            elif int(self.dev.info.get("modes", 5)) < 6:
+                self._info_reason = "not sent - this firmware has no Info screen"
+            elif self.dev.busy:
+                self._info_reason = "not sent - the pad is busy, trying again shortly"
+            elif force or sig != last_sig or time.time() - last_t > 60:
                 self.dev.request({"cmd": "info_cards", "cards": cards, "badges": badges, "rot": int(self.cfg["info"].get("rot", 6))})
                 self._info_sent, sent = (sig, time.time()), True
+            else:
+                self._info_reason = "the pad already shows these cards (sent " + time.strftime("%H:%M:%S", time.localtime(last_t)) + ")"
             return cards, badges, errs, sent
         self.bg(work, self._info_done, "Info update failed")
 
@@ -454,7 +462,7 @@ class DisplayOps:
             "music": errs.get("music") or "playing: " + (cards[0]["t"] if cards and cards[0]["k"] == "m" else ""),
             "event": errs.get("event") or "",
             "badges": ("badges: " + ", ".join(f"{b['name']} {b['n']}" for b in badges)) if badges else "no badges set",
-            "status": ("sent to the pad " + time.strftime("%H:%M:%S") if sent else "not sent (pad not connected or firmware without Info screen)") +
+            "status": ("sent to the pad " + time.strftime("%H:%M:%S") if sent else getattr(self, "_info_reason", "not sent")) +
                       ("\n" + "\n".join(bad) if bad else "")})
 
     def _info_loop(self):

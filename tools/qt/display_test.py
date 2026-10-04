@@ -82,11 +82,11 @@ assert any("own.gif" in l.text() for l in g.findChildren(__import__("PySide6.QtW
 lib_seg.set_current("My GIFs", emit=True); k.spin(5)
 k.fe.open_paths = [png]
 btn(g, "Add GIF...").click()
-assert k.until(lambda: any(os.path.basename(str(p)) == "own.gif" for p, _t in e.my_gifs()), 10) if hasattr(e, "my_gifs") else True
+assert k.until(lambda: any(p.name == "own.gif" for p in __import__("core.base", fromlist=["lib_list"]).lib_list()), 10), "the GIF was added to My GIFs"
 btn(g, "Open folder").click(); k.spin(2)
 lib_seg.set_current("Online", emit=True); k.spin(3)
 btn(g, "Search").click(); k.spin(3)
-assert e.status[1] or "key" in e.status[0].lower() or True
+assert k.until(lambda: any("key" in l.text().lower() for l in g.findChildren(__import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel)), 5), "searching without a key says so"
 lib_seg.set_current("Built-in", emit=True)
 for cb in g.findChildren(CheckBox):
     cb.click()
@@ -123,7 +123,7 @@ btn(i, "Send to the pad now").click(); k.spin(5)
 btn(i, "Info screen on the pad").click(); k.spin(3)
 btn(i, "Test badge").click(); k.spin(3)
 btn(i, "Copy").click(); k.spin(2)
-assert k.fe.clipboard_get() or True
+assert "badge" in k.fe.clipboard_get(), k.fe.clipboard_get()
 btn(i, "Album cover on the pad").click(); k.spin(2)
 btn(i, "QR of the clipboard").click(); k.spin(2)
 rot = [s for s in i.findChildren(QSlider)][0]

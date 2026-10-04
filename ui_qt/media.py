@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QPushButton, QSizePolicy, QStackedWidget, QWidget
 from ui_qt.layouts import FlowLayout, vbox
 from ui_qt.padview import pil_to_qimage
 from ui_qt.theme import theme
-from ui_qt.widgets import TabStrip
+from ui_qt.widgets import TabStrip, tr
 
 
 def pil_to_pixmap(im):
@@ -63,6 +63,9 @@ class GifPreview(QWidget):
         p.fillRect(r, QColor("#151515"))
         if self._imgs:
             p.drawImage(r, self._imgs[self.i % len(self._imgs)])
+        else:
+            p.setPen(QColor(theme.c("MUTED")))
+            p.drawText(r.adjusted(s * 0.15, 0, -s * 0.15, 0), int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap), tr("Pick a tile on the left, or choose your own GIF"))
         p.setClipping(False)
         p.setPen(QPen(QColor(theme.c("ACCENT")), 2))
         p.drawEllipse(r)

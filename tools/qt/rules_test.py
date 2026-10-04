@@ -8,7 +8,7 @@ from kit import QtKit    # noqa: E402
 
 from PySide6.QtWidgets import QComboBox, QLineEdit    # noqa: E402
 
-from ui_qt.widgets import CheckBox, RippleButton, TabbedPanel, ToggleRow    # noqa: E402
+from ui_qt.widgets import CheckBox, RippleButton, ToggleRow    # noqa: E402
 
 k = QtKit("dcrules_", cfg={"advanced": False})
 e = k.e
@@ -100,7 +100,6 @@ pick(do, "Switch layer")
 edit(s, "name").setText("Morning")
 btn(s, "Add rule").click(); k.spin(3)
 if len(e.cfg["schedules"]) == n0:                 # the argument is required: give one
-    edit(s, "1").setText("2") if False else None
     for x in s.findChildren(QLineEdit):
         if x.placeholderText() and x.placeholderText() not in ("09:00", "name (optional)"):
             x.setText("2"); break
@@ -154,7 +153,7 @@ except Exception as ex:                          # the route name differs per bu
 btn(a, "New token").click(); k.spin(3)
 assert e.cfg["api"]["token"] != tok
 btn(a, "Copy token").click(); k.spin(2)
-assert k.fe.clipboard_get() == e.cfg["api"]["token"] or True
+assert k.fe.clipboard_get() == e.cfg["api"]["token"]
 sw.toggle.click(); k.spin(3)
 assert not e.api
 
@@ -168,6 +167,5 @@ assert "hello" in e.plugins_text().lower(), e.plugins_text()
 btn(pl, "Open the folder").click(); k.spin(2)
 row(pl, "Allow plugins").toggle.click()
 
-assert isinstance(page.tabs, object) and not page.findChildren(TabbedPanel) or True
 print("ALL QT RULES TESTS PASSED")
 k.close()

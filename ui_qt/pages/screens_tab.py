@@ -48,8 +48,8 @@ def build_screens_tab(page):
         rem.append((mins, txt))
         r.add(flow(mins, label("minutes  -  show"), txt, button("Show now", "secondary", lambda i=i: e.test_reminder(i))))
         widgets += [mins, txt]
-    r.add(flow(button("Save reminders", "primary", lambda: e.save_reminders([(m.text(), t.text()) for m, t in rem])),
-               label("0 or empty = off. The pad shows the text full-screen and also tells this app (a notification).", "muted")))
+    r.add(flow(button("Save reminders", "primary", lambda: e.save_reminders([(m.text(), t.text()) for m, t in rem]))))
+    r.add(label("0 or empty = off. The pad shows the text full-screen and also tells this app (a notification).", "muted", wrap=True))
     r.add(separator())
     r.add(label("Habits (screen 12): five things to tick off every day", "h3", wrap=True))
     hab = []

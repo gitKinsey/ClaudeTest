@@ -45,7 +45,7 @@ class RippleButton(QPushButton):
     def __init__(self, text="", variant="secondary", parent=None):
         super().__init__("", parent)
         self._full = tr(text)
-        super().setText(self._full)
+        super().setText(self._full.replace("&", "&&"))               # a literal "&", not a keyboard mnemonic
         self.setProperty("variant", variant)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._r, self._origin = 1.0, QPointF()
@@ -78,8 +78,9 @@ class RippleButton(QPushButton):
         fm = QFontMetrics(self.font())
         avail = max(10, self.width() - self._pad())
         shown = fm.elidedText(self._full, Qt.TextElideMode.ElideRight, avail) if self.width() > 0 else self._full
-        if shown != QPushButton.text(self):
-            super().setText(shown)
+        shown_q = shown.replace("&", "&&")
+        if shown_q != QPushButton.text(self):
+            super().setText(shown_q)
         self.setToolTip(self._full if shown != self._full else "")
 
     def set_variant(self, v, **props):

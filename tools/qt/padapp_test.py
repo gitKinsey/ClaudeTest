@@ -66,8 +66,9 @@ n.toggle.click(); assert bool(e.cfg["notify"]) is (not was)
 n.toggle.click()
 sw = row(b, "Allow the pad to run shell commands")
 sw.toggle.click(); k.spin(2)
-assert e.cfg["allow_shell"] is True or e.status[1] or True
-sw.toggle.click() if e.cfg.get("allow_shell") else None
+assert e.cfg["allow_shell"] is True, "confirmed: shell commands allowed"
+sw.toggle.click(); k.spin(2)
+assert e.cfg["allow_shell"] is False
 auto = row(b, "Start this app when I log in")
 auto.toggle.click(); k.spin(3)
 auto.toggle.click(); k.spin(3)
@@ -108,10 +109,11 @@ zp = os.path.join(k.tmp, "backup.zip")
 k.fe.save_path = zp
 btn(bk, "Back up everything").click()
 assert k.until(lambda: os.path.exists(zp) and zipfile.is_zipfile(zp), 15)
+kept = dict(e.cfg["map"]["1"])
 e.cfg["map"]["1"] = {"cat": "Media", "action": "Mute"}
 k.fe.open_path = zp; k.fe.answer = True
 btn(bk, "Restore from a backup").click(); k.spin(5)
-assert e.cfg["map"]["1"]["action"] != "Mute" or True
+assert e.cfg["map"]["1"] == kept, (e.cfg["map"]["1"], kept)
 macros = os.path.join(k.tmp, "macros.json")
 k.fe.save_path = macros
 btn(bk, "Export one macro").click(); k.spin(3)
@@ -164,8 +166,10 @@ d = page.diagnostics
 page.tabs.show_tab("Diagnostics"); k.spin(4)
 btn(d, "Ping x5").click(); k.spin(5)
 btn(d, "Device info").click(); k.spin(3)
+k.listen_done = []
+e.on("selftest_done", lambda *a: k.listen_done.append(a))
 btn(d, "Full self-test").click()
-assert k.until(lambda: "PASS" in e.status[0] or "self-test" in e.status[0].lower() or True, 20)
+assert k.until(lambda: k.listen_done, 30), "the self-test finished"
 k.until(lambda: not e.dev.busy, 20)
 btn(d, "Refresh").click(); k.spin(2)
 btn(d, "Probe all ports").click(); k.spin(4)
@@ -194,10 +198,10 @@ raw.setText("not json"); btn(d, "Send").click(); k.spin(2)
 btn(d, "Copy", 0).click(); k.spin(2)
 btn(d, "Clear").click()
 btn(d, "Reboot pad").click()
-assert k.until(lambda: e.dev.connected, 25) or True
-k.until(lambda: e.dev.connected, 25)
-if not e.dev.connected:
-    e.toggle_simulate(); k.until(lambda: e.dev.connected, 20)
+k.until(lambda: not e.dev.connected, 5)
+if not e.dev.connected:                       # a simulated pad does not reboot itself back: reconnect it
+    e.toggle_simulate()
+assert k.until(lambda: e.dev.connected, 20), "pad connected again after the reboot"
 
 # ======================================================== Log
 lg = page.log

@@ -239,7 +239,10 @@ class Rail(QWidget):
             b = it["badge"]
             if b:
                 bc = QColor(theme.c("WARN") if b is True else theme.c("ACCENT"))
-                cx, cy = ir.right() + theme.px(3), ir.y() + theme.px(2)
+                if self.mode == "full" and b is not True:                    # a counter sits at the right end of the row, not on top of the label
+                    cx, cy = r.right() - theme.px(30), r.center().y()
+                else:
+                    cx, cy = ir.right() + theme.px(3), ir.y() + theme.px(2)
                 p.setPen(Qt.PenStyle.NoPen)
                 if b is True:
                     p.setBrush(QColor(theme.c("SIDE")))

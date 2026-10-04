@@ -16,11 +16,11 @@ def build_builder(page):
 
     # ---- key combination
     l.addWidget(label("Key combination (up to 4 modifiers + main key)", "h3", wrap=True))
-    mods = [combo(MODIFIERS, "CTRL" if i == 0 else "-", 8) for i in range(4)]
+    mods = [combo(MODIFIERS, "CTRL" if i == 0 else "-", 6) for i in range(4)]
     key = combo(KEY_CHOICES, "c", 6)
     key.setEditable(True)
     page.mod_boxes, page.key_box = mods, key
-    l.addWidget(flow(*mods, label("+"), key))
+    l.addWidget(flow(*mods, key))
 
     def combo_keys():
         return e.combo_keys([val(m) for m in mods], key.currentText())

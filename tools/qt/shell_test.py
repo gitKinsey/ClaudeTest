@@ -45,7 +45,7 @@ ov = k.go("overview")
 assert ov.conn_btn.text_full() == "Disconnect" and "Connected on Simulated pad" in ov.conn_lbl.text()
 assert k.until(lambda: ov.tiles["fw"].val.text() == "1.5.0"), ov.tiles["fw"].val.text()
 assert ov.tiles["flash"].val.text().endswith("KB") and ov.tiles["hid"].val.text() == "ok"
-assert k.until(lambda: ov.cpu_l.text().startswith("CPU") and ov.cpu_l.text() != "CPU   0%" or True)
+assert ov.cpu_l.text().startswith("CPU") and ov.ram_l.text().startswith("RAM")
 click(ov, "Stop simulating"); k.spin(5)
 assert not e.dev.connected and ov.conn_btn.text_full() == "Connect" and sh.pill._kind == "warn"
 click(ov, "Simulate pad (no hardware)")
@@ -219,6 +219,6 @@ assert not sh.isVisible() and not e.closing, "with the tray on, closing the wind
 e.show_window(); k.spin(5)
 assert sh.isVisible()
 e.tray_icon = None
-assert has_label(sh, "Overview") or True
+assert has_label(sh, "Overview")
 k.close()
 print("ALL QT SHELL TESTS PASSED")

@@ -9,8 +9,7 @@ from ui_qt.media import ImageView
 from ui_qt.theme import theme
 from ui_qt.widgets import Card, Field, Pill, ToggleRow, button, flow, label, separator, set_role, tr
 
-DIAG_HELP = ("Bring-up & diagnostics. 1) Flash CoreBringup/CoreBringup.ino (no libraries) and check LED + ping here, "
-             "2) then flash DeskCompanion/DeskCompanion.ino. Everything below talks to the real pad - or to the simulator.")
+DIAG_HELP = "Bring-up tools for the real pad or the simulator: flash CoreBringup first, check LED + ping here, then flash DeskCompanion."
 TERM_COLORS = {"tx": "#3b82f6", "rx": "#10b981", "raw": "#f59e0b", "sys": "#8e8e9b", "err": "#ef4444"}
 
 
@@ -36,7 +35,8 @@ def build_diag_tab(page):
     # 0 flash
     t.add(label("0. Flash firmware (no Arduino IDE needed)", "h3"))
     img = combo(["core", "full"], "core", 6)
-    t.add(flow(img, label("core = CoreBringup (step 1)   full = DeskCompanion (step 2)", "muted")))
+    t.add(flow(img))
+    t.add(label("core = CoreBringup (step 1)   full = DeskCompanion (step 2)", "muted", wrap=True))
     flash_btn = button("Flash to the board", "secondary", lambda: e.flash_firmware(val(img)))
     t.add(flow(flash_btn))
     t.add(label("Hold BOOT while plugging in the USB cable (download mode), then press the button. If the pad already runs DeskCompanion it is put into download mode automatically. "
@@ -240,5 +240,5 @@ def build_diag_tab(page):
     e.on("connected", lambda *_: refresh_ports())
     e.on("disconnected", refresh_ports)
     return PageGrid({"head": head, "tools": t, "term": term},
-                    {"wide": [[("head", 1), ("tools", 6)], [("term", 1)]], "medium": [[("head", 1), ("tools", 6)], [("term", 1)]]},
+                    {"wide": [[("head", 2), ("tools", 6)], [("term", 3)]], "medium": [[("head", 2), ("tools", 6)], [("term", 3)]]},
                     order=["head", "tools", "term"], titles={"head": "Status", "tools": "Tools", "term": "Terminal"}, tabs_factory=shell.make_tabs, wide_min=800, medium_min=800)

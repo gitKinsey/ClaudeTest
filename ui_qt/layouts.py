@@ -190,7 +190,7 @@ class PageGrid(QWidget):
         self._applying = True
         cols = self.plans[self.mode]
         weights = [max(w for _n, w in col) for col in cols]
-        total, w = sum(weights), self.width() - 8 * (len(cols) - 1)
+        w = self.width() - 8 * (len(cols) - 1)
         mins = [min(int(w * 0.6), max(getattr(self.panels[n], "min_content_width", self.panels[n].minimumSizeHint().width)() for n, _w in col)) for col in cols]
         widths = fit_widths(w, weights, mins)
         for key, sp in self._splitters:

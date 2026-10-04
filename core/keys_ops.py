@@ -473,8 +473,10 @@ class KeysOps:
         """(text, kind) for the line under the live-test switch. kind: err | ok | warn."""
         import platform
         if not self.host.available:
-            return ("Live test is not available here: " + (self.host.error or "no key injection backend") +
-                    ("  (pip install pynput)" if platform.system() != "Windows" else ""), "err")
+            why = self.host.error or ""
+            if "pynput" in why or not why:
+                why = "it needs the 'pynput' package" + ("  (pip install pynput)" if platform.system() != "Windows" else "")
+            return ("Live test is not available here: " + why + ". The virtual keys still drive the virtual screen.", "err")
         if self.live_test:
             return (("LIVE: virtual keys press real keys on this PC. They go to the last program you used - focus is handed "
                      "back automatically. Click into the sandbox to test inside this app.") if self.focus else
