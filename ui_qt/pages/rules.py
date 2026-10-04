@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel
 
 from desk_lib import autorules, presets
-from ui_qt.forms import RowList, combo, line, val
+from ui_qt.forms import RowList, cfg_switch, combo, line, val
 from ui_qt.layouts import PageGrid
 from ui_qt.media import TabArea
 from ui_qt.pages.base import Page
@@ -51,6 +51,7 @@ class RulesPage(Page):
         a.add(live)
         e.on("profile_label", live.setText)
         live.setText(e._profile_state["text"])
+        a.add(cfg_switch(e, "Show the program's name on the pad when the layer switches (firmware 1.6)", "pad_ctx", True))
         remember = CheckBox("remember my layer per program (when no rule matches)", bool(e.cfg.get("remember_layers")))
         remember.toggled.connect(e.remember_set)
         a.add(remember)

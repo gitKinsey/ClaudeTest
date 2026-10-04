@@ -136,9 +136,9 @@ def rgb565be_to_image(raw, w=240, h=240):
     return img
 
 
-def snapshot(e, timeout=40):
+def snapshot(e, timeout=40, scale=1):
     e.msgs.clear()
-    e.send({"cmd": "snapshot"})
+    e.send({"cmd": "snapshot", **({"scale": scale} if scale != 1 else {})})
     data, end = {}, time.time() + timeout
     begun = False
     while time.time() < end:
@@ -151,7 +151,7 @@ def snapshot(e, timeout=40):
             elif m.get("evt") == "snap_end":
                 e.msgs.clear()
                 raw = b"".join(data[k] for k in sorted(data))
-                assert begun and len(raw) == 240 * 240 * 2, f"snapshot incomplete: {len(raw)} bytes"
+                assert begun and len(raw) == (240 // scale) ** 2 * 2, f"snapshot incomplete: {len(raw)} bytes"
                 return raw
     raise TimeoutError("snapshot timed out")
 
@@ -1405,6 +1405,102 @@ def t_fw15(c):
     e.request({"cmd": "reset_keys"}); st(mode_mask=0x3F)
 
 
+def t_fw16(c):
+    """Firmware 1.6: the helpers of companion app 2.0 - batched key writes, the pad's own state events, program name, layer names, banners, accent, small snapshots, counters."""
+    e = c.e
+    h = e.request({"cmd": "hello"})
+    for cap in ("stateevt", "batch", "snap2", "ctx", "lnames", "toast", "accent", "perf"):
+        expect(cap in h["caps"], f"capability {cap}")
+    expect(h["proto"] == 16, f"protocol level {h.get('proto')}")
+    e.request({"cmd": "reset_keys"})
+
+    # ---- remap_batch: stored like single remaps, all or nothing
+    r = e.request({"cmd": "remap_batch", "items": [{"key": 1, "type": "text", "val": "one"}, {"key": 2, "layer": 1, "type": "combo", "val": ["CTRL", "k"]},
+                                                    {"key": 3, "gesture": "hold", "type": "text", "val": "held"}, {"key": 8, "type": "media", "val": "MUTE"}]})
+    expect(r["ok"] and r["n"] == 4, f"batch of four {r}")
+    g = e.request({"cmd": "getkeys", "slot": 1}); expect(g["spec"]["val"] == "one" and not g["def"], f"slot 1 {g}")
+    g = e.request({"cmd": "getkeys", "slot": 2, "layer": 1}); expect(g["spec"]["val"] == ["CTRL", "k"], f"layer 2 slot 2 {g}")
+    g = e.request({"cmd": "getkeys", "slot": 3, "gesture": "hold"}); expect(g["set"] and g["spec"]["val"] == "held", f"hold action {g}")
+    g = e.request({"cmd": "getkeys", "slot": 8}); expect(g["spec"]["val"] == "MUTE", f"dial press+turn {g}")
+    bad = e.request({"cmd": "remap_batch", "items": [{"key": 4, "type": "text", "val": "never"}, {"key": 5, "type": "combo", "val": ["NOPE"]}]})
+    expect(bad["err"] == "spec" and e.request({"cmd": "getkeys", "slot": 4})["def"], f"a bad item stores nothing {bad}")
+    for items, err in (([], "items"), ([{"key": 99, "type": "text", "val": "a"}], "key"), ([{"key": 1, "layer": 9, "type": "text", "val": "a"}], "layer"),
+                       ([{"key": 1, "gesture": "wiggle", "type": "text", "val": "a"}], "gesture"), ([{"key": 6, "gesture": "hold", "type": "text", "val": "a"}], "key"),
+                       ([{"key": 1, "type": "text", "val": "a" * 4000}], "too_long"), ([{"key": 1, "type": "text", "val": "a"}] * 25, "items")):
+        expect(e.request({"cmd": "remap_batch", "items": items})["err"] == err, f"batch error {err}")
+    r = e.request({"cmd": "remap_batch", "items": [{"key": 3, "gesture": "hold", "clear": True}, {"key": 8, "clear": True}]})
+    expect(r["ok"] and not e.request({"cmd": "getkeys", "slot": 3, "gesture": "hold"})["set"] and e.request({"cmd": "getkeys", "slot": 8}).get("spec") is None, f"clears {r}")
+    e.power_cycle(); e.wait_boot(120)
+    g = e.request({"cmd": "getkeys", "slot": 1}); expect(g["spec"]["val"] == "one", "batch writes survive a power cycle")
+    e.request({"cmd": "reset_keys"})
+
+    # ---- ctx, layer names, toast
+    expect(e.request({"cmd": "ctx", "text": "VS Code"})["ok"], "ctx")
+    expect(e.request({"cmd": "ctx", "text": "x" * 17})["err"] == "too_long" and e.request({"cmd": "ctx", "text": "caf\u00e9"})["err"] == "bad_arg", "ctx limits")
+    expect(e.request({"cmd": "ctx", "text": ""})["ok"], "ctx cleared")
+    expect(e.request({"cmd": "layer_names"})["names"] == ["", "", ""], "no names yet")
+    r = e.request({"cmd": "layer_names", "names": ["WORK", "", "MEDIA"]}); expect(r["ok"] and r["names"] == ["WORK", "", "MEDIA"], f"names {r}")
+    for names in (["a", "b"], ["a", "b", "c" * 11], ["a", 1, "c"], ["a", "b", "caf\u00e9"]):
+        expect(e.request({"cmd": "layer_names", "names": names})["err"] == "names", f"bad names {names}")
+    e.request({"cmd": "layer", "val": 0}); e.pump(0.3)
+    img = rgb565be_to_image(snapshot(e)); c.save(img, "layer_name_badge.png")
+    e.power_cycle(); e.wait_boot(120)
+    expect(e.request({"cmd": "layer_names"})["names"] == ["WORK", "", "MEDIA"], "layer names are stored")
+    e.request({"cmd": "layer_names", "names": ["", "", ""]})
+    e.request({"cmd": "mode", "val": 1})
+    expect(e.request({"cmd": "toast", "text": "Build passed", "kind": "ok", "secs": 3})["ok"], "toast")
+    e.pump(0.4); a = rgb565be_to_image(snapshot(e)); c.save(a, "toast_ok.png")
+    expect(e.request({"cmd": "toast", "text": "Build FAILED", "kind": "err", "secs": 3})["ok"], "toast err")
+    e.pump(0.4); b = rgb565be_to_image(snapshot(e)); c.save(b, "toast_err.png")
+    expect(a.tobytes() != b.tobytes(), "the two banners look different")
+    for bad in ({"text": ""}, {"text": "y" * 25}, {"text": "caf\u00e9"}):
+        expect(not e.request({"cmd": "toast", **bad})["ok"], f"toast refused {bad}")
+    e.pump(3.5)
+    expect(e.request({"cmd": "ping"})["ok"], "still alive")
+
+    # ---- accent colour
+    st = lambda **kw: e.request({"cmd": "settings", **kw})   # noqa: E731
+    expect(st()["accent"] == 0, "accent default")
+    shots = []
+    for idx in (0, 2, 5):
+        expect(st(accent=idx)["accent"] == idx, f"accent {idx}")
+        e.request({"cmd": "mode", "val": 1}); e.pump(0.5)
+        shots.append(rgb565be_to_image(snapshot(e)).tobytes())
+    expect(len(set(shots)) == 3, "three accent colours look different on the clock")
+    expect(st(accent=6)["err"] == "settings" and st(accent=-1)["err"] == "settings", "accent range")
+    e.power_cycle(); e.wait_boot(120)
+    expect(st()["accent"] == 5, "accent is stored")
+    st(accent=0)
+
+    # ---- state events: the dial menu changes the screen / brightness / layer and the pad says so
+    e.request({"cmd": "events", "val": True}); e.msgs.clear()
+    e.request({"cmd": "input", "hold": True}); e.pump(0.5)                  # long press on the dial = next display mode
+    ev = [m for m in e.msgs if m.get("evt") == "state"]
+    e.pump(0.5); ev += [m for m in e.msgs if m.get("evt") == "state"]
+    expect(ev and all({"mode", "bright", "layer"} <= set(m) for m in ev), f"state events {ev}")
+    e.request({"cmd": "mode", "val": 1})
+    e.msgs.clear(); e.request({"cmd": "layer", "val": 2}); e.pump(0.6)
+    ev = [m for m in e.msgs if m.get("evt") == "state"]
+    expect(ev and ev[-1]["layer"] == 2, f"a layer change is announced {ev}")
+    expect(len([m for m in e.msgs if m.get("evt") == "state"]) <= 2, "state events are debounced")
+    e.request({"cmd": "layer", "val": 0})
+
+    # ---- smaller snapshot
+    small = snapshot(e, scale=2)
+    expect(len(small) == 120 * 120 * 2, "120x120 snapshot")
+    sm = rgb565be_to_image(small, 120, 120)
+    expect(sm.size == (120, 120), "small image size")
+
+    # ---- counters and the over-long request guard
+    i = e.request({"cmd": "info"})
+    expect(i["proto"] == 16 and i["loop_max_us"] > 0 and i["loop_avg_us"] > 0 and i["loop_max_us"] >= i["loop_avg_us"] and "rx_overruns" in i and "usb_drops" in i, f"info counters {i}")
+    before = i["rx_overruns"]
+    r = e.request(b'{"cmd":"ping","pad":"' + b"x" * 7000 + b'"}\n', timeout=10)
+    expect(r.get("err") == "too_long", f"an over-long request is refused: {r}")
+    expect(e.request({"cmd": "ping"})["ok"] and e.request({"cmd": "info"})["rx_overruns"] == before + 1, "the guard counts it and the pad carries on")
+    e.request({"cmd": "reset_keys"}); e.request({"cmd": "layer", "val": 0}); e.request({"cmd": "mode", "val": 1})
+
+
 def t_recovery(c):
     e = c.e
     expect(e.request({"cmd": "factory"})["err"] == "confirm", "factory needs confirm")
@@ -1429,7 +1525,7 @@ def t_recovery(c):
 
 
 TESTS = [t_first_boot_responsive, t_hello, t_ping_echo_id, t_info, t_led, t_gpio, t_inputs, t_display_and_snapshot, t_modes_render, t_virtual_input,
-         t_events, t_remap_persistence, t_gif, t_layers, t_new_actions, t_info_screen, t_gif_slots, t_gestures, t_settings, t_screens, t_actions14, t_fw15, t_recovery, t_selftest_misc, t_fuzz, t_safe_mode]
+         t_events, t_remap_persistence, t_gif, t_layers, t_new_actions, t_info_screen, t_gif_slots, t_gestures, t_settings, t_screens, t_actions14, t_fw15, t_fw16, t_recovery, t_selftest_misc, t_fuzz, t_safe_mode]
 
 
 def main():

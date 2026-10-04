@@ -477,6 +477,14 @@ uint8_t  diagPage = 0;
 uint16_t pomoToday = 0; uint32_t pomoDayNo = 0;             // focus sessions finished today (needs a synced clock for the day change)
 uint8_t  curLayer = 0, menuLayer = 0;
 uint32_t layerToastUntil = 0, flashAt = 0, ledFlashUntil = 0;
+// ---- v1.6: the companion app 2.0 helpers (all optional; the app checks "caps" first)
+uint8_t  accentIdx = 0;                          // settings "accent": 0 = the theme's own accent colour, 1..5 = the app's accent colours (cyan, pink, green, amber, violet)
+char     ctxTxt[17] = "";  uint32_t ctxUntil = 0;           // "ctx": the program the app switched the layer for (shown for a few seconds)
+char     lnames[LAYERS][11];                     // "layer_names": up to 10 printable ASCII characters per layer (empty = "L1".."L3")
+char     msgTxt[25] = "";  uint8_t msgKind = 0;  uint32_t msgUntil = 0;   // "toast": a short message banner from the app (kind 0 ok, 1 warn, 2 error)
+bool     stateDirty = false;                     // mode / brightness / layer changed on the pad: tell the host (debounced, "stateevt")
+uint32_t loopMaxUs = 0, loopCnt = 0, rxOverruns = 0; uint64_t loopSumUs = 0;   // "info": longest / average loop time since boot, over-long request lines
+static const uint8_t PROTO_LEVEL = 16;           // protocol revision (1.6); "caps" stays the source of truth for features
 uint8_t  ledFlashR = 0, ledFlashG = 0, ledFlashB = 0;
 InfoCard cards[4];
 InfoBadge badges[4];
@@ -639,6 +647,10 @@ static void applyTheme() {                                                     /
     else if (m <= 4) { th.acc = rgb(110, 230, 120); th.acc2 = rgb(255, 140, 200); }            // spring: green / blossom
     else if (m <= 7) { th.acc = rgb(255, 150, 40); th.acc2 = rgb(0, 200, 230); }               // summer: sun / sea
     else { th.acc = rgb(230, 110, 30); th.acc2 = rgb(200, 60, 40); }                           // autumn: leaves
+  }
+  if (accentIdx >= 1 && accentIdx <= 5) {                                                         // the app's accent colour (cyan, pink, green, amber, violet)
+    static const uint8_t ACC[5][3] = {{34, 211, 238}, {255, 79, 168}, {52, 211, 153}, {251, 191, 36}, {167, 139, 250}};
+    th.acc = rgb(ACC[accentIdx - 1][0], ACC[accentIdx - 1][1], ACC[accentIdx - 1][2]);
   }
   if (tintOn && curLayer > 0) th.acc = curLayer == 1 ? th.acc2 : th.warn;                       // per-layer tint: layers 2 / 3 recolour the accent
   C_TXT = th.txt; C_DIM = th.dim; C_DIM2 = th.dim2; C_GRAY = th.gray; C_ACC = th.acc; C_ACC2 = th.acc2; C_OK = th.ok; C_WARN = th.warn; C_RED = th.red;
@@ -1090,9 +1102,16 @@ static void evtLayer() {
   JsonDocument d; d["evt"] = "layer"; d["n"] = curLayer; sendDoc(d);
   reqId = keep;
 }
+static void evtState() {                                          // {"evt":"state","mode":..,"bright":..,"layer":..}: the pad's own screen / brightness / layer changed
+  if (!hostActive()) return;
+  int32_t keep = reqId; reqId = -1;
+  JsonDocument d; d["evt"] = "state"; d["mode"] = mode; d["bright"] = brightness; d["layer"] = curLayer; sendDoc(d);
+  reqId = keep;
+}
 static void setLayer(uint8_t n) {
   if (n >= LAYERS) return;
   bool changed = n != curLayer;
+  if (changed) stateDirty = true;
   curLayer = n; layerToastUntil = millis() + 1600; needRedraw = true;
   if (tintOn) applyTheme();
   static const uint8_t LC[LAYERS][3] = {{0, 40, 40}, {40, 0, 40}, {40, 30, 0}};   // 1 cyan, 2 magenta, 3 amber
@@ -1332,10 +1351,23 @@ static void sceneMenu() {                              // radial overlay: BRIGHT
 static void drawOverlays() {
   uint32_t now = millis();
   if (curLayer > 0 || (int32_t)(layerToastUntil - now) > 0) {
-    char b[8]; snprintf(b, sizeof b, "L%d", curLayer + 1);
+    char b[12]; snprintf(b, sizeof b, "L%d", curLayer + 1);
+    if (lnames[curLayer][0]) { strncpy(b, lnames[curLayer], 10); b[10] = 0; }                  // the layer's own name (command "layer_names")
     uint16_t c = curLayer == 0 ? C_ACC : curLayer == 1 ? C_ACC2 : C_WARN;
-    spr.fillRoundRect(100, 214, 40, 20, 8, c);
+    int bw = lnames[curLayer][0] ? 12 + 9 * (int)strlen(b) : 40;
+    spr.fillRoundRect(120 - bw / 2, 214, bw, 20, 8, c);
     spr.setTextDatum(MC_DATUM); spr.setTextColor(C_BG); spr.drawString(b, 120, 224, 2);
+  }
+  if ((int32_t)(ctxUntil - now) > 0 && ctxTxt[0]) {                      // command "ctx": the program name next to the layer badge
+    int cw = 14 + 8 * (int)strlen(ctxTxt);
+    spr.fillRoundRect(120 - cw / 2, 190, cw, 20, 8, C_DIM2);
+    spr.setTextDatum(MC_DATUM); spr.setTextColor(C_TXT); spr.drawString(ctxTxt, 120, 200, 2);
+  }
+  if ((int32_t)(msgUntil - now) > 0 && msgTxt[0] && !gameBusy()) {      // command "toast": a banner from the app (kind: ok / warn / error)
+    uint16_t mc = msgKind == 2 ? C_RED : msgKind == 1 ? C_WARN : C_OK;
+    spr.fillRoundRect(20, 92, 200, 56, 14, C_DIM);
+    spr.drawRoundRect(20, 92, 200, 56, 14, mc);
+    spr.setTextDatum(MC_DATUM); spr.setTextColor(C_TXT); spr.drawString(msgTxt, 120, 120, 2);
   }
   if ((int32_t)(toastUntil - now) > 0 && toastTxt[0]) {                  // key-label toast (settings "key_toast" + the "labels" command)
     spr.fillRoundRect(60, 28, 120, 24, 10, C_DIM2);
@@ -2088,6 +2120,8 @@ static void renderFrame() {
 }
 static uint32_t renderInterval() {
   if (uploading || menuOpen || popupOpen) return 100;
+  { uint32_t t = millis();                                                  // an app banner / program name must vanish on time even on a still screen
+    if ((msgUntil && (int32_t)(msgUntil - t) > -400) || (ctxUntil && (int32_t)(ctxUntil - t) > -400)) return 200; }
   if (partyUntil) return 40;
   if (remActive) return 50;
   if (saverOn) return saverStyle == 3 ? 5000 : 45;
@@ -2334,7 +2368,7 @@ static void gifService() {
 // ================================================================ modes, menu, pomodoro
 static void setMode(uint8_t m) {
   if (m < 1 || m > NUM_MODES) return;
-  if (m != mode) { prefs.putUChar("mode", m); if (fadeOn) { fadeAt = millis(); applyBacklight(); } }
+  if (m != mode) { prefs.putUChar("mode", m); stateDirty = true; if (fadeOn) { fadeAt = millis(); applyBacklight(); } }
   mode = m; needRedraw = true;
   if (m != M_SNAKE) snRun = false;                                // leaving a game pauses / resets it
   pgState = 0; fpState = 0; smState = 0;
@@ -2380,7 +2414,7 @@ static void menuTurn(int steps) {
   uiTouch();
   int n = steps < 0 ? -steps : steps, dir = steps > 0 ? 1 : -1;
   if (!menuEdit) { for (int i = 0; i < n; i++) menuSel = (menuSel + (dir > 0 ? 1 : 4)) % 5; }
-  else if (menuEdit == 1) { int b = (int)brightness + steps * 8; brightness = (uint8_t)constrain(b, 5, 255); applyBacklight(); }
+  else if (menuEdit == 1) { int b = (int)brightness + steps * 8; brightness = (uint8_t)constrain(b, 5, 255); stateDirty = true; applyBacklight(); }
   else if (menuEdit == 2) { for (int i = 0; i < n; i++) sendMedia(dir > 0 ? 0xE9 : 0xEA); }
   else if (menuEdit == 3) { for (int i = 0; i < n; i++) menuMode = nextEnabledMode(menuMode, dir); }
   else if (menuEdit == 4) { menuLayer = (uint8_t)((((int)menuLayer + steps) % LAYERS + LAYERS) % LAYERS); }
@@ -2600,7 +2634,7 @@ static void fxRun(uint8_t n) {
   else if (!strcmp(nm, "mode_next")) setMode(nextEnabledMode(mode, 1));
   else if (!strcmp(nm, "mode_prev")) setMode(nextEnabledMode(mode, -1));
   else if (!strcmp(nm, "bright_up") || !strcmp(nm, "bright_down")) {
-    int b = (int)brightness + (nm[7] == 'u' ? 24 : -24); brightness = (uint8_t)constrain(b, 5, 255);
+    int b = (int)brightness + (nm[7] == 'u' ? 24 : -24); brightness = (uint8_t)constrain(b, 5, 255); stateDirty = true;
     prefs.putUChar("bright", brightness); savedBright = brightness; applyBacklight();
     char t[10]; snprintf(t, sizeof t, "%d%%", brightness * 100 / 255); fxToast(t);
   }
@@ -2817,7 +2851,7 @@ static void cmdHello() {
   d["fs_free"] = okFs ? fsFreeBytes() : 0; d["fs_total"] = okFs ? (uint32_t)LittleFS.totalBytes() : 0;
   d["synced"] = timeSynced; d["layout"] = kbLayout;
   d["hid"] = (bool)DC_HAS_HID; d["disp"] = okDisp; d["fs"] = okFs; d["fs_state"] = FS_STATE_NAME[fsState]; d["safe"] = safeMode; d["led_pin"] = PIN_RGB;
-  d["layer"] = curLayer; d["layers"] = LAYERS; d["modes"] = NUM_MODES;
+  d["layer"] = curLayer; d["layers"] = LAYERS; d["modes"] = NUM_MODES; d["proto"] = PROTO_LEVEL;
   JsonArray cp = d["caps"].to<JsonArray>();
   cp.add("layers"); cp.add("mouse"); cp.add("host"); cp.add("info"); cp.add("gifslots"); cp.add("factory");
   cp.add("hostx"); cp.add("gestures"); cp.add("dialaccel"); cp.add("clockstyle"); cp.add("saver"); cp.add("nightdim");   // firmware 1.3
@@ -2825,6 +2859,7 @@ static void cmdHello() {
   cp.add("hostx2"); cp.add("dimcmd"); cp.add("themes"); cp.add("fx"); cp.add("chords"); cp.add("tapdance"); cp.add("dialclicks"); cp.add("keyrepeat");   // firmware 1.5
   cp.add("games"); cp.add("pet"); cp.add("diag"); cp.add("viz"); cp.add("labels"); cp.add("bootlog"); cp.add("rollback"); cp.add("cards2"); cp.add("saver2");
   cp.add("clock2"); cp.add("display2"); cp.add("konami");
+  cp.add("stateevt"); cp.add("batch"); cp.add("snap2"); cp.add("ctx"); cp.add("lnames"); cp.add("toast"); cp.add("accent"); cp.add("perf");   // firmware 1.6
   if (DC_ENABLE_WIFI) cp.add("wifi");
   if (DC_HAS_OTA) cp.add("ota");
   sendDoc(d);
@@ -2855,7 +2890,8 @@ static void cmdInfo() {
   d["safe_why"] = !safeMode ? "" : DC_FORCE_SAFE ? "forced" : "crash_loop"; d["nodisp"] = dispOff; d["disp_why"] = dispWhy;
   d["bl"] = lastBl; d["saver_on"] = saverOn; d["ota"] = otaOn; d["layer"] = curLayer;
   d["ip"] = wifiIp(); d["wifi_build"] = (bool)DC_ENABLE_WIFI;
-  d["boot"] = bootLog;
+  d["boot"] = bootLog; d["proto"] = PROTO_LEVEL;
+  d["loop_max_us"] = loopMaxUs; d["loop_avg_us"] = loopCnt ? (uint32_t)(loopSumUs / loopCnt) : 0; d["rx_overruns"] = rxOverruns; d["usb_drops"] = usbDrops;
   sendDoc(d);
 }
 static void cmdLed(JsonDocument& doc) {
@@ -2972,12 +3008,23 @@ static void b64enc(const uint8_t* in, size_t n, char* out) {
   }
   out[o] = 0;
 }
+static uint8_t snapScale = 1;                             // {"cmd":"snapshot","scale":2} (cap "snap2"): a 120x120 frame, 4x less data for the live mirror / mini pad
 static void cmdSnapshot() {                              // what the sprite (= what the screen shows, except GIF mode) contains
   if (!okSprite) { nack("no_display"); return; }
   const uint8_t* px = (const uint8_t*)spr.getPointer();
   if (!px) { nack("no_display"); return; }
-  const size_t total = 240 * 240 * 2, CH = 360;
-  { JsonDocument d; d["ok"] = true; d["evt"] = "snap_begin"; d["w"] = 240; d["h"] = 240; d["fmt"] = "rgb565be"; d["bytes"] = (uint32_t)total; d["chunk"] = (uint32_t)CH; sendDoc(d); }
+  uint8_t* small = nullptr; int W = 240;
+  if (snapScale == 2) {                                   // nearest neighbour: every second pixel of every second row
+    small = (uint8_t*)malloc(120 * 120 * 2);
+    if (!small) { nack("no_mem"); return; }
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 120; x++) {
+      const uint8_t* q = px + ((size_t)(y * 2) * 240 + (size_t)(x * 2)) * 2;
+      small[((size_t)y * 120 + x) * 2] = q[0]; small[((size_t)y * 120 + x) * 2 + 1] = q[1];
+    }
+    px = small; W = 120;
+  }
+  const size_t total = (size_t)W * W * 2, CH = 360;
+  { JsonDocument d; d["ok"] = true; d["evt"] = "snap_begin"; d["w"] = W; d["h"] = W; d["fmt"] = "rgb565be"; d["bytes"] = (uint32_t)total; d["chunk"] = (uint32_t)CH; sendDoc(d); }
   static char line[560];
   for (size_t off = 0; off < total; off += CH) {
     size_t n = total - off < CH ? total - off : CH;
@@ -2988,6 +3035,7 @@ static void cmdSnapshot() {                              // what the sprite (= w
     txRaw((const uint8_t*)line, l);
   }
   txRaw((const uint8_t*)"{\"evt\":\"snap_end\"}\n", 19);
+  if (small) free(small);
 }
 
 static void cmdRun(JsonDocument& doc) {                  // run an action immediately (HID test) without saving it to a key
@@ -3224,7 +3272,7 @@ static void settingsReply() {
   d["dial_accel"] = dialAccel; d["clock_style"] = clockStyle; d["saver_s"] = saverSec; d["saver_style"] = saverStyle;
   d["night_on"] = nightOn; d["night_from"] = nightFrom; d["night_to"] = nightTo; d["night_level"] = nightLevel;
   d["bl"] = lastBl; d["saver_on"] = saverOn; d["mode_mask"] = modeMask;
-  d["theme"] = themeIdx; d["tint"] = tintOn; d["rotation"] = rotation; d["pixel_shift"] = pixelShift; d["fade"] = fadeOn; d["boot_anim"] = bootAnim;
+  d["theme"] = themeIdx; d["accent"] = accentIdx; d["tint"] = tintOn; d["rotation"] = rotation; d["pixel_shift"] = pixelShift; d["fade"] = fadeOn; d["boot_anim"] = bootAnim;
   d["splash"] = splashTxt; d["detent_led"] = detentLed; d["key_toast"] = keyToast; d["repeat_mask"] = repeatMask; d["dial_lock"] = dialLock;
   d["host_dim"] = hostDim; d["pomo_today"] = pomoToday;
   sendDoc(d);
@@ -3246,6 +3294,7 @@ static void cmdSettings(JsonDocument& doc) {
   if (hNo && !doc["night_on"].is<bool>()) bad = true;
   int th = themeIdx, ro = rotation, rm = repeatMask;
   bool hTh = optInt(doc, "theme", 0, 6, th, bad), hRo = optInt(doc, "rotation", 0, 3, ro, bad), hRm = optInt(doc, "repeat_mask", 0, 31, rm, bad);
+  int ac = accentIdx; bool hAc = optInt(doc, "accent", 0, 5, ac, bad);                              // 1.6: the app's accent colour
   static const char* const BOOLS[7] = {"tint", "pixel_shift", "fade", "boot_anim", "detent_led", "key_toast", "dial_lock"};
   bool hasB[7], valB[7];
   for (int i = 0; i < 7; i++) {
@@ -3263,6 +3312,7 @@ static void cmdSettings(JsonDocument& doc) {
   }
   if (bad) { nack("settings"); return; }
   if (hTh) { themeIdx = (uint8_t)th; prefs.putUChar("theme", themeIdx); applyTheme(); }
+  if (hAc) { accentIdx = (uint8_t)ac; prefs.putUChar("accent", accentIdx); applyTheme(); }
   if (hRo) { rotation = (uint8_t)ro; prefs.putUChar("rot", rotation); applyRotation(); }
   if (hRm) { repeatMask = (uint8_t)rm; prefs.putUChar("repm", repeatMask); }
   if (hasB[0]) { tintOn = valB[0]; prefs.putBool("tint", tintOn); applyTheme(); }
@@ -3359,6 +3409,87 @@ static void cmdViz(JsonDocument& doc) {
   if (a.isNull()) return;
   for (int i = 0; i < 8 && i < (int)a.size(); i++) vizBars[i] = (uint8_t)constrain(a[i].as<int>(), 0, 100);
   vizAt = millis(); if (mode == M_VIZ) needRedraw = true;
+}
+// ---- 1.6 helpers for the companion app 2.0 (each one has its own entry in "caps")
+static bool printableAscii(const char* t) { for (; *t; t++) if ((uint8_t)*t < 32 || (uint8_t)*t > 126) return false; return true; }
+// {"cmd":"remap_batch","items":[{"key":1,"layer":0,"type":"combo","val":[..],"gesture":"hold","clear":false}, ...]}  (cap "batch")
+// Up to 24 items; every item is validated first and nothing is written unless all are fine. A full NVS answers nvs_full with "done" = items already written.
+static void cmdRemapBatch(JsonDocument& doc) {
+  JsonArray items = doc["items"].as<JsonArray>();
+  if (items.isNull() || items.size() == 0 || items.size() > 24) { nack("items"); return; }
+  struct Plan { uint8_t lay, key; char g; bool clear; String s; };
+  std::vector<Plan> plan;
+  for (JsonObject it : items) {
+    int key = it["key"] | 0;
+    if (key < 1 || key > 15) { nack("key"); return; }
+    const char* gest = it["gesture"] | "tap";
+    char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : !strcmp(gest, "triple") ? 't' : 0;
+    if (strcmp(gest, "tap") && !gch) { nack("gesture"); return; }
+    if (gch && key > 5) { nack("key"); return; }
+    int lay = it["layer"] | 0;
+    if (lay < 0 || lay >= LAYERS) { nack("layer"); return; }
+    Plan p; p.lay = (uint8_t)lay; p.key = (uint8_t)key; p.g = gch; p.clear = it["clear"] | false;
+    if (p.clear && (gch || key >= 8)) { plan.push_back(p); continue; }       // removing a gesture / dial press+turn / chord / dial-click action
+    JsonDocument spec;
+    spec["type"] = it["type"]; spec["val"] = it["val"];
+    std::vector<Step> tmp;
+    if (!parseSpec(spec.as<JsonVariantConst>(), tmp)) { nack("spec"); return; }
+    serializeJson(spec, p.s);
+    if (p.s.length() > 3800) { nack("too_long"); return; }
+    p.clear = false;
+    plan.push_back(p);
+  }
+  uint16_t done = 0; bool flags = false;
+  for (const Plan& p : plan) {
+    char k[10];
+    if (p.g) gestureKey(p.lay, (uint8_t)(p.key - 1), p.g, k); else slotKey(p.lay, (uint8_t)(p.key - 1), k);
+    if (p.clear) prefs.remove(k);
+    else if (prefs.putString(k, p.s) == 0) { if (flags) loadGestureFlags(); JsonDocument d; d["ok"] = false; d["err"] = "nvs_full"; d["done"] = done; sendDoc(d); return; }
+    if (p.g || p.key >= 10 || p.clear) flags = true;
+    done++;
+  }
+  if (flags) loadGestureFlags();
+  JsonDocument d; d["ok"] = true; d["evt"] = "remap_batch"; d["n"] = done; sendDoc(d);
+}
+// {"cmd":"ctx","text":"VS Code"} (cap "ctx"): the app tells the pad which program the layer follows; shown for 2.5 s next to the layer badge ("" clears it)
+static void cmdCtx(JsonDocument& doc) {
+  const char* t = doc["text"] | "";
+  size_t n = strlen(t);
+  if (n > 16) { nack("too_long"); return; }
+  if (!printableAscii(t)) { nack("bad_arg"); return; }
+  strncpy(ctxTxt, t, 16); ctxTxt[16] = 0;
+  ctxUntil = n ? millis() + 2500 : 0;
+  if (n) layerToastUntil = millis() + 2500;
+  needRedraw = true; ack("ctx");
+}
+// {"cmd":"layer_names","names":["WORK","","MEDIA"]} (cap "lnames"): up to 10 printable ASCII characters per layer, "" = L1 / L2 / L3; no "names" = read
+static void cmdLayerNames(JsonDocument& doc) {
+  JsonArrayConst a = doc["names"].as<JsonArrayConst>();
+  if (!a.isNull()) {
+    if (a.size() != LAYERS) { nack("names"); return; }
+    for (uint8_t i = 0; i < LAYERS; i++) { const char* t = a[i] | ""; if (!a[i].is<const char*>() || strlen(t) > 10 || !printableAscii(t)) { nack("names"); return; } }
+    for (uint8_t i = 0; i < LAYERS; i++) {
+      const char* t = a[i] | ""; strncpy(lnames[i], t, 10); lnames[i][10] = 0;
+      char k[6]; snprintf(k, sizeof k, "ln%u", i); prefs.putString(k, lnames[i]);
+    }
+    layerToastUntil = millis() + 1600; needRedraw = true;
+  }
+  JsonDocument d; d["ok"] = true; d["evt"] = "layer_names";
+  JsonArray o = d["names"].to<JsonArray>(); for (uint8_t i = 0; i < LAYERS; i++) o.add(lnames[i]);
+  sendDoc(d);
+}
+// {"cmd":"toast","text":"Build passed","kind":"ok|warn|err","secs":3} (cap "toast"): a banner from the app; not drawn over games or GIFs
+static void cmdToast(JsonDocument& doc) {
+  const char* t = doc["text"] | "";
+  size_t n = strlen(t);
+  if (!n) { nack("bad_arg"); return; }
+  if (n > 24) { nack("too_long"); return; }
+  if (!printableAscii(t)) { nack("bad_arg"); return; }
+  const char* k = doc["kind"] | "ok";
+  msgKind = (!strcmp(k, "err") || !strcmp(k, "error")) ? 2 : !strcmp(k, "warn") ? 1 : 0;
+  int secs = doc["secs"] | 3; secs = constrain(secs, 1, 10);
+  strncpy(msgTxt, t, 24); msgTxt[24] = 0; msgUntil = millis() + (uint32_t)secs * 1000UL;
+  needRedraw = true; activity(); ack("toast");
 }
 // ---- {"cmd":"gesture_test","hold":true,"dbl":false,"seq":[[1,0],[0,120],...]}: replays [pressed, ms] events through the gesture state
 // machine with the given timing and answers with what it would fire, as [[ms,"tap|hold|double"],...]. Does not run any action.
@@ -3521,7 +3652,7 @@ static void handleLine(const String& line) {
   else if (!strcmp(cmd, "inputs")) cmdInputs();
   else if (!strcmp(cmd, "events")) { eventsOn = doc["val"] | true; ack("events"); }
   else if (!strcmp(cmd, "display")) cmdDisplay(doc);
-  else if (!strcmp(cmd, "snapshot")) cmdSnapshot();
+  else if (!strcmp(cmd, "snapshot")) { snapScale = (doc["scale"] | 1) == 2 ? 2 : 1; cmdSnapshot(); }
   else if (!strcmp(cmd, "run")) cmdRun(doc);
   else if (!strcmp(cmd, "input")) cmdInput(doc);
   else if (!strcmp(cmd, "getkeys")) cmdGetKeys(doc);
@@ -3578,6 +3709,10 @@ static void handleLine(const String& line) {
   else if (!strcmp(cmd, "boot_log")) cmdBootLog(doc);
   else if (!strcmp(cmd, "rollback")) cmdRollback(doc);
   else if (!strcmp(cmd, "viz")) cmdViz(doc);
+  else if (!strcmp(cmd, "remap_batch")) cmdRemapBatch(doc);
+  else if (!strcmp(cmd, "ctx")) cmdCtx(doc);
+  else if (!strcmp(cmd, "layer_names")) cmdLayerNames(doc);
+  else if (!strcmp(cmd, "toast")) cmdToast(doc);
   else if (!strcmp(cmd, "reset_keys")) {
     int only = doc["layer"] | -1;                                    // omitted = every layer
     for (uint8_t l = 0; l < LAYERS; l++) { if (only >= 0 && l != only) continue; clearLayerKeys(l); }
@@ -3692,7 +3827,11 @@ static void serialService() {
   while (Serial.available() && guard++ < 4096) {
     char c = (char)Serial.read();
     lastRxMs = millis();
-    if (c == '\n') { if (!rxOverflow && rxLine.length()) handleLine(rxLine); rxLine = ""; rxOverflow = false; }
+    if (c == '\n') {
+      if (rxOverflow) { rxOverruns++; int32_t keep = reqId; reqId = -1; nack("too_long"); reqId = keep; }    // a request longer than RX_MAX is refused, not misread
+      else if (rxLine.length()) handleLine(rxLine);
+      rxLine = ""; rxOverflow = false;
+    }
     else if (c != '\r') { if (rxLine.length() < RX_MAX) rxLine += c; else rxOverflow = true; }
   }
 }
@@ -3719,6 +3858,8 @@ static void loadSettings() {
   nightLevel = prefs.getUChar("nd_l", 30); if (nightLevel < 5) nightLevel = 30;
   modeMask = (prefs.isKey("mmask2") ? prefs.getULong("mmask2", 0x3F) : (uint32_t)prefs.getUShort("mmask", 0x003F)) & 0x000FFFFFu; if (!modeMask) modeMask = 0x003F;
   themeIdx = prefs.getUChar("theme", 0); if (themeIdx > 6) themeIdx = 0;
+  accentIdx = prefs.getUChar("accent", 0); if (accentIdx > 5) accentIdx = 0;
+  for (uint8_t l = 0; l < LAYERS; l++) { char k[6]; snprintf(k, sizeof k, "ln%u", l); String v = prefs.getString(k, ""); strncpy(lnames[l], v.c_str(), 10); lnames[l][10] = 0; }
   rotation = prefs.getUChar("rot", 0) & 3;
   tintOn = prefs.getBool("tint", false); pixelShift = prefs.getBool("pshift", false); fadeOn = prefs.getBool("fade", false);
   bootAnim = prefs.getBool("banim", true); detentLed = prefs.getBool("detled", false); keyToast = prefs.getBool("ktoast", false); dialLock = prefs.getBool("dlock", false);
@@ -3881,6 +4022,7 @@ void setup() {
 }
 
 void loop() {
+  uint32_t loopT0 = micros();
   serialService();
   inputsService();
   macroTick();
@@ -3893,6 +4035,8 @@ void loop() {
   otaService();
   ledService();
   uint32_t now = millis();
+  { static uint32_t stAt = 0;                                   // screen / brightness / layer changed on the pad: tell the host at most every 150 ms
+    if (stateDirty && (uint32_t)(now - stAt) >= 150) { stAt = now; stateDirty = false; evtState(); } }
   if (fadeAt) applyBacklight();                                 // fade-in after a screen change
   { static uint32_t sec1 = 0; static bool hadHost = false;     // once a second: link statistics, host dim safety, pixel shifting, seasonal theme
     if ((uint32_t)(now - sec1) >= 1000) {
@@ -3944,5 +4088,6 @@ void loop() {
       if (needRedraw || now - lastRender >= renderInterval()) { needRedraw = false; lastRender = now; renderFrame(); }
     }
   }
+  { uint32_t dt = micros() - loopT0; if (dt > loopMaxUs) loopMaxUs = dt; loopSumUs += dt; loopCnt++; }      // "info": loop time statistics
   delay(1);
 }

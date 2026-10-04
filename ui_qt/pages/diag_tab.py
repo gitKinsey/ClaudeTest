@@ -27,6 +27,14 @@ def build_diag_tab(page):
         t, k = e.dev_state_text()
         state.setText(t)
         set_role(state, k)
+    perf = label("", "muted", wrap=True)
+    head.add(perf)
+
+    def show_perf(text, slow):
+        perf.setText(text)
+        set_role(perf, "warn" if slow else "muted")
+    e.on("perf", show_perf)
+    e.on("connected", lambda *_: e.perf_refresh())
     for ev in ("connected", "disconnected", "selftest_done"):
         e.on(ev, refresh_state)
 

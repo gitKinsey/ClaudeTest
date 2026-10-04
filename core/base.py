@@ -881,6 +881,7 @@ ERR_TEXT = {
     "what": "the pad does not know that reset target",
     "no_previous": "the pad has no previous firmware stored (a USB update replaces it; only a Wi-Fi update keeps the old one)",
     "rollback": "the pad could not switch back to the other firmware slot", "labels": "key names are at most 8 plain characters each (seven per layer)",
+    "too_long": "that is longer than the pad accepts", "items": "a batch holds 1 to 24 key actions", "names": "layer names are at most 10 plain characters each (three of them)",
     "level": "the dim level must be 0 (off) or 5-255", "chord": "chords are 1-4 (K1+K2 ... K4+K5)", "dclick": "dial clicks are 1-3",
 }
 
@@ -996,6 +997,9 @@ NEW13_CAPS = ["hostx", "gestures", "dialaccel", "clockstyle", "saver", "nightdim
 NEW14_CAPS = ["screens", "pressturn", "toggle", "wheelmods", "ledfx", "reminders", "habits"]     # firmware 1.4 additions
 NEW15_CAPS = ["hostx2", "dimcmd", "themes", "fx", "chords", "tapdance", "dialclicks", "keyrepeat", "games", "pet", "diag", "viz", "labels", "bootlog", "rollback",
               "cards2", "saver2", "clock2", "display2", "konami"]                                           # firmware 1.5 additions (see hello "caps")
+NEW16_CAPS = ["stateevt", "batch", "snap2", "ctx", "lnames", "toast", "accent", "perf"]                        # firmware 1.6 additions (see hello "caps")
+PROTO_LEVEL = 16                                                                                           # the protocol revision this app speaks (hello "proto")
+BATCH_MAX_ITEMS, BATCH_MAX_CHARS = 24, 4800                                                               # remap_batch: items per command / characters of JSON per command (the pad accepts 6000)
 SETTINGS_DEFAULT = {"dial_accel": 0, "clock_style": 0, "saver_s": 0, "saver_style": 1, "night_on": False, "night_from": 22, "night_to": 7, "night_level": 30, "mode_mask": 0x3F}
 SETTINGS_RANGE = {"dial_accel": (0, 2), "clock_style": (0, 3), "saver_s": (0, 3600), "saver_style": (1, 3), "night_from": (0, 23), "night_to": (0, 23), "night_level": (5, 255), "mode_mask": (1, 4095)}
 SETTINGS15_DEFAULT = {"theme": 0, "tint": False, "rotation": 0, "pixel_shift": False, "fade": False, "boot_anim": True, "splash": "", "detent_led": False, "key_toast": False,
@@ -1019,6 +1023,8 @@ class SimFirmware:
         self.fw12 = bool(os.environ.get("DESK_COMPANION_SIM_V12"))          # behave like firmware 1.2.0 (layers, no gestures / settings / new host ops)
         self.fw13 = bool(os.environ.get("DESK_COMPANION_SIM_V13"))          # behave like firmware 1.3.0 (everything but the 1.4 screens / actions)
         self.fw14 = bool(os.environ.get("DESK_COMPANION_SIM_V14"))          # behave like firmware 1.4.0 (everything but the 1.5 additions)
+        self.fw15only = bool(os.environ.get("DESK_COMPANION_SIM_V15"))      # behave like firmware 1.5.0 (everything but the 1.6 additions)
+        self.ctx, self.lnames, self.toast_log = "", ["", "", ""], []        # 1.6: program name, layer names, banners shown
         self.reminders = [{"m": 0, "t": ""} for _ in range(3)]
         self.dim = 0                          # temporary dim level (0 = off) set by {"cmd":"dim"}
         self.viz, self.viz_at = [0] * 8, 0.0
@@ -1026,12 +1032,15 @@ class SimFirmware:
         self.labels = [[""] * 7 for _ in range(LAYERS)]
         self.rst_counts = [1, 0, 0, 0, 0, 0]
         self.settings15 = dict(SETTINGS15_DEFAULT)
+        if not (self.fw12 or self.fw13 or self.fw14 or self.fw15only):
+            self.settings15["accent"] = 0
         self.habits = {"names": ["WATER", "MOVE", "READ", "SLEEP", "FOCUS"], "today": [0] * 5}
         self._tgl = {}
         self.gest = {}                        # (layer, key, "hold"|"double") -> spec
         self.settings = dict(SETTINGS_DEFAULT)
         self.core = bool(os.environ.get("DESK_COMPANION_SIM_CORE"))        # behave like the CoreBringup diagnostic sketch (diagnostic commands only)
         self.cmd_count = {}                   # cmd -> times received (tests: no command spam)
+        self.rx_overruns = 0                  # request lines longer than the pad's buffer (1.6 answers too_long)
         self._buf = b""
         self.mode, self.bright, self.osv, self.layout = 1, 200, "win", "en_US"
         self.slots = {}                       # layer 0 (kept under this name: tests and tools read it)
@@ -1057,6 +1066,10 @@ class SimFirmware:
         self._buf += data
         while b"\n" in self._buf:
             line, self._buf = self._buf.split(b"\n", 1)
+            if self._fw16() and len(line) > 6000:                       # firmware 1.6 refuses a request longer than its buffer instead of misreading it
+                self.rx_overruns += 1
+                self._send({"ok": False, "err": "too_long"})
+                continue
             self._handle(line)
 
     def _send(self, obj):
@@ -1114,6 +1127,21 @@ class SimFirmware:
 
     def _fw15(self):
         return not (self.fw12 or self.fw13 or self.fw14)
+
+    def _fw16(self):
+        return self._fw15() and not self.fw15only
+
+    def pad_side_change(self, mode=None, bright=None, layer=None):
+        """What the dial menu / a long press / auto-dim do on the real pad: change the screen, brightness or layer, and (1.6) announce it."""
+        if mode is not None:
+            self.mode = mode
+        if bright is not None:
+            self.bright = bright
+        if layer is not None and layer != self.layer:
+            self.layer = layer
+            self._send({"evt": "layer", "n": self.layer})
+        if self._fw16():
+            self._send({"evt": "state", "mode": self.mode, "bright": self.bright, "layer": self.layer})
 
     def _max_key(self):
         return 7 if (self.fw12 or self.fw13) else 9 if self.fw14 else 15
@@ -1181,7 +1209,8 @@ class SimFirmware:
 
         self.cmd_count[cmd] = self.cmd_count.get(cmd, 0) + 1
         if (self.fw12 and cmd in ("settings", "gesture_test")) or ((self.fw12 or self.fw13) and cmd in ("screens", "habits", "reminders")) or \
-                ((self.fw12 or self.fw13 or self.fw14) and cmd in ("dim", "labels", "boot_log", "rollback", "viz")):
+                ((self.fw12 or self.fw13 or self.fw14) and cmd in ("dim", "labels", "boot_log", "rollback", "viz")) or \
+                (not self._fw16() and cmd in ("remap_batch", "ctx", "layer_names", "toast")):
             reply({"ok": False, "err": "unknown_cmd"})
             return
         if self.core:
@@ -1214,7 +1243,8 @@ class SimFirmware:
             reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": self.fw_text(),
                    "layer": self.layer, "layers": LAYERS, "modes": self._modes(), "gifs": len(self.gifs), "gif_rot": self.gif_rot,
                    "caps": ["layers", "mouse", "host", "info", "gifslots", "factory"] + ([] if self.fw12 else NEW13_CAPS) + ([] if self.fw12 or self.fw13 else NEW14_CAPS)
-                           + ([] if self.fw12 or self.fw13 or self.fw14 else NEW15_CAPS) + (["wifi", "ota"] if self.wifi else []),
+                           + ([] if self.fw12 or self.fw13 or self.fw14 else NEW15_CAPS) + (NEW16_CAPS if self._fw16() else []) + (["wifi", "ota"] if self.wifi else []),
+                   **({"proto": PROTO_LEVEL} if self._fw16() else {}),
                    "mode": self.mode, "bright": self.bright, "os": self.osv, "gif": self.gif_present,
                    "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "synced": False, "layout": self.layout,
                    "hid": True, "disp": True, "fs": True, "fs_state": "ready", "safe": False, "led_pin": 21})
@@ -1233,7 +1263,8 @@ class SimFirmware:
                    "tft": True, "sim": True, "ok_prefs": True, "ok_fs": True, "fs_state": "ready", "ok_sprite": True, "ok_disp": True,
                    "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "rx_ms_ago": 0, "events": self.events,
                    "gpio_touched": False, "led_pin": 21, "led_mode": self.led["mode"], "mode": self.mode, "bright": self.bright,
-                   "boot": "0:power-on=ok;1:prefs=ok;2:usb=ok;3:fs=ok;4:display=ok;5:ready=ok;"})
+                   "boot": "0:power-on=ok;1:prefs=ok;2:usb=ok;3:fs=ok;4:display=ok;5:ready=ok;",
+                   **({"proto": PROTO_LEVEL, "loop_max_us": 31_000, "loop_avg_us": 1_800, "rx_overruns": self.rx_overruns, "usb_drops": 0} if self._fw16() else {})})
         elif cmd == "led":
             m = msg.get("mode", "")
             modes = {"auto": 0, "off": 1, "solid": 2, "blink": 3, "rainbow": 4, "breathe": 5, "fire": 6}
@@ -1292,7 +1323,7 @@ class SimFirmware:
                 return
             reply({"ok": True, "evt": "display"})
         elif cmd == "snapshot":
-            self._snapshot(rid)
+            self._snapshot(rid, 2 if (msg.get("scale") == 2 and self._fw16()) else 1)
         elif cmd == "run":
             reply({"ok": True, "evt": "run", "steps": 1})
         elif cmd == "input":
@@ -1595,6 +1626,12 @@ class SimFirmware:
                             reply({"ok": False, "err": "settings"})
                             return
                         new[k] = v.strip()
+                    elif k == "accent":
+                        if self._fw16():
+                            if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 5:
+                                reply({"ok": False, "err": "settings"})
+                                return
+                            new[k] = v
                     elif k in SETTINGS15_RANGE or k in SETTINGS_RANGE:
                         lo, hi = SETTINGS15_RANGE.get(k) or SETTINGS_RANGE[k]
                         if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
@@ -1625,6 +1662,79 @@ class SimFirmware:
                     new[k] = v
             self.settings.update(new)
             reply(dict({"ok": True, "evt": "settings", "bl": self.bright, "saver_on": False}, **self.settings))
+        elif cmd == "remap_batch":
+            items = msg.get("items")
+            if not isinstance(items, list) or not 1 <= len(items) <= BATCH_MAX_ITEMS:
+                reply({"ok": False, "err": "items"})
+                return
+            plan = []
+            for it in items:                                                      # validate everything first: nothing is stored unless all items are fine
+                if not isinstance(it, dict):
+                    reply({"ok": False, "err": "items"})
+                    return
+                key, lay, g = it.get("key"), it.get("layer", 0), it.get("gesture", "tap")
+                if isinstance(key, bool) or not isinstance(key, int) or not 1 <= key <= 15:
+                    reply({"ok": False, "err": "key"})
+                    return
+                if g not in ("tap", "hold", "double", "triple"):
+                    reply({"ok": False, "err": "gesture"})
+                    return
+                if g != "tap" and key > 5:
+                    reply({"ok": False, "err": "key"})
+                    return
+                if isinstance(lay, bool) or not isinstance(lay, int) or not 0 <= lay < LAYERS:
+                    reply({"ok": False, "err": "layer"})
+                    return
+                if it.get("clear") and (g != "tap" or key >= 8):
+                    plan.append((lay, key, g, None))
+                    continue
+                spec = {"type": it.get("type"), "val": it.get("val")}
+                if not spec_ok(spec):
+                    reply({"ok": False, "err": "spec"})
+                    return
+                if len(compact_json(spec)) > 3800:
+                    reply({"ok": False, "err": "too_long"})
+                    return
+                plan.append((lay, key, g, spec))
+            for lay, key, g, spec in plan:
+                if g != "tap":
+                    if spec is None:
+                        self.gest.pop((lay, key, g), None)
+                    else:
+                        self.gest[(lay, key, g)] = spec
+                elif spec is None:
+                    self.layers[lay].pop(key, None)
+                else:
+                    self.layers[lay][key] = spec
+            reply({"ok": True, "evt": "remap_batch", "n": len(plan)})
+        elif cmd == "ctx":
+            t = msg.get("text", "")
+            if not isinstance(t, str) or len(t) > 16:
+                reply({"ok": False, "err": "too_long" if isinstance(t, str) else "bad_arg"})
+            elif not t.isascii() or not (t == "" or t.isprintable()):
+                reply({"ok": False, "err": "bad_arg"})
+            else:
+                self.ctx = t
+                reply({"ok": True, "evt": "ctx"})
+        elif cmd == "layer_names":
+            names = msg.get("names")
+            if names is not None:
+                if not isinstance(names, list) or len(names) != LAYERS or any(not isinstance(n, str) or len(n) > 10 or not n.isascii() or not (n == "" or n.isprintable()) for n in names):
+                    reply({"ok": False, "err": "names"})
+                    return
+                self.lnames = list(names)
+            reply({"ok": True, "evt": "layer_names", "names": list(self.lnames)})
+        elif cmd == "toast":
+            t, kind, secs = msg.get("text", ""), msg.get("kind", "ok"), msg.get("secs", 3)
+            if not isinstance(t, str) or not t:
+                reply({"ok": False, "err": "bad_arg"})
+            elif len(t) > 24:
+                reply({"ok": False, "err": "too_long"})
+            elif not t.isascii() or not t.isprintable():
+                reply({"ok": False, "err": "bad_arg"})
+            else:
+                self.toast_log.append({"text": t, "kind": kind if kind in ("ok", "warn", "err", "error") else "ok", "secs": max(1, min(10, int(secs)))})
+                reply({"ok": True, "evt": "toast"})
         elif cmd == "brightness":
             self.bright = max(5, min(255, int(msg.get("val", 200))))
             reply({"ok": True, "evt": "brightness"})
@@ -1707,7 +1817,7 @@ class SimFirmware:
         else:
             reply({"ok": False, "err": "unknown_cmd"})
 
-    def _snapshot(self, rid):
+    def _snapshot(self, rid, scale=1):
         img = Image.new("RGB", (240, 240), (0, 0, 0))
         d = ImageDraw.Draw(img)
         disp = self.display
@@ -1722,8 +1832,10 @@ class SimFirmware:
             d.text((120, 125), f"mode {self.mode}  bright {self.bright}", fill=(0, 210, 255), anchor="mm")
             led = self.led
             d.ellipse((105, 150, 135, 180), fill=(led["r"], led["g"], led["b"]), outline=(140, 146, 160))
+        if scale == 2:
+            img = img.resize((120, 120), Image.NEAREST)
         raw = b"".join(((r & 0xF8) << 8 | (g & 0xFC) << 3 | b >> 3).to_bytes(2, "big") for r, g, b in img.getdata())
-        first = {"ok": True, "evt": "snap_begin", "w": 240, "h": 240, "fmt": "rgb565be", "bytes": len(raw), "chunk": 360}
+        first = {"ok": True, "evt": "snap_begin", "w": img.width, "h": img.height, "fmt": "rgb565be", "bytes": len(raw), "chunk": 360}
         if isinstance(rid, int):
             first["id"] = rid
         self._send(first)
@@ -1934,8 +2046,8 @@ class Device:
             raise DeviceError(ERR_TEXT.get(err, err))
         return r
 
-    def snapshot(self, timeout=25.0):
-        """Download what the pad's frame buffer currently shows -> PIL image (everything except GIF mode)."""
+    def snapshot(self, timeout=25.0, scale=1):
+        """Download what the pad's frame buffer currently shows -> PIL image (everything except GIF mode). scale=2 (firmware 1.6): a 120x120 frame."""
         chunks, done = {}, threading.Event()
 
         def tap(m):
@@ -1946,7 +2058,7 @@ class Device:
         self._taps.append(tap)
         self.busy = True
         try:
-            head = self.request({"cmd": "snapshot"}, timeout=6)
+            head = self.request({"cmd": "snapshot", **({"scale": scale} if scale != 1 else {})}, timeout=6)
             if not done.wait(timeout):
                 raise DeviceError("snapshot timed out")
         finally:

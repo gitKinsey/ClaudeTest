@@ -261,12 +261,14 @@ class KeysOps:
 
         def work():
             self.dev.request({"cmd": "os", "val": osv})
-            for s, spec in jobs:
-                self.dev.request(self._remap_msg(layer, s, spec))
-                self.post(lambda s=s, j=spec_json(spec): self._mark_pushed(s, j, layer))
+            self._upload_jobs([(layer, s, spec) for s, spec in jobs])
             self._push_labels([layer])
         self.bg(work, lambda _: self.set_status(("Layer %d: " % (layer + 1) if layer else "Sent to pad: ") + ", ".join(SLOT_LABELS[x[0]] for x in jobs)),
                 "Upload failed")
+
+    def _upload_jobs(self, jobs):
+        """Worker thread: send (layer, slot, spec) key actions (batched on firmware 1.6) and mark each one as stored on the pad."""
+        self._send_remaps(jobs, lambda sent: [self._mark_pushed(s, spec_json(sp), l) for l, s, sp in sent])
 
     def _verify_keys_sync(self):
         """Compare what the pad stored (getkeys: length + CRC of each slot's JSON) with what the app believes it uploaded.
@@ -331,20 +333,18 @@ class KeysOps:
             self.dev.request({"cmd": "os", "val": osv})
             self.dev.request(time_msg())
             self._push_layout()
-            for lay, sl, spec in jobs:
-                self.dev.request(self._remap_msg(lay, sl, spec))
-                self.post(lambda lay=lay, sl=sl, j=spec_json(spec): self._mark_pushed(sl, j, lay))
+            self._upload_jobs(jobs)
             if self._pad_cap("gestures"):
                 self._sync_gestures()
             self._push_labels()
+            self._push_fw16_state()
             self.dev.request({"cmd": "brightness", "val": bright})
             self.dev.request({"cmd": "mode", "val": mode})
             self.post(lambda: self._mark_display_pushed(mode, bright))
             bad = self._verify_keys_sync()
             self._healed = False
             if bad:                                                  # auto-heal: send everything once more, then look again
-                for lay, sl, spec in jobs:
-                    self.dev.request(self._remap_msg(lay, sl, spec))
+                self._send_remaps(jobs)
                 again = self._verify_keys_sync()
                 self._healed = not again
                 bad = again

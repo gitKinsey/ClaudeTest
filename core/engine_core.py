@@ -174,7 +174,7 @@ class EngineCore:
             type_clipboard=self._type_clipboard, type_text=self._type_text, read_clipboard=self._clipboard_text, counter=self._next_counter,
             script_runner=self.run_script, sysact=sysactions.SysActions(), layouts=winlayout.WinLayouts(), layout_store=lambda: self.cfg["layouts"],
             cliphist=self.cliphist, cfg_get=lambda k, d=None: self.cfg.get(k, d), focus_program=lambda: (self.active_win.get()[0] or ""),
-            notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok")), plugin_runner=self._run_plugin, pad_image=self.pad_image)
+            notify=lambda t, m: self.post(lambda: self.notify(t, m, "ok", pad=True)), plugin_runner=self._run_plugin, pad_image=self.pad_image)
         self.plugins = plugins.PluginHost(CONFIG_PATH.parent / (CONFIG_PATH.name + ".plugins"), api=PluginApi(self))
         if self.cfg.get("plugins_on"):
             self.plugins.load()
@@ -308,7 +308,10 @@ class EngineCore:
     def goto(self, page, section=None):
         self.emit("goto", page, section)
 
-    def notify(self, title, text, kind="ok"):
+    def notify(self, title, text, kind="ok", pad=False):
+        """pad=True: also a banner on the pad's own screen (firmware 1.6, switch in Pad & App -> Behaviour)."""
+        if pad and not self.closing:
+            self.pad_toast(text or title, "ok" if kind == "ok" else "warn")
         if not self.cfg.get("notify", True) or self.closing:
             return
         self.emit("toast", title, text, kind)
@@ -422,6 +425,8 @@ class EngineCore:
         self.cfg[key] = value
         save_config(self.cfg)
         self.emit("pref", key, value)
+        if key == "accent" and self.cfg.get("pad_accent") and self.dev.connected:
+            self.push_accent()
         if restart:
             self.set_status("Saved - it applies the next time the app starts")
 
@@ -570,7 +575,7 @@ class EngineCore:
         """Runs on the API server's thread."""
         k = r["kind"]
         if k == "notify":
-            self.post(lambda: self.notify("Desk Companion", r["text"], "ok"))
+            self.post(lambda: self.notify("Desk Companion", r["text"], "ok", pad=True))
             return {}
         if k == "badge":
             if not self.badges:
@@ -623,7 +628,7 @@ class EngineCore:
                 if not self.dev.connected:
                     raise RuntimeError("the pad is not connected")
                 self.dev.request(msg)
-            return autorules.run_entry(entry, request, self.hostact.run, lambda t: self.post(lambda: self.notify("Reminder", t, "ok")))
+            return autorules.run_entry(entry, request, self.hostact.run, lambda t: self.post(lambda: self.notify("Reminder", t, "ok", pad=True)))
         label = entry.get("name") or "Scheduled action"
         self.bg(work, lambda desc: self.set_status(f"{label}: {desc}"), f"{label} failed")
 
@@ -916,6 +921,7 @@ class EngineCore:
             self.dev.request({"cmd": "os", "val": self.cfg["os"]})
             self.dev.request(time_msg())
             self._push_layout()
+            self._push_fw16_state()
         self.bg(work, None, "Initial sync failed")
         if info.get("core_only"):
             self.set_status("Connected to the CoreBringup diagnostic sketch - LED, ports and GPIO tests work. Flash the full firmware (Pad & App -> Firmware) for the rest.")
@@ -961,6 +967,8 @@ class EngineCore:
         evt = m.get("evt")
         if evt == "layer" and isinstance(m.get("n"), int):
             self.post(lambda n=m["n"]: self._pad_layer_changed(n))
+        elif evt == "state":
+            self.post(lambda m=dict(m): self._on_state_event(m))
         elif evt == "host" and self.hw_listener:
             self.post(lambda: self.vp_log("host action ignored while the hardware test is running"))
         elif evt == "host" and self.game_mode:

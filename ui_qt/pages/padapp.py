@@ -55,6 +55,7 @@ class PadAppPage(Page):
         c.add(flow(button("Sync time now", "secondary", e.sync_time)))
         c.add(separator())
         c.add(cfg_switch(e, "Popup + sound when the pad connects", "notify", True))
+        c.add(cfg_switch(e, "Also show reminders and app messages on the pad's screen (firmware 1.6)", "pad_toasts", True))
         hm = cfg_switch(e, "Mirror this PC's volume / playback on the pad", "host_media_sync", True)
         if not e.hostmedia.available:
             hm.setChecked(False)
@@ -181,6 +182,9 @@ class PadAppPage(Page):
         a.add(Field("Size", scale))
         a.add(Field("Language", lang))
         a.add(cfg_switch(e, "Reduce motion (no sliding or fading)", "reduce_motion"))
+        pa = ToggleRow("The pad follows this accent colour (firmware 1.6)", bool(cfg.get("pad_accent")))
+        pa.toggled.connect(lambda v: pa.setChecked(e.set_pad_accent(bool(v))))
+        a.add(pa)
         adv = ToggleRow("Advanced mode (diagnostics, scripts, API and plugins, core flashing)", bool(cfg.get("advanced")))
         adv.toggled.connect(shell.set_advanced)
         e.on("advanced", lambda on: adv.setChecked(on))

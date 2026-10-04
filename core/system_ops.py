@@ -172,6 +172,7 @@ class SystemOps:
                 try:
                     self.dev.request({"cmd": "layer", "val": lay})
                     st["layer"] = lay
+                    self.send_ctx((rule.get("name") or proc or title) if rule else "")
                     self.post(lambda t=f"Profile: {proc or title[:20]} -> layer {lay + 1}": self._dev_note(t))
                 except DeviceError:
                     st["win"] = None
@@ -470,6 +471,8 @@ class SystemOps:
             return "old", f"firmware {cur} - older than the {FW_BUNDLED} that belongs to this app"
         if a > b:
             return "newer", f"firmware {cur} - newer than this app expects ({FW_BUNDLED}); update the app"
+        if self.proto_newer():
+            return "newer", f"firmware {cur} speaks a newer protocol (level {self.dev.info.get('proto')}) than this app - update the app"
         return "ok", f"firmware {cur} - up to date"
 
     def wifi_supported(self):
@@ -833,7 +836,8 @@ class SystemOps:
 
     def mirror_busy_snapshot(self, done, fail):
         """One live-mirror frame (not while the pad is busy)."""
-        self.bg(lambda: self.dev.snapshot(), done, "Mirror stopped", fail=fail)
+        scale = 2 if self._pad_cap("snap2") else 1                 # firmware 1.6: a 120x120 frame is enough for a live view and 4x lighter on the link
+        self.bg(lambda: self.dev.snapshot(scale=scale), done, "Mirror stopped", fail=fail)
 
     def hid_later(self, msg, n=3):
         if not self.dev.connected:

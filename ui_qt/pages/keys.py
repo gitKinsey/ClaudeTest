@@ -131,6 +131,7 @@ class KeysPage(Page):
         e.on("pad_state", self.on_pad_state)
         e.on("live_test", self.on_live)
         self.refresh_rows()
+        self.refresh_names()
         self.on_pending(e.pending_count)
 
     # ---- events
@@ -184,6 +185,21 @@ class KeysPage(Page):
             l.addWidget(row)
             self.rows[slot] = (cc, ac)
         l.addWidget(flow(button("Upload all to pad", "primary", self.engine.upload_all), button("Reset this layer to defaults", "secondary", self.engine.reset_defaults)))
+        l.addWidget(label("Layer names on the pad", "h3"))
+        self.names_note = label("", "muted", wrap=True)
+        l.addWidget(self.names_note)
+        self.name_edits = []
+        for i in range(3):
+            ed = QLineEdit()
+            ed.setMaxLength(10)
+            ed.setPlaceholderText(f"L{i + 1}")
+            ed.returnPressed.connect(self.save_layer_names)
+            self.name_edits.append(ed)
+        l.addWidget(flow(*self.name_edits))
+        l.addWidget(flow(button("Save layer names", "secondary", self.save_layer_names)))
+        self.engine.on("layer_names", lambda _n: self.refresh_names())
+        self.engine.on("connected", lambda *_: self.refresh_names())
+        self.engine.on("disconnected", self.refresh_names)
         l.addWidget(label("Share this layer", "h3"))
         self.share_edit = QLineEdit()
         self.share_edit.setPlaceholderText(tr("paste a share code (DC1:...)"))
@@ -193,6 +209,17 @@ class KeysPage(Page):
                          button("Export macros...", "ghost", self.engine.macro_export), button("Import macros...", "ghost", self.engine.macro_import)))
         l.addStretch(1)
         return w
+
+    def refresh_names(self):
+        e = self.engine
+        for ed, n in zip(self.name_edits, e.layer_names()):
+            if not ed.hasFocus():
+                ed.setText(n)
+        self.names_note.setText(tr("The pad shows these on its layer badge (up to 10 letters; empty = L1, L2, L3).") if e._pad_cap("lnames") or not e.dev.connected
+                                else tr("This pad's firmware cannot show layer names (firmware 1.6). They are saved and sent when you update it."))
+
+    def save_layer_names(self):
+        self.engine.layer_names_set([ed.text() for ed in self.name_edits])
 
     def refresh_rows(self):
         e = self.engine
