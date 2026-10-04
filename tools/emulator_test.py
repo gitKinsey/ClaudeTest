@@ -1530,17 +1530,24 @@ TESTS = [t_first_boot_responsive, t_hello, t_ping_echo_id, t_info, t_led, t_gpio
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("flash")
+    ap.add_argument("flash", help="the QEMU flash image, or with --native the native firmware binary (tools/native/build.py)")
+    ap.add_argument("--native", action="store_true", help="run against the native host build instead of QEMU")
     ap.add_argument("--out", default="emulator_test_out")
     ap.add_argument("--only", default="")
     ap.add_argument("--port", type=int, default=5599)
     ap.add_argument("--safe-image", default="", help="flash image built with -DDC_FORCE_SAFE_MODE (enables the safe-mode test)")
     a = ap.parse_args()
     only = {x.strip() for x in a.only.split(",") if x.strip()}
-    work = a.flash + ".run"                                       # tests mutate flash (NVS / LittleFS): use a scratch copy
-    import shutil
-    shutil.copyfile(a.flash, work)
-    e = Emu(work, a.port)
+    if a.native:
+        import tempfile
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "native"))
+        from native_emu import NativeEmu
+        e = NativeEmu(os.path.abspath(a.flash), tempfile.mkdtemp(prefix="dcnative_"))
+    else:
+        work = a.flash + ".run"                                   # tests mutate flash (NVS / LittleFS): use a scratch copy
+        import shutil
+        shutil.copyfile(a.flash, work)
+        e = Emu(work, a.port)
     c = Ctx(e, a.out, a.safe_image or None)
     failed = 0
     try:

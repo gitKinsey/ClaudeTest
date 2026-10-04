@@ -12,7 +12,8 @@ echo "== lib_test";       $PY -W error tools/lib_test.py || fail=1
 for t in appextras_test textops_test scheduler_test bridge_test extras_test scripting_test sysops_test system_test; do
   echo "== $t";           $PY tools/$t.py || fail=1
 done
-echo "== firmware 1.6 snippets (g++ + ArduinoJson; not a firmware build)"; $PY tools/fw_snippet_check.py || fail=1
+echo "== firmware: native build + the emulator suite on it"; $PY tools/native/build.py build/dc_native && DC_NATIVE_FLAGS=-DDC_SIM $PY tools/native/build.py build/dc_native_sim && $PY -W ignore tools/emulator_test.py --native build/dc_native_sim --out build/native_out || fail=1
+echo "== firmware 1.6 snippets (g++ + ArduinoJson; superseded by the native build, kept as a fast check)"; $PY tools/fw_snippet_check.py || fail=1
 # the engine (no widgets) against the simulated pad
 for t in tools/engine/*_test.py tools/engine/selftest.py; do
   echo "== $t";           $PY "$t" || fail=1
