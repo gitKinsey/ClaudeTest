@@ -18,7 +18,7 @@ for t in tools/engine/*_test.py tools/engine/selftest.py; do
   echo "== $t";           $PY "$t" || fail=1
 done
 # the Qt widgets against the simulated pad (offscreen)
-for t in shell style keys display rules scripts padapp fw16_ui monkey; do
+for t in shell style anim palette keys display rules scripts padapp fw16_ui monkey; do
   echo "== qt/$t";        $PY tools/qt/${t}_test.py 2>&1 | grep -v "does not support" ; [ "${PIPESTATUS[0]}" = 0 ] || fail=1
 done
 echo "== qt layout (5 sizes x 4 languages, light and dark)"
