@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kit import QtKit, find_button    # noqa: E402
 
-from PySide6.QtWidgets import QLabel, QLineEdit    # noqa: E402
+from PySide6.QtWidgets import QLabel    # noqa: E402
 
 from ui_qt.widgets import ToggleRow    # noqa: E402
 

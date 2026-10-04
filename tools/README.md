@@ -37,14 +37,15 @@ the Qt tests use Qt's `offscreen` platform. Needs `pip install PySide6 pyserial 
 * `tools/lib_test.py`, `appextras_test.py`, `scheduler_test.py`, `scripting_test.py`, `extras_test.py`, `bridge_test.py`, `textops_test.py`, `sysops_test.py`, `system_test.py` - the
   `desk_lib` modules in isolation: OTA client against a fake device, backup zips (incl. hostile ones), feeds (Open-Meteo / ICS / badge server against a local mock),
   active-window rules, the host-action whitelist, the recorder, scripting, update check, plugins, undo history, tips, languages, hotkey (fake backend), diagnostic zip.
+* `tools/fw_snippet_check.py` - compiles the firmware 1.6 functions of `DeskCompanion.ino` (cut out, with stand-ins for Arduino / TFT_eSPI) with the host g++ against the real ArduinoJson header: catches typos and type errors without the ESP32 toolchain. It is **not** a firmware build.
 * `tools/engine/*_test.py`, `tools/engine/selftest.py` - the **engine** (`core/`, no widgets): connection, the whole Diagnostics tool set, key upload and read-back verification,
   the 50-action library, macros and sequences, layers, profiles, Info feeds, GIF library (against a local mock Tenor + GIPHY server), computer / mouse actions, recovery, backup /
-  restore, schedules, local API, plugins, scripts, compatibility with pads on firmware 1.1 / 1.2 / 1.3 / 1.4, and the firmware 1.3 - 1.5 settings.
+  restore, schedules, local API, plugins, scripts, compatibility with pads on firmware 1.1 / 1.2 / 1.3 / 1.4 / 1.5, and the firmware 1.3 - 1.6 settings and commands (`fw16_test.py`: batched uploads, state events, program / layer names, banners, accent, small snapshots, counters).
 * `tools/qt/shell_test.py` - the Qt shell: rail, Advanced switch, status pill / bar, toasts, Overview, the twin (drag and drop, wheel), theme / accent / reduce motion, command palette,
   setup wizard, automatic backups, mini pad, guided hardware test (with its HTML report), window geometry, tray-aware close.
-* `tools/qt/keys_test.py`, `display_test.py`, `rules_test.py`, `scripts_test.py`, `padapp_test.py` - every page through its real widgets: the same user actions as clicking, with the effect checked on the simulated pad.
+* `tools/qt/keys_test.py`, `display_test.py`, `rules_test.py`, `scripts_test.py`, `padapp_test.py`, `fw16_ui_test.py`, `style_test.py` - every page through its real widgets: the same user actions as clicking, with the effect checked on the simulated pad.
 * `tools/qt/monkey_test.py` - visits every page and tab, clicks every enabled button, changes every switch / choice / slider / field, with confirmations refused and then accepted; any exception in a slot or event handler fails it.
-* `tools/qt_layout_test.py [--lang de] [--light] [--shots DIR]` - every page / tab / panel at five window sizes (1300x780, 1000x780, 800x780, 640x520, 1300x560): no clipped text, no widget outside its parent,
+* `tools/qt_tour.py OUTDIR` (a screenshot of every page and tab) and `tools/qt_states.py OUTDIR` (banners, wizard, palette, hardware test, toasts, mini pad, light theme) are for looking at the app; `tools/qt_layout_test.py [--lang de] [--light] [--shots DIR]` - every page / tab / panel at five window sizes (1300x780, 1000x780, 800x780, 640x520, 1300x560): no clipped text, no widget outside its parent,
   no overlap, no horizontal overflow, no page-level scrolling. `tools/qt_shots.py` writes the screenshots in `docs/qt_preview/`.
 * `tools/run_emulator_suite.sh` - builds both emulator images with arduino-cli and runs the whole QEMU suite (what CI does).
 

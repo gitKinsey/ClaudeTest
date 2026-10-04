@@ -8,7 +8,7 @@ from ui_qt.layouts import PageGrid
 from ui_qt.media import TabArea
 from ui_qt.pages.base import Page
 from ui_qt.pages.diag_tab import build_diag_tab
-from ui_qt.widgets import Bar, Card, Field, Segmented, ToggleRow, button, flow, label, separator, set_role
+from ui_qt.widgets import Bar, Card, Field, Segmented, ToggleRow, button, flow, label, separator, set_role, tr
 
 
 class PadAppPage(Page):
@@ -84,6 +84,8 @@ class PadAppPage(Page):
         fw = label("pad not connected", "h3", wrap=True)
         c.add(fw)
         c.add(label(f"This app ships firmware {FW_BUNDLED} (firmware/DeskCompanion.bin).", "muted", wrap=True))
+        fw16 = label("", "muted", wrap=True)
+        c.add(fw16)
         upd = button(f"Update the pad to {FW_BUNDLED}", "primary", lambda: e.flash_firmware("full"))
         core = button("Flash CoreBringup (diagnostic)", "secondary", lambda: e.flash_firmware("core"))
         wifi = button("Flash the Wi-Fi build", "secondary", lambda: e.flash_firmware("wifi"))
@@ -93,8 +95,17 @@ class PadAppPage(Page):
         c.add(label("Needs:  pip install esptool.  The pad is put into download mode automatically when it runs DeskCompanion; otherwise hold BOOT while plugging in USB.", "muted", wrap=True))
         c.stretch()
 
+        def fw16_text():
+            if not e.dev.connected or e.dev.info.get("core_only"):
+                return ""
+            if e._pad_cap("batch"):
+                return "This pad has the firmware 1.6 extras: batched key uploads, screen / brightness / layer changes reported to the app, program and layer names, app messages and the accent colour on the pad."
+            return ("Firmware 1.6 (in this repository's sketch; the shipped image is still " + FW_BUNDLED + ") adds: batched key uploads, screen / brightness / layer changes reported to the app, "
+                    "program and layer names on the pad, app messages on the pad and the pad following the app's accent colour. This pad does not have them yet - everything else works as before.")
+
         def fw_status(kind, text, banner):
             fw.setText(text)
+            fw16.setText(tr(fw16_text()))
             set_role(fw, {"ok": "ok", "off": "muted"}.get(kind, "warn"))
             wf.note.setText(e.wifi_note())
             for w in wf.widgets:
