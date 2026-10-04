@@ -1,0 +1,56 @@
+name: Firmware images
+
+# Builds firmware/CoreBringup.bin, DeskCompanion.bin (cable-only) and DeskCompanion-wifi.bin from the sources in this commit, plus SHA256SUMS, and uploads them as an
+# artifact. Run it by hand (Actions -> Firmware images -> Run workflow), download the artifact, check it on a pad, then commit the files into firmware/ together with the
+# version bump (FW_VERSION in DeskCompanion.ino, FW_BUNDLED / APP_VERSION in core/base.py, the version asserted in tools/emulator_test.py and the engine tests).
+# The board options below must stay equal to what firmware/README / the main README say the shipped images use. NEVER RUN so far: it was written in an environment
+# without arduino-cli, so the first run may need small fixes (merged image name, board options).
+on:
+  workflow_dispatch:
+  push:
+    tags: ["fw-*"]
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: arduino-cli, core 3.3.6, libraries
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR="$HOME/bin" sh
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/bin:$PATH"
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.6
+          arduino-cli lib install TFT_eSPI AnimatedGIF Bounce2 ArduinoJson
+          cp User_Setup.h "$HOME/Arduino/libraries/TFT_eSPI/User_Setup.h"
+      - name: Build the three images
+        run: |
+          FQBN="esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=cdc,PartitionScheme=default,FlashSize=4M,FlashMode=dio,PSRAM=disabled"
+          mkdir -p images
+          arduino-cli compile --fqbn "$FQBN" --export-binaries --output-dir out_core CoreBringup
+          arduino-cli compile --fqbn "$FQBN" --export-binaries --output-dir out_full DeskCompanion
+          arduino-cli compile --fqbn "$FQBN" --export-binaries --output-dir out_wifi --build-property "compiler.cpp.extra_flags=-DDC_ENABLE_WIFI=1" DeskCompanion
+          python3 - <<'PY'
+          import hashlib, pathlib
+          def trim(src, dst):                         # the merged image without its trailing 0xFF padding
+              data = pathlib.Path(src).read_bytes().rstrip(b"\xff")
+              pathlib.Path(dst).write_bytes(data)
+              return data
+          sums = []
+          for out, ino, name in (("out_core", "CoreBringup", "CoreBringup.bin"), ("out_full", "DeskCompanion", "DeskCompanion.bin"), ("out_wifi", "DeskCompanion", "DeskCompanion-wifi.bin")):
+              d = trim(next(pathlib.Path(out).glob(f"{ino}.ino.merged.bin")), f"images/{name}")
+              sums.append(f"{hashlib.sha256(d).hexdigest()}  {name}")
+          pathlib.Path("images/SHA256SUMS").write_text("\n".join(sums) + "\n")
+          print("\n".join(sums))
+          PY
+          ls -l images
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-images
+          path: images

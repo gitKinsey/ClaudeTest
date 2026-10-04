@@ -55,7 +55,7 @@ Legend: `[ ]` open, `[x]` done and tested here, `[~]` written and tested in the 
 
 ## Cross-cutting
 
-* [ ] **Z1 build the images** - a CI job `firmware-images` that builds `DeskCompanion.bin`, `DeskCompanion-wifi.bin`, `CoreBringup.bin` and `SHA256SUMS` and uploads
+* [~] **Z1 build the images** (workflow `.github/workflows/firmware-images.yml` written, never run - manual trigger, artifact only, nothing is committed automatically) - a CI job `firmware-images` that builds `DeskCompanion.bin`, `DeskCompanion-wifi.bin`, `CoreBringup.bin` and `SHA256SUMS` and uploads
   them as an artifact (and attaches them on release). Until it has run, the bundled images stay 1.5.0. Needs a decision: commit the images by hand, or let CI commit them.
 * [ ] **Z2 version** - bump `FW_VERSION`, `FW_BUNDLED`, app version only together with Z1.
 * [x] **Z3 compatibility test** - `tools/engine/fw16_test.py` runs every item above against a simulated **1.6** pad and a simulated **1.5** pad (no new caps).

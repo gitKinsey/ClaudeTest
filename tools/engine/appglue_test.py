@@ -147,9 +147,10 @@ state = {"bad": 1}
 
 def flaky(msg, timeout=2.0):
     r = real_req(msg, timeout)
-    if msg.get("cmd") == "remap" and state["bad"] and msg.get("key") == 1 and not msg.get("layer"):
+    first = msg if msg.get("cmd") == "remap" else next((i for i in msg.get("items", []) if i.get("key") == 1 and not i.get("layer")), None) if msg.get("cmd") == "remap_batch" else None
+    if first and state["bad"] and first.get("key") == 1 and not first.get("layer"):
         state["bad"] = 0
-        real_req(dict(msg, type="text", val="corrupted"), timeout)          # the pad ends up with different data
+        real_req({"cmd": "remap", "key": 1, "type": "text", "val": "corrupted"}, timeout)          # the pad ends up with different data (single or batched upload)
     return r
 
 
@@ -164,7 +165,7 @@ app.dev.request = real_req
 frames = []
 app.mirror_busy_snapshot(lambda img: frames.append(img), lambda: frames.append(None))
 pump(120, lambda: frames)
-assert frames and frames[0] is not None and frames[0].size == (240, 240), "mirror shows the pad's screen"
+assert frames and frames[0] is not None and frames[0].size == (120, 120), "mirror shows the pad's screen (a firmware 1.6 pad sends the small frame)"
 
 
 # ---------------------------------------------------------------- share codes

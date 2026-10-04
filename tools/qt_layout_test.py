@@ -62,7 +62,7 @@ def audit(root, where):
                 problems.append(f"{where}: {name} sticks out vertically of its parent ({r.top()}..{r.bottom()} in {pr.height()})")
         if type(w).__name__ == "IconButton":
             continue
-        if hasattr(w, "text_full") and QPushButton.text(w) != w.text_full():
+        if hasattr(w, "text_full") and QPushButton.text(w).replace("&&", "&") != w.text_full():
             problems.append(f"{where}: button text is cut: {w.text_full()!r} shown as {QPushButton.text(w)!r}")
             continue
         if isinstance(w, (QLabel, QPushButton)) and not (isinstance(w, QLabel) and w.wordWrap()):
