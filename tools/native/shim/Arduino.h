@@ -52,7 +52,7 @@
 using std::min;
 using std::max;
 using std::isnan;
-#define RTC_NOINIT_ATTR
+#define RTC_NOINIT_ATTR __attribute__((section("rtcmem")))      // the native harness keeps this section across restarts / panics (see native_main.cpp)
 typedef uint8_t byte;
 typedef bool boolean;
 

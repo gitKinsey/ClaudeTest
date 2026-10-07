@@ -28,6 +28,7 @@ class NativeEmu(et.Emu):
         self.lock = threading.Lock()
         self.msgs, self.log, self.events = [], [], []
         self.hid, self.leds, self.backlight, self.restarts = [], [], None, 0
+        self.midi, self.pad, self.msc_blocks = [], [], {}
         self.flash = binary
         self.port = 0
         self.rid = 0
@@ -50,10 +51,11 @@ class NativeEmu(et.Emu):
                 line, buf = buf.split(b"\n", 1)
                 self._line(line.decode("utf-8", "replace").strip())
         proc.wait()
-        if proc.returncode == 75 and not self._closing and proc is self.p:           # esp_restart(): the pad resets itself
+        if proc.returncode in (75, 76) and not self._closing and proc is self.p:     # esp_restart() (75) / a panic (76): the pad resets itself
             self.restarts += 1
+            self.panics = getattr(self, "panics", 0) + (proc.returncode == 76)
             time.sleep(0.2)
-            self._launch(reset="sw")
+            self._launch(reset="sw" if proc.returncode == 75 else "panic")
 
     def _line(self, t):
         if not t:
@@ -70,6 +72,12 @@ class NativeEmu(et.Emu):
                 self.events.append(parts)
                 if parts and parts[0] == "hid":
                     self.hid.append(parts[1:])
+                elif parts and parts[0] == "midi":
+                    self.midi.append(parts[1:])
+                elif parts and parts[0] == "pad":
+                    self.pad.append(parts[1:])
+                elif parts and parts[0] == "msc" and len(parts) >= 3 and parts[1].isdigit():
+                    self.msc_blocks[int(parts[1])] = (int(parts[2]), bytes.fromhex(parts[3]) if len(parts) > 3 else b"")
                 elif parts and parts[0] == "led":
                     self.leds.append(tuple(int(x) for x in parts[1:4]))
                 elif parts and parts[0] == "bl":
@@ -124,6 +132,7 @@ class NativeEmu(et.Emu):
         time.sleep(0.2)
         self._closing = False
         self.msgs, self.log, self.events, self.hid, self.leds = [], [], [], [], []
+        self.midi, self.pad, self.msc_blocks = [], [], {}
         self._launch(reset="power")
 
     def close(self):
@@ -137,3 +146,15 @@ class NativeEmu(et.Emu):
                 self.p.kill()
             except Exception:                                      # noqa: BLE001
                 pass
+
+    def msc_read(self, lba, timeout=3.0):
+        """one 512-byte block through the firmware's USB mass-storage read callback"""
+        self.msc_blocks.pop(lba, None)
+        self.control(f"#mscread {lba}")
+        end = time.time() + timeout
+        while time.time() < end:
+            if lba in self.msc_blocks:
+                n, data = self.msc_blocks[lba]
+                return n, data
+            time.sleep(0.01)
+        raise TimeoutError("no msc block")

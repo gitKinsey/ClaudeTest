@@ -17,6 +17,7 @@ import random
 import re
 import secrets
 import shutil
+import struct
 import threading
 import time
 import zlib
@@ -30,6 +31,7 @@ APP_DIR = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))                                                          # desk_lib/ lives there
 from desk_lib import i18n, autobackup, extras, scheduler, scripting, textops, tokens     # noqa: E402
+from core.fw20_sim import (Fw20Sim, GESTURES20, NEW20_CAPS, NUM_MODES20, SETTINGS20_DEFAULT, SETTINGS20_BOOL, SETTINGS20_RANGE, PROTO20, fold_text)     # noqa: E402
 
 APP_NAME = "Desk Companion"
 APP_VERSION = "1.5.0"
@@ -907,7 +909,9 @@ def rgb565be_image(raw, w=240, h=240):
 FW_BUNDLED = "1.5.0"                     # version of firmware/DeskCompanion.bin shipped with this app
 LAYERS, GIF_SLOTS = 3, 4
 FX_NAMES = ("dial_lock", "theme_next", "rot_next", "mode_next", "mode_prev", "bright_up", "bright_down",
-            "latch_ctrl", "latch_shift", "latch_alt", "latch_gui", "popup", "switch_next", "switch_prev")      # pad functions (type "fx"), same list as the firmware
+            "latch_ctrl", "latch_shift", "latch_alt", "latch_gui", "popup", "switch_next", "switch_prev",
+            "leader", "hold_ctrl", "hold_shift", "hold_alt", "hold_gui", "trackball", "jog")      # pad functions (type "fx"), same list as the firmware (the last seven need firmware 2.0)
+FX_NEW20 = ("leader", "hold_ctrl", "hold_shift", "hold_alt", "hold_gui", "trackball", "jog")
 HOST_OPS = ("url", "app", "shell", "clipboard", "file", "notify", "snippet", "clip", "script",
             "appvol", "dnd", "audio_out", "mic", "shot", "translate", "ai", "webhook", "layout", "cliphist", "plugin", "art", "qr")
 DEFAULT_LAYERS = [
@@ -998,13 +1002,14 @@ NEW14_CAPS = ["screens", "pressturn", "toggle", "wheelmods", "ledfx", "reminders
 NEW15_CAPS = ["hostx2", "dimcmd", "themes", "fx", "chords", "tapdance", "dialclicks", "keyrepeat", "games", "pet", "diag", "viz", "labels", "bootlog", "rollback",
               "cards2", "saver2", "clock2", "display2", "konami"]                                           # firmware 1.5 additions (see hello "caps")
 NEW16_CAPS = ["stateevt", "batch", "snap2", "ctx", "lnames", "toast", "accent", "perf"]                        # firmware 1.6 additions (see hello "caps")
-PROTO_LEVEL = 16                                                                                           # the protocol revision this app speaks (hello "proto")
+PROTO_LEVEL = 20                                                                                           # the protocol revision this app speaks (hello "proto")
 BATCH_MAX_ITEMS, BATCH_MAX_CHARS = 24, 4800                                                               # remap_batch: items per command / characters of JSON per command (the pad accepts 6000)
 SETTINGS_DEFAULT = {"dial_accel": 0, "clock_style": 0, "saver_s": 0, "saver_style": 1, "night_on": False, "night_from": 22, "night_to": 7, "night_level": 30, "mode_mask": 0x3F}
 SETTINGS_RANGE = {"dial_accel": (0, 2), "clock_style": (0, 3), "saver_s": (0, 3600), "saver_style": (1, 3), "night_from": (0, 23), "night_to": (0, 23), "night_level": (5, 255), "mode_mask": (1, 4095)}
 SETTINGS15_DEFAULT = {"theme": 0, "tint": False, "rotation": 0, "pixel_shift": False, "fade": False, "boot_anim": True, "splash": "", "detent_led": False, "key_toast": False,
                       "repeat_mask": 0, "dial_lock": False, "host_dim": 0, "pomo_today": 0}
 SETTINGS15_RANGE = {"clock_style": (0, 5), "saver_style": (1, 7), "mode_mask": (1, 0xFFFFF), "theme": (0, 6), "rotation": (0, 3), "repeat_mask": (0, 31)}
+SETTINGS20_EXT = {"clock_style": (0, 8), "saver_style": (1, 13), "mode_mask": (1, 0xFFFFFFFF)}                   # firmware 2.0 widens three ranges
 SETTINGS15_BOOL = ("tint", "pixel_shift", "fade", "boot_anim", "detent_led", "key_toast", "dial_lock")
 LEGACY_CMDS = {"layer", "info_cards", "gif_list", "gif_cfg", "factory", "boot_opt", "safe_retry", "ota"}   # unknown to firmware 1.1
 
@@ -1012,7 +1017,7 @@ LEGACY_CMDS = {"layer", "info_cards", "gif_list", "gif_cfg", "factory", "boot_op
 CORE_CMDS = {"stats", "hello", "ping", "echo", "info", "led", "gpio", "inputs", "events", "run", "reboot", "display", "snapshot"}   # all CoreBringup knows
 
 
-class SimFirmware:
+class SimFirmware(Fw20Sim):
     """Implements the DeskCompanion wire protocol in pure Python, standing in for real hardware so the
     app's connect / remap / brightness / GIF-upload / Dev-tab code paths can be exercised with nothing plugged in."""
 
@@ -1024,6 +1029,7 @@ class SimFirmware:
         self.fw13 = bool(os.environ.get("DESK_COMPANION_SIM_V13"))          # behave like firmware 1.3.0 (everything but the 1.4 screens / actions)
         self.fw14 = bool(os.environ.get("DESK_COMPANION_SIM_V14"))          # behave like firmware 1.4.0 (everything but the 1.5 additions)
         self.fw15only = bool(os.environ.get("DESK_COMPANION_SIM_V15"))      # behave like firmware 1.5.0 (everything but the 1.6 additions)
+        self.fw16only = bool(os.environ.get("DESK_COMPANION_SIM_V16"))      # behave like firmware 1.6 (everything but the 2.0 additions)
         self.ctx, self.lnames, self.toast_log = "", ["", "", ""], []        # 1.6: program name, layer names, banners shown
         self.reminders = [{"m": 0, "t": ""} for _ in range(3)]
         self.dim = 0                          # temporary dim level (0 = off) set by {"cmd":"dim"}
@@ -1057,6 +1063,7 @@ class SimFirmware:
         self.events = False
         self.pins = {}
         self.t0 = time.monotonic()
+        self.init20()
         self.display = None                   # (r, g, b) of an active "fill" test pattern, or a pattern name
 
     def fw_text(self):
@@ -1122,8 +1129,18 @@ class SimFirmware:
                 self.host_log.append(st["host"])
                 self._send({"evt": "host", "op": st["host"]["op"], "arg": st["host"].get("arg", "")})
 
+    def _spec_ok(self, spec):
+        """spec_ok() plus what an older pad does not know: the 2.0 pad functions"""
+        if spec.get("type") == "fx" and spec.get("val") in FX_NEW20 and not self._fw20():
+            return False
+        return spec_ok(spec)
+
+    def _fm(self, v):
+        """text through the pad's folding (settings fold_text): accents / Greek / Cyrillic become ASCII instead of being refused"""
+        return fold_text(v) if self._fw20() and self.s20["fold_text"] and isinstance(v, str) else v
+
     def _modes(self):
-        return 6 if (self.fw12 or self.fw13) else 12 if self.fw14 else NUM_MODES
+        return 6 if (self.fw12 or self.fw13) else 12 if self.fw14 else NUM_MODES20 if self._fw20() else NUM_MODES
 
     def _fw15(self):
         return not (self.fw12 or self.fw13 or self.fw14)
@@ -1147,7 +1164,7 @@ class SimFirmware:
         return 7 if (self.fw12 or self.fw13) else 9 if self.fw14 else 15
 
     def _gestures(self):
-        return ("tap", "hold", "double", "triple") if self._fw15() else ("tap", "hold", "double")
+        return GESTURES20 if self._fw20() else ("tap", "hold", "double", "triple") if self._fw15() else ("tap", "hold", "double")
 
     def _run_fx(self, name):
         """The pad functions that change something the app can see (settings, brightness, screen); latch / popup / switcher have no visible state here."""
@@ -1237,14 +1254,20 @@ class SimFirmware:
                 if cmd == "getkeys":
                     msg.pop("slot", None)
 
+        if self._fw20() and cmd not in ("stats", "ping", "tiles") and isinstance(cmd, str) and cmd:
+            self.crumb(7, "CMD " + (cmd + "   ")[:3])
         if cmd == "stats":
+            if self._fw20():
+                self.pet["cpu"], self.pet["cpu_at"] = int(msg.get("cpu", 0) or 0), time.monotonic()
             return                             # 1 Hz telemetry, no reply - matches the real firmware
+        if self._fw20() and self.cmd20(cmd, msg, reply):
+            return
         if cmd == "hello":
             reply({"ok": True, "evt": "hello", "dev": "desk-companion", "fw": self.fw_text(),
                    "layer": self.layer, "layers": LAYERS, "modes": self._modes(), "gifs": len(self.gifs), "gif_rot": self.gif_rot,
                    "caps": ["layers", "mouse", "host", "info", "gifslots", "factory"] + ([] if self.fw12 else NEW13_CAPS) + ([] if self.fw12 or self.fw13 else NEW14_CAPS)
-                           + ([] if self.fw12 or self.fw13 or self.fw14 else NEW15_CAPS) + (NEW16_CAPS if self._fw16() else []) + (["wifi", "ota"] if self.wifi else []),
-                   **({"proto": PROTO_LEVEL} if self._fw16() else {}),
+                           + ([] if self.fw12 or self.fw13 or self.fw14 else NEW15_CAPS) + (NEW16_CAPS if self._fw16() else []) + (NEW20_CAPS if self._fw20() else []) + (["wifi", "ota"] if self.wifi else []),
+                   **({"proto": PROTO20 if self._fw20() else 16} if self._fw16() else {}),
                    "mode": self.mode, "bright": self.bright, "os": self.osv, "gif": self.gif_present,
                    "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "synced": False, "layout": self.layout,
                    "hid": True, "disp": True, "fs": True, "fs_state": "ready", "safe": False, "led_pin": 21})
@@ -1264,7 +1287,8 @@ class SimFirmware:
                    "fs_free": self._fs_free(), "fs_total": SIM_FS_TOTAL, "rx_ms_ago": 0, "events": self.events,
                    "gpio_touched": False, "led_pin": 21, "led_mode": self.led["mode"], "mode": self.mode, "bright": self.bright,
                    "boot": "0:power-on=ok;1:prefs=ok;2:usb=ok;3:fs=ok;4:display=ok;5:ready=ok;",
-                   **({"proto": PROTO_LEVEL, "loop_max_us": 31_000, "loop_avg_us": 1_800, "rx_overruns": self.rx_overruns, "usb_drops": 0} if self._fw16() else {})})
+                   **({"proto": PROTO20 if self._fw20() else 16, "loop_max_us": 31_000, "loop_avg_us": 1_800, "rx_overruns": self.rx_overruns, "usb_drops": 0} if self._fw16() else {}),
+                   **({"usb_suspended": False, "usb_wakes": 0} if self._fw20() else {})})
         elif cmd == "led":
             m = msg.get("mode", "")
             modes = {"auto": 0, "off": 1, "solid": 2, "blink": 3, "rainbow": 4, "breathe": 5, "fire": 6}
@@ -1427,12 +1451,14 @@ class SimFirmware:
             slots = []
             for i in range(1, 8):
                 s = self.layers[lay].get(i)
-                j = compact_json({"type": s["type"], "val": s["val"]}) if s else ""
+                j = compact_json(s) if s else ""
                 slots.append({"s": i, "def": not s, "len": len(j.encode()), "crc": zlib.crc32(j.encode()) & 0xFFFFFFFF if s else 0})
                 if i <= 5 and not self.fw12:
                     slots[-1].update(h=(lay, i, "hold") in self.gest, d=(lay, i, "double") in self.gest)
                     if self._fw15():
                         slots[-1]["t"] = (lay, i, "triple") in self.gest
+                    if self._fw20():
+                        slots[-1].update(h2=(lay, i, "hold2") in self.gest, h3=(lay, i, "hold3") in self.gest, sh=(lay, i, "shift") in self.gest)
             if not (self.fw12 or self.fw13):
                 base["pt"] = [8 in self.layers[lay], 9 in self.layers[lay]]
             if self._fw15():
@@ -1501,6 +1527,16 @@ class SimFirmware:
                    "display": "drawn", "hid": True, "keys": [0, 0, 0, 0, 0]})
         elif cmd == "reboot":
             reply({"ok": True, "evt": "reboot"})
+            if self._fw20():
+                self.usbx_boot = self.usbx
+                if not self.usbx_boot & 1:
+                    self.midi_on = False
+                if not self.usbx_boot & 2:
+                    self.pad_on = False
+                self.crumbs_prev, self.crumbs = list(self.crumbs), []
+                self.boots20 += 1
+                self.life["boots"] += 1
+                self.crumb(8, "BOOT r3 c0")
         elif cmd == "remap":
             key, lay = msg.get("key"), msg.get("layer", 0)
             if not isinstance(key, int) or not 1 <= key <= self._max_key():
@@ -1517,10 +1553,12 @@ class SimFirmware:
             elif not self.fw12 and msg.get("gesture", "tap") != "tap" and msg.get("clear"):
                 self.gest.pop((lay, key, msg["gesture"]), None)
                 reply({"ok": True, "evt": "remap"})
-            elif not spec_ok({"type": msg.get("type"), "val": msg.get("val")}):
+            elif not self._spec_ok({"type": msg.get("type"), "val": msg.get("val")}):
                 reply({"ok": False, "err": "spec"})
             else:
                 spec = {"type": msg.get("type"), "val": msg.get("val")}
+                if self._fw20() and msg.get("confirm") is True:
+                    spec["confirm"] = True
                 g = msg.get("gesture", "tap")
                 if g != "tap" and not self.fw12:
                     self.gest[(lay, key, g)] = spec
@@ -1561,6 +1599,7 @@ class SimFirmware:
                 return
             if "l" in msg:
                 lst = msg["l"]
+                lst = [self._fm(x) for x in lst] if isinstance(lst, list) else lst
                 if not (isinstance(lst, list) and len(lst) == 7 and all(isinstance(x, str) and len(x.strip()) <= 8 and "|" not in x and x.isascii() and x.isprintable() for x in lst)):
                     reply({"ok": False, "err": "labels"})
                     return
@@ -1570,7 +1609,7 @@ class SimFirmware:
             if msg.get("clear"):
                 self.rst_counts = [0] * 6
             reply({"ok": True, "evt": "boot_log", "log": "1:prefs=ok;2:usb=ok;3:display=ok;4:ready=ok;", "reset": "power-on", "crashes": self.crashes, "disp_why": self.disp_why,
-                   "counts": self.rst_counts, "usb_connects": 1, "usb_drops": 0, "up_ms": int((time.monotonic() - self.t0) * 1000), "heap": 210_000, "heap_min": 180_000})
+                   **({"crumbs": ", ".join(c["s"] for c in self.crumbs_prev[-8:])} if self._fw20() else {}), "counts": self.rst_counts, "usb_connects": 1, "usb_drops": 0, "up_ms": int((time.monotonic() - self.t0) * 1000), "heap": 210_000, "heap_min": 180_000})
         elif cmd == "rollback":
             if not msg.get("confirm"):
                 reply({"ok": False, "err": "confirm"})
@@ -1582,6 +1621,7 @@ class SimFirmware:
         elif cmd == "habits":
             if "names" in msg:
                 nm = msg["names"]
+                nm = [self._fm(x) for x in nm] if isinstance(nm, list) else nm
                 if not (isinstance(nm, list) and len(nm) == 5 and all(isinstance(x, str) and 0 < len(x.strip()) <= 10 and "|" not in x for x in nm)):
                     reply({"ok": False, "err": "names"})
                     return
@@ -1596,6 +1636,8 @@ class SimFirmware:
         elif cmd == "reminders":
             if "list" in msg:
                 lst = msg["list"]
+                if isinstance(lst, list) and self._fw20() and self.s20["fold_text"]:
+                    lst = [dict(x, t=fold_text(str(x["t"]))) if isinstance(x, dict) and isinstance(x.get("t"), str) else x for x in lst]
                 ok = isinstance(lst, list) and len(lst) <= 3 and all(isinstance(x, dict) and isinstance(x.get("m", 0), int) and 0 <= x.get("m", 0) <= 1440
                                                                       and len(str(x.get("t", ""))) <= 16 and not any(c in str(x.get("t", "")) for c in "|;")
                                                                       and (x.get("m", 0) == 0 or str(x.get("t", "")).strip()) for x in lst)
@@ -1613,6 +1655,12 @@ class SimFirmware:
         elif cmd == "settings":
             if not (self.fw12 or self.fw13 or self.fw14):                       # firmware 1.5: wider ranges and the new fields (all validated before anything changes)
                 new = {}
+                new20 = {}
+                if self._fw20():
+                    new20, bad20 = self.settings20_validate(msg)
+                    if bad20:
+                        reply({"ok": False, "err": "settings"})
+                        return
                 for k, v in msg.items():
                     if k in ("cmd", "id"):
                         continue
@@ -1622,6 +1670,7 @@ class SimFirmware:
                             return
                         new[k] = v
                     elif k == "splash":
+                        v = self._fm(v)
                         if not isinstance(v, str) or len(v.strip()) > 12 or not v.isascii() or not (v.strip() == "" or v.strip().isprintable()):
                             reply({"ok": False, "err": "settings"})
                             return
@@ -1633,7 +1682,7 @@ class SimFirmware:
                                 return
                             new[k] = v
                     elif k in SETTINGS15_RANGE or k in SETTINGS_RANGE:
-                        lo, hi = SETTINGS15_RANGE.get(k) or SETTINGS_RANGE[k]
+                        lo, hi = (SETTINGS20_EXT.get(k) if self._fw20() else None) or SETTINGS15_RANGE.get(k) or SETTINGS_RANGE[k]
                         if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                             reply({"ok": False, "err": "settings"})
                             return
@@ -1643,7 +1692,10 @@ class SimFirmware:
                 if "dial_lock" in new:
                     self.settings15["dial_lock"] = new["dial_lock"]
                 self.settings15["host_dim"] = self.dim
-                reply(dict({"ok": True, "evt": "settings", "bl": min(self.bright, self.dim) if self.dim else self.bright, "saver_on": False}, **self.settings, **self.settings15))
+                self.s20.update(new20)
+                if "enc_edges" in new20 or "enc_invert" in new20:
+                    self.enc["edges"], self.enc["invert"] = self.s20["enc_edges"], self.s20["enc_invert"]
+                reply(dict({"ok": True, "evt": "settings", "bl": min(self.bright, self.dim) if self.dim else self.bright, "saver_on": False}, **self.settings, **self.settings15, **(self.s20 if self._fw20() else {})))
                 return
             new = {}
             for k, v in msg.items():
@@ -1676,7 +1728,7 @@ class SimFirmware:
                 if isinstance(key, bool) or not isinstance(key, int) or not 1 <= key <= 15:
                     reply({"ok": False, "err": "key"})
                     return
-                if g not in ("tap", "hold", "double", "triple"):
+                if g not in self._gestures():
                     reply({"ok": False, "err": "gesture"})
                     return
                 if g != "tap" and key > 5:
@@ -1689,7 +1741,9 @@ class SimFirmware:
                     plan.append((lay, key, g, None))
                     continue
                 spec = {"type": it.get("type"), "val": it.get("val")}
-                if not spec_ok(spec):
+                if self._fw20() and it.get("confirm") is True:
+                    spec["confirm"] = True
+                if not self._spec_ok(spec):
                     reply({"ok": False, "err": "spec"})
                     return
                 if len(compact_json(spec)) > 3800:
@@ -1708,7 +1762,7 @@ class SimFirmware:
                     self.layers[lay][key] = spec
             reply({"ok": True, "evt": "remap_batch", "n": len(plan)})
         elif cmd == "ctx":
-            t = msg.get("text", "")
+            t = self._fm(msg.get("text", ""))
             if not isinstance(t, str) or len(t) > 16:
                 reply({"ok": False, "err": "too_long" if isinstance(t, str) else "bad_arg"})
             elif not t.isascii() or not (t == "" or t.isprintable()):
@@ -1719,13 +1773,14 @@ class SimFirmware:
         elif cmd == "layer_names":
             names = msg.get("names")
             if names is not None:
+                names = [self._fm(n) for n in names] if isinstance(names, list) else names
                 if not isinstance(names, list) or len(names) != LAYERS or any(not isinstance(n, str) or len(n) > 10 or not n.isascii() or not (n == "" or n.isprintable()) for n in names):
                     reply({"ok": False, "err": "names"})
                     return
                 self.lnames = list(names)
             reply({"ok": True, "evt": "layer_names", "names": list(self.lnames)})
         elif cmd == "toast":
-            t, kind, secs = msg.get("text", ""), msg.get("kind", "ok"), msg.get("secs", 3)
+            t, kind, secs = self._fm(msg.get("text", "")), msg.get("kind", "ok"), msg.get("secs", 3)
             if not isinstance(t, str) or not t:
                 reply({"ok": False, "err": "bad_arg"})
             elif len(t) > 24:
@@ -1751,6 +1806,10 @@ class SimFirmware:
             reply({"ok": True, "evt": "layout"})
         elif cmd == "wifi" and not self.wifi and not self.legacy:
             reply({"ok": False, "err": "wifi_disabled"})
+        elif cmd == "time" and self._fw20():
+            if isinstance(msg.get("epoch"), int):
+                self.sim_time = msg["epoch"]
+            reply({"ok": True, "evt": "time"})
         elif cmd in ("time", "wifi", "media"):
             reply({"ok": True, "evt": cmd})
         elif cmd == "gif_begin":
@@ -1821,7 +1880,10 @@ class SimFirmware:
         img = Image.new("RGB", (240, 240), (0, 0, 0))
         d = ImageDraw.Draw(img)
         disp = self.display
-        if isinstance(disp, tuple):
+        if self._fw20() and self.stream["active"] and self.mode == 32 and self.stream["buf"] is not None:
+            buf = self.stream["buf"]
+            img.putdata([(((v >> 11) & 31) << 3, ((v >> 5) & 63) << 2, (v & 31) << 3) for v in struct.unpack("<57600H", bytes(buf))])
+        elif isinstance(disp, tuple):
             d.rectangle((0, 0, 240, 240), fill=disp)
         elif disp == "bars":
             for i, c in enumerate([(255, 255, 255), (255, 255, 0), (0, 255, 255), (0, 255, 0), (255, 0, 255), (255, 0, 0), (0, 0, 255), (0, 0, 0)]):

@@ -13,7 +13,7 @@ k = Kit("dcfw16_")
 e, sim, pump = k.e, k.sim, k.pump
 caps = e.dev.info["caps"]
 assert all(c in caps for c in m.NEW16_CAPS), caps
-assert e.dev.info["proto"] == m.PROTO_LEVEL == 16 and e.proto_newer() is False
+assert e.dev.info["proto"] == m.PROTO_LEVEL == 20 and e.proto_newer() is False
 
 # ---- batched key uploads: 21 key actions in a handful of requests, all stored, nothing pending afterwards
 e.upload_all()

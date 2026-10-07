@@ -8,6 +8,9 @@
 #include "Preferences.h"
 #include "LittleFS.h"
 #include "USB.h"
+#include "USBMIDI.h"
+#include "USBHIDGamepad.h"
+#include "USBMSC.h"
 #include "TFT_eSPI.h"
 #include "../../build/font_data.h"
 #undef min
@@ -16,6 +19,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <cstdarg>
+#include <csignal>
 
 static std::mutex outMu;
 static std::chrono::steady_clock::time_point T0 = std::chrono::steady_clock::now();
@@ -57,8 +61,13 @@ bool ledcAttach(uint8_t, uint32_t, uint8_t) { return true; }
 bool ledcSetup(uint8_t, uint32_t, uint8_t) { return true; }
 void ledcAttachPin(uint8_t, uint8_t) {}
 void ledcWrite(uint8_t, uint32_t duty) { static uint32_t last = 0xFFFFFFFF; if (duty != last) { last = duty; native_event("bl %u", duty); } }
-esp_reset_reason_t esp_reset_reason() { const char* r = getenv("DC_NATIVE_RESET"); return r && !strcmp(r, "sw") ? ESP_RST_SW : ESP_RST_POWERON; }
-void esp_restart() { native_event("restart"); fflush(stdout); _exit(75); }
+extern "C" { extern char __start_rtcmem[]; extern char __stop_rtcmem[]; }
+static std::string rtcPath() { const char* p = getenv("DC_NATIVE_NVS"); return p ? std::string(p) + ".rtc" : std::string(); }
+static void rtcSave() { std::string f = rtcPath(); if (f.empty()) return; FILE* fp = fopen(f.c_str(), "wb"); if (fp) { fwrite(__start_rtcmem, 1, (size_t)(__stop_rtcmem - __start_rtcmem), fp); fclose(fp); } }
+static void rtcLoad() { std::string f = rtcPath(); if (f.empty()) return; FILE* fp = fopen(f.c_str(), "rb"); if (fp) { size_t n = fread(__start_rtcmem, 1, (size_t)(__stop_rtcmem - __start_rtcmem), fp); (void)n; fclose(fp); } }
+static void onCrash(int) { rtcSave(); fflush(stdout); _exit(76); }          // a panic: RTC memory survives, the harness restarts the pad with reset reason "panic"
+esp_reset_reason_t esp_reset_reason() { const char* r = getenv("DC_NATIVE_RESET"); return r && !strcmp(r, "sw") ? ESP_RST_SW : r && !strcmp(r, "panic") ? ESP_RST_PANIC : ESP_RST_POWERON; }
+void esp_restart() { native_event("restart"); fflush(stdout); rtcSave(); _exit(75); }
 int xTaskCreatePinnedToCore(TaskFunction_t fn, const char*, uint32_t, void* arg, int, TaskHandle_t*, int) { std::thread([fn, arg]() { fn(arg); }).detach(); return 1; }
 void vTaskDelete(TaskHandle_t) {}
 static esp_partition_t part0 = {0, 0, 0x10000, 0x140000, "app0"};
@@ -83,6 +92,13 @@ void USBHIDMouse::click(uint8_t b) { native_event("hid ms click %u", b); }
 void USBHIDMouse::press(uint8_t b) { native_event("hid ms press %u", b); }
 void USBHIDMouse::release(uint8_t b) { native_event("hid ms release %u", b); }
 void USBHIDMouse::move(int8_t x, int8_t y, int8_t w, int8_t p) { native_event("hid ms move %d %d %d %d", x, y, w, p); }
+void USBMIDI::noteOn(uint8_t n, uint8_t v, uint8_t c) { native_event("midi on %u %u %u", n, v, c); }
+void USBMIDI::noteOff(uint8_t n, uint8_t v, uint8_t c) { native_event("midi off %u %u %u", n, v, c); }
+void USBMIDI::controlChange(uint8_t cc, uint8_t v, uint8_t c) { native_event("midi cc %u %u %u", cc, v, c); }
+bool USBHIDGamepad::send(int8_t x, int8_t y, int8_t z, int8_t rz, int8_t rx, int8_t ry, uint8_t hat, uint32_t b) { native_event("pad %d %d %u", x, y, b); return true; }
+static USBMSC::rd_t mscRead = nullptr; static uint32_t mscBlocks = 0;
+void USBMSC::onRead(rd_t cb) { mscRead = cb; } void USBMSC::onWrite(wr_t) {} void USBMSC::onStartStop(ss_t) {}
+bool USBMSC::begin(uint32_t blocks, uint16_t size) { mscBlocks = blocks; native_event("msc begin %u %u", blocks, size); return true; }
 
 // ---- NVS
 static std::map<std::string, std::pair<char, std::string>> nvs;       // key -> (type, value)
@@ -187,6 +203,7 @@ static void readerThread() {
   }
   std::lock_guard<std::mutex> g(rxMu); ctlq.push_back("#quit");
 }
+bool native_usb_suspended = false;
 static void control(const std::string& l) {
   int a = 0, b = 0;
   if (!strncmp(l.c_str(), "#key ", 5) && sscanf(l.c_str() + 5, "%d %d", &a, &b) == 2) {       // #key <1..5> <0|1>: 1 = pressed (pin LOW)
@@ -197,6 +214,11 @@ static void control(const std::string& l) {
     int n = abs(a) * 2;
     for (int i = 0; i < n; i++) { pinLevel[13] ^= 1; pinLevel[14] = a > 0 ? !pinLevel[13] : pinLevel[13]; if (encIsr) encIsr(); delayMicroseconds(900); }
   } else if (!strncmp(l.c_str(), "#pin ", 5) && sscanf(l.c_str() + 5, "%d %d", &a, &b) == 2) { if (a >= 0 && a < 64) pinLevel[a] = (uint8_t)b; }
+  else if (!strncmp(l.c_str(), "#usb ", 5) && sscanf(l.c_str() + 5, "%d", &a) == 1) native_usb_suspended = a != 0;     // #usb <1|0>: the host suspends / resumes the bus
+  else if (!strncmp(l.c_str(), "#mscread ", 9) && sscanf(l.c_str() + 9, "%d", &a) == 1) {     // #mscread <lba>: one block through the firmware's read callback, as hex
+    uint8_t blk[512]; int32_t n = mscRead ? mscRead((uint32_t)a, 0, blk, 512) : -1;
+    std::lock_guard<std::mutex> g(outMu); fprintf(stdout, "#msc %d %d ", a, n); for (int i = 0; i < 512 && n > 0; i++) fprintf(stdout, "%02x", blk[i]); fputc('\n', stdout); fflush(stdout);
+  }
   else if (l == "#quit") { fflush(stdout); _exit(0); }
   else if (l == "#frame") {                              // dump the sprite as one hex line for the test driver
     extern TFT_eSprite spr; TFT_eSprite* s = &spr;
@@ -206,6 +228,7 @@ static void control(const std::string& l) {
 extern void setup();
 extern void loop();
 int main() {
+  { const char* r = getenv("DC_NATIVE_RESET"); if (r && strcmp(r, "power")) rtcLoad(); for (int sg : {SIGSEGV, SIGABRT, SIGFPE, SIGILL, SIGBUS}) signal(sg, onCrash); }
   for (int i = 0; i < 64; i++) pinLevel[i] = HIGH;
   pinLevel[15] = HIGH;
   setvbuf(stdout, nullptr, _IONBF, 0);

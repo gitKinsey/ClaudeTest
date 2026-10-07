@@ -12,7 +12,7 @@ from desk_lib import audio, padconst as px   # noqa: E402
 
 # ---------------------------------------------------------------- pure rules
 ok = lambda t, v: m.spec_ok({"type": t, "val": v})   # noqa: E731
-assert all(ok("fx", n) for n in m.FX_NAMES) and not ok("fx", "nope") and not ok("fx", None) and len(m.FX_NAMES) == 14
+assert all(ok("fx", n) for n in m.FX_NAMES) and not ok("fx", "nope") and not ok("fx", None) and len(m.FX_NAMES) == 21 and m.FX_NAMES[14:] == m.FX_NEW20
 assert ok("macro", [{"fx": "dial_lock"}, {"delay": 10}]) and not ok("macro", [{"fx": "nope"}])
 for name in ("Lock / unlock the dial", "Next colour theme", "Popup menu of this layer's keys", "Window switcher: next (use on the dial)", "Sticky Ctrl (for the next key)"):
     assert ("Layers & Pad", name) in m.ACTION_INDEX, name
@@ -69,7 +69,7 @@ for kk in ("DESK_COMPANION_SIM_V12", "DESK_COMPANION_SIM_V13", "DESK_COMPANION_S
 k = Kit("dcfw15b_", fresh=False, frontend=fe)
 app, sim, pump = k.e, k.sim, k.pump
 status = lambda: k.status    # noqa: E731
-assert app.dev.info["fw"] == "1.5.0" and all(c in app.dev.info["caps"] for c in m.NEW15_CAPS) and app.dev.info["modes"] == 20
+assert app.dev.info["fw"] == "1.5.0" and all(c in app.dev.info["caps"] for c in m.NEW15_CAPS) and app.dev.info["modes"] == m.NUM_MODES20
 assert app.pad_settings_ok() and app.pad_settings_ok15()
 loaded = []
 app.on("pad_settings", lambda st: loaded.append(dict(st)))

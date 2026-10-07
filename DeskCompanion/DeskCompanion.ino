@@ -108,6 +108,38 @@ struct HidStub {                               // keeps every call site valid wh
 #define DC_CC_TYPE HidStub
 #define DC_MS_TYPE HidStub
 #endif
+#if DC_HAS_HID && defined(__has_include)
+#if __has_include("tusb.h")
+#include "tusb.h"
+#define DC_HAS_WAKE 1                          // remote wake-up of a sleeping PC from a key / the dial (TinyUSB)
+#endif
+#endif
+#ifndef DC_HAS_WAKE
+#define DC_HAS_WAKE 0
+#endif
+#if DC_HAS_HID && defined(__has_include)                // extra USB classes (apps_usb.h) exist only where the core ships them
+#if __has_include("USBMIDI.h")
+#include "USBMIDI.h"
+#define DC_HAS_MIDI 1
+#endif
+#if __has_include("USBHIDGamepad.h")
+#include "USBHIDGamepad.h"
+#define DC_HAS_PAD 1
+#endif
+#if __has_include("USBMSC.h")
+#include "USBMSC.h"
+#define DC_HAS_MSC 1
+#endif
+#endif
+#ifndef DC_HAS_MIDI
+#define DC_HAS_MIDI 0
+#endif
+#ifndef DC_HAS_PAD
+#define DC_HAS_PAD 0
+#endif
+#ifndef DC_HAS_MSC
+#define DC_HAS_MSC 0
+#endif
 #ifdef DC_SIM
 #define DC_SIM_FLAG 1
 #else
@@ -125,7 +157,8 @@ struct Step { uint8_t t = 0; uint8_t n = 0; uint8_t keys[6] = {0, 0, 0, 0, 0, 0}
 struct KeyName { const char* name; uint8_t code; };
 struct MediaName { const char* name; uint16_t code; };
 struct FileOut { fs::File f; void put(const uint8_t* b, size_t n) { f.write(b, n); } void tick() { delay(1); } };
-enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF, M_INFO, M_STOPW, M_BREATH, M_TOYS, M_REACT, M_SNAKE, M_HABIT, M_PONG, M_BREAK, M_FLAP, M_LIFE, M_PET, M_SIMON, M_DIAG, M_VIZ };
+enum Mode : uint8_t { M_CLOCK = 1, M_POMO, M_MEDIA, M_TELEM, M_GIF, M_INFO, M_STOPW, M_BREATH, M_TOYS, M_REACT, M_SNAKE, M_HABIT, M_PONG, M_BREAK, M_FLAP, M_LIFE, M_PET, M_SIMON, M_DIAG, M_VIZ,
+                M_SNIPS = 21, M_RADIAL, M_TYPER, M_TOTP, M_SKETCH, M_CALC, M_TIMERS, M_CAL, M_BLOCKS, M_PUZZLE, M_SPACE, M_STREAM };
 struct InfoCard { char kind = 'c'; String label, t, a, b; };
 struct Theme { uint16_t txt, dim, dim2, gray, acc, acc2, ok, warn, red; };
 struct Ball { float x, y, vx, vy; };
@@ -162,7 +195,7 @@ static void remTrigger(uint8_t i);
 static void habitsReply();
 static void remindersReply();
 static bool snCellOk(int x, int y);
-static void runSpecJson(const String& js, const char* fallback, uint8_t sid);
+static void runSpecJson(const String& js, const char* fallback, uint16_t sid);
 static bool modeKey(int i);
 static void snakeTurn(int steps);
 static void snakeTick();
@@ -343,6 +376,67 @@ static void encMulti(uint8_t n);
 static void encClickRegister(uint32_t now);
 static void onChord(uint8_t p);
 static void onKeyHoldEnd(int i);
+static void leaderTimeout();
+static bool appKey(int i);
+static bool appDial(int steps);
+static bool appClick();
+static void appTick();
+static void appScene();
+static uint32_t appInterval();
+static void appEnter(uint8_t m);
+static bool cmdExt(const char* cmd, JsonDocument& doc);
+static void extService();
+static void extLoad();
+static bool usbModeActive();
+static void usbModeKey(int i, bool down);
+static bool usbModeDial(int steps);
+static bool usbModeClick();
+static void usbExtraBegin();
+static bool cmdUsb(const char* cmd, JsonDocument& doc);
+static void crumb(uint8_t kind, uint8_t a = 0, uint16_t b = 0);
+static void crumbBoot(uint8_t reason, uint16_t crashes);
+static String crumbsTail(int n);
+static bool apIconLoad(const char* key, uint8_t* out);
+static void apIconKey(uint8_t lay, uint8_t k, char* out);
+static void apIconDraw(int x, int y, const uint8_t* bits, uint16_t col);
+static void ripplesAdd(int key);
+static void ripplesDraw();
+static bool ripplesActive();
+static void sysLoad();
+static bool cmdSys(const char* cmd, JsonDocument& doc);
+static void sceneClockExtra(const struct tm& t);
+static bool clockFlipping();
+static void saverExtra(uint8_t st);
+static void petReactTick();
+static bool petSweats();
+static String foldText(const char* s);
+static void ledEventService();
+static bool ledEventActive(uint8_t& r, uint8_t& g, uint8_t& b);
+static bool extSettingsParse(JsonDocument& doc, bool& bad);
+static void extSettingsApply();
+static void extSettingsReply(JsonDocument& d);
+static void ltDial(int steps);
+static void ltClick();
+static void ltTick();
+static uint16_t effSaverSec();
+static void strLeave();
+static void extOverlays();
+static bool pinKey(int i);
+static bool pinDial(int steps);
+static bool pinClick();
+static void scenePinLock();
+static void confirmCancel();
+static void confirmRun();
+static bool leaderFeed(int i);
+static void usbWake();
+static bool usbIsSuspended();
+static void encCalFinish();
+static void inertiaService();
+static void releaseHeldMods();
+static void reholdMods();
+static void swhService(bool force);
+static void tbMove(int steps);
+static void jogTurn(int steps);
 static void clearLayerKeys(uint8_t l);
 static void sinInit();
 static bool gameBusy();
@@ -360,7 +454,7 @@ static bool lifeInside(int x, int y);
 static void lifeCount();
 static void lifeRand();
 static void lifeStep();
-static void lifeTick();
+static void ltTick();
 static void lifeKey(int i);
 static void drawLife(bool hud);
 static void sceneLife();
@@ -397,9 +491,10 @@ static const size_t   RX_MAX = 6000;              // longest accepted JSON line
 static const bool     DC_IS_SIM = DC_SIM_FLAG;
 static const uint8_t  PIN_RGB = DC_RGB_PIN;       // onboard WS2812 (Waveshare ESP32-S3-Zero: GPIO21)
 static const char*    FW_VERSION = "1.5.0";
-static const char*    MODE_NAME[21] = {"", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO", "STOPWATCH", "BREATHE", "DICE", "REACTION", "SNAKE", "HABITS",
-                                       "PONG", "BREAKOUT", "FLAPPY", "LIFE", "PET", "SIMON", "DIAGNOSTICS", "SOUND"};
-static const uint8_t  NUM_MODES = 20;   // 1-6 are the classic screens; 7-20 are optional (enable them with settings "mode_mask")
+static const char*    MODE_NAME[33] = {"", "CLOCK", "FOCUS", "MEDIA", "SYSTEM", "GIF", "INFO", "STOPWATCH", "BREATHE", "DICE", "REACTION", "SNAKE", "HABITS",
+                                       "PONG", "BREAKOUT", "FLAPPY", "LIFE", "PET", "SIMON", "DIAGNOSTICS", "SOUND",
+                                       "SNIPPETS", "RADIAL", "TYPER", "2FA CODES", "SKETCH", "CALC", "TIMERS", "CALENDAR", "BLOCKS", "PUZZLES", "SPACE", "STREAM"};
+static const uint8_t  NUM_MODES = 32;   // 1-6 are the classic screens; 7-20 are optional (enable them with settings "mode_mask"); 21-32 are the firmware 2.0 apps (apps.h)
 static const uint8_t  LAYERS = 3;                 // key layers (each has K1..K5 + dial right / left)
 static const uint8_t  GIF_SLOTS = 4;              // /anim.gif (slot 0, also the built-in demo) + /anim1.gif .. /anim3.gif
 static const uint32_t INFO_STALE_MS = 300000UL;   // info cards older than this are shown as "no data"
@@ -439,7 +534,7 @@ uint8_t  gTri[LAYERS], gChord[LAYERS], gDial[LAYERS];   // triple-tap keys / cho
 uint8_t  gHold[LAYERS], gDbl[LAYERS];            // bit i = key i of that layer has a stored hold / double-tap action
 // ---- v1.4: optional screens 7-12, reminders, toggle / random actions, LED effects
 uint32_t modeMask = 0x003F;                      // screens in the dial menu / long-press cycle (bit m-1 = screen m); 1-6 by default
-uint8_t  tglState[LAYERS * 15 * 4];              // toggle actions: which half runs next, per (layer, slot, gesture)
+uint8_t  tglState[LAYERS * 15 * 8];              // toggle actions: which half runs next, per (layer, slot, gesture)
 bool     swRun = false; uint32_t swStartAt = 0, swAccum = 0, swLaps[4]; uint8_t swLapN = 0;
 bool     brRun = false; uint8_t brPattern = 0; uint32_t brStartAt = 0;
 uint8_t  toyKind = 0; int toyResult = 0; uint32_t toyRollUntil = 0;
@@ -484,7 +579,31 @@ char     lnames[LAYERS][11];                     // "layer_names": up to 10 prin
 char     msgTxt[25] = "";  uint8_t msgKind = 0;  uint32_t msgUntil = 0;   // "toast": a short message banner from the app (kind 0 ok, 1 warn, 2 error)
 bool     stateDirty = false;                     // mode / brightness / layer changed on the pad: tell the host (debounced, "stateevt")
 uint32_t loopMaxUs = 0, loopCnt = 0, rxOverruns = 0; uint64_t loopSumUs = 0;   // "info": longest / average loop time since boot, over-long request lines
-static const uint8_t PROTO_LEVEL = 16;           // protocol revision (1.6); "caps" stays the source of truth for features
+static const uint8_t PROTO_LEVEL = 20;           // protocol revision (2.0); "caps" stays the source of truth for features
+// ---- v2.0: keys, dial and USB helpers (leader sequences, tiered holds, shift layer, mod-tap, curves, inertia, trackball, jog, calibration, switch health)
+uint8_t  gH2[LAYERS], gH3[LAYERS], gShift[LAYERS], gModTap[LAYERS];   // keys with a 1 s / 2 s hold action, a "shifted" (dial held) action, a hold action that is a modifier
+uint8_t  heldMods = 0;  int8_t holdModKey = -1;  uint8_t holdModBit = 0;        // mod-tap: modifiers held while a hold-key is down (1 ctrl, 2 shift, 4 alt, 8 gui)
+struct LeaderSeq { uint8_t n; uint8_t k[3]; String spec; };
+std::vector<LeaderSeq> leaderSeqs;               // up to 24 sequences of 1-3 keys -> an action
+bool     leaderOn = false;  uint32_t leaderAt = 0;  uint8_t leaderKeys[3] = {0, 0, 0}, leaderN = 0;  int8_t leaderPending = -1;
+uint8_t  repeatCurve = 0;                        // 0 steady, 1 ramp (starts slow, speeds up like a real keyboard)
+uint8_t  dialCurve[LAYERS] = {0, 0, 0};          // per layer: 0 the "dial_accel" levels, 1 smooth, 2 stepped, 3 aggressive
+bool     wheelInertia = false;  float inertiaV = 0;  uint32_t inertiaAt = 0;  bool inertiaH = false;   // mouse wheel keeps rolling after a flick
+bool     tbOn = false, tbFine = false, jogOn = false;    // pad modes: trackball, jog / shuttle
+bool     encShiftUsed = false;                   // a key was pressed while the dial button was held: that press is not a click
+uint8_t  encEdges = 2;  bool encInvertRt = false;  uint8_t encCal = 0;  int32_t calEdges = 0, calSum = 0;  uint32_t calAt = 0;   // dial calibration
+uint32_t swPress[5] = {0, 0, 0, 0, 0}, swChatter[5] = {0, 0, 0, 0, 0};  uint32_t swDownAt[5] = {0, 0, 0, 0, 0};  bool swDirty = false;   // switch health
+bool     pinSet = false, pinLocked = false, pinAll = false;          // v2.0 PIN lock (apps.h): pinAll = the whole pad is locked, otherwise only the secret screens
+bool     confirmOn = false, confirmBypass = false;  String confirmSpec;  uint16_t confirmSid = 0;  uint32_t confirmAt = 0;     // "confirm" actions: hold the dial 1 s to run
+bool     macroLong = false, macroRingOn = true;      // long macros show a progress ring; any key cancels them
+uint8_t  scrBright[33]; int16_t scrSaver[33];       // per-screen brightness (percent of the base level, 0 = inherit) and screensaver timeout (seconds, 0 = inherit, -1 = never)
+uint32_t petCheerUntil = 0, petSadUntil = 0;         // the pet cheers when the app reports a green build, sulks on a red one
+bool     foldOn = false;                         // settings "fold_text": names / messages with accents, Greek or Cyrillic are folded to ASCII (apps_sys.h foldText) instead of refused
+bool     suspDimOn = true, ripplesOn = false, aaOn = false;   // dim + LED off while the PC sleeps; typing ripples; anti-aliased rings
+uint8_t  legendMode = 0;                             // 0 off, 1 key names along the bottom, 2 icons (names where no icon is set)
+static String foldMaybe(const char* s) { return foldOn ? foldText(s) : String(s); }
+uint8_t  usbWasSuspended = 0;  bool usbWakeOn = true;  uint16_t usbWakes = 0;
+float    inertiaAcc = 0;
 uint8_t  ledFlashR = 0, ledFlashG = 0, ledFlashB = 0;
 InfoCard cards[4];
 InfoBadge badges[4];
@@ -625,6 +744,8 @@ static uint8_t effBright() {
   int b = brightness;
   if (nightOn && timeSynced) { struct tm t; localTm(t); if (nightActive(t.tm_hour, nightFrom, nightTo)) b = min(b, (int)nightLevel); }
   if (hostDim) b = min(b, (int)hostDim);                                        // the app dims the pad while the PC is locked / a video is fullscreen
+  if (scrBright[mode]) b = min(255, b * (int)scrBright[mode] / 100);             // per-screen brightness (settings "scr_bright")
+  if (suspDimOn && usbWasSuspended) b = 0;                                       // the PC is asleep: nothing to look at
   if (fadeAt) { uint32_t dt = millis() - fadeAt; if (dt >= 250) fadeAt = 0; else b = b * (int)dt / 250; }   // fade-in after a screen change
   return (uint8_t)b;
 }
@@ -762,6 +883,7 @@ static void ledFlash(uint8_t r, uint8_t g, uint8_t b, uint32_t ms) {   // short 
 static void ledService() {
   uint32_t now = millis();
   if ((int32_t)(now - ledNextAt) < 0) return;
+  if (suspDimOn && usbWasSuspended) { ledRaw(0, 0, 0); ledNextAt = now + 200; return; }
   if ((int32_t)(alertEnd - now) > 0) { bool on = ((now - alertStart) / 120) % 2 == 0; ledRaw(on ? alertR / 3 : 0, on ? alertG / 3 : 0, on ? alertB / 3 : 0); ledNextAt = now + 20; return; }
   switch (ledMode) {
     case LM_OFF: ledRaw(0, 0, 0); ledNextAt = now + 500; break;
@@ -775,6 +897,7 @@ static void ledService() {
     }
     case LM_FIRE: { uint32_t r = esp_random(); uint8_t base = 18 + (r & 31); ledRaw(base, (uint8_t)(base / 4 + ((r >> 8) & 7)), 0); ledNextAt = now + 45 + ((r >> 16) & 31); break; }
     default:                                                          // LM_AUTO
+      { uint8_t er, eg, eb; if (ledEventActive(er, eg, eb)) { ledRaw(er, eg, eb); ledNextAt = now + 10; break; } }   // a named LED event (cmd "led_event") has priority over everything below
       if ((int32_t)(ledFlashUntil - now) > 0) { ledRaw(ledFlashR, ledFlashG, ledFlashB); ledNextAt = now + 30; }
       else if (!ledReady) { ledRaw(ledBootR, ledBootG, ledBootB); ledNextAt = now + 100; }
       else if (safeMode) { uint32_t t = now % 1500; ledRaw((t < 150 || (t > 300 && t < 450)) ? 40 : 0, 0, 0); ledNextAt = now + 30; }
@@ -849,7 +972,8 @@ static bool parseKeys(JsonVariantConst arr, Step& s) {
 }
 // pad functions ("fx" actions): things the pad does by itself
 static const char* const FX_NAMES[] = {"dial_lock", "theme_next", "rot_next", "mode_next", "mode_prev", "bright_up", "bright_down",
-                                       "latch_ctrl", "latch_shift", "latch_alt", "latch_gui", "popup", "switch_next", "switch_prev"};
+                                       "latch_ctrl", "latch_shift", "latch_alt", "latch_gui", "popup", "switch_next", "switch_prev",
+                                       "leader", "hold_ctrl", "hold_shift", "hold_alt", "hold_gui", "trackball", "jog"};
 static bool parseFx(JsonVariantConst v, Step& s) {
   const char* nm = v.as<const char*>();
   if (!nm) return false;
@@ -981,7 +1105,8 @@ static void mouseDo(const Step& s) {
       if (s.keys[0]) delay(15);
       int8_t w = (int8_t)(int16_t)s.val;
       if (s.keys[1]) Mouse.move(0, 0, 0, w); else Mouse.move(0, 0, w, 0);
-      if (s.keys[0]) { delay(15); Keyboard.releaseAll(); }
+      if (s.keys[0]) { delay(15); Keyboard.releaseAll(); reholdMods(); }
+      else if (wheelInertia) { inertiaH = s.keys[1] != 0; inertiaV += w * 0.7f; if (inertiaV > 16) inertiaV = 16; if (inertiaV < -16) inertiaV = -16; inertiaAt = millis(); }   // keeps rolling after a flick
       break;
     }
     case 4: Mouse.move((int8_t)s.keys[1], (int8_t)s.keys[2], 0, 0); break;
@@ -998,10 +1123,13 @@ static void macroStart(std::vector<Step>& steps) {
     for (const Step& s : steps) macro.push_back(s);
     return;
   }
+  { uint32_t dl = 0, tl = 0; for (const Step& s : steps) { if (s.t == ST_DELAY) dl += s.val; if (s.t == ST_TEXT) tl += s.text.length(); } macroLong = steps.size() >= 6 || dl >= 600 || tl >= 40; }
+  crumb(9, (uint8_t)min<size_t>(255, steps.size()));
   macro.swap(steps); macroIdx = 0; textPos = 0; macroWake = millis(); macroRun = true;
 }
 static void panicNow() {                                          // panic key: let go of everything and drop every queued macro step
   Keyboard.releaseAll(); Mouse.release(0xFF); ConsumerControl.release();
+  heldMods = 0; holdModKey = -1; inertiaV = 0; inertiaAcc = 0; tbOn = jogOn = leaderOn = false;
   macro.clear(); macroIdx = 0; macroRun = false; textPos = 0;
   ledFlash(60, 0, 0, 300);
 }
@@ -1015,7 +1143,7 @@ static void macroTick() {
         if (latchMods) { static const uint8_t LM[4] = {0x80, 0x81, 0x82, 0x83}; for (int b = 0; b < 4; b++) if (latchMods & (1 << b)) Keyboard.press(LM[b]); latchMods = 0; needRedraw = true; }
         for (uint8_t i = 0; i < s.n; i++) Keyboard.press(s.keys[i]);
         delay(12);
-        Keyboard.releaseAll();
+        Keyboard.releaseAll(); reholdMods();
         macroIdx++; macroWake = millis() + 8; break;
       case ST_MEDIA: sendMedia(s.val); macroIdx++; macroWake = millis() + 5; break;
       case ST_DELAY: macroIdx++; macroWake = millis() + s.val; break;
@@ -1065,12 +1193,16 @@ static void slotKey(uint8_t lay, uint8_t i, char* out) {         // NVS key (max
 }
 // Runs a stored spec. Toggle / random / panic are decided here, at the moment the key runs; everything else goes through parseSpec().
 // sid identifies the key (layer, slot, gesture) so every toggle key remembers its own state.
-static void runSpecJson(const String& js, const char* fallback, uint8_t sid) {
+static void runSpecJson(const String& js, const char* fallback, uint16_t sid) {
   JsonDocument d;
   if (deserializeJson(d, js)) { if (!fallback || deserializeJson(d, fallback)) return; }
   JsonVariantConst spec = d.as<JsonVariantConst>();
   const char* t = spec["type"] | "";
   if (!strcmp(t, "panic")) { panicNow(); return; }
+  if ((spec["confirm"] | false) && !confirmBypass) {                  // a "confirm" action asks on the pad first: hold the dial for 1 s
+    confirmSpec = js; confirmSid = sid; confirmOn = true; confirmAt = millis(); needRedraw = true; showToast("CONFIRM?");
+    return;
+  }
   if (!strcmp(t, "layer") && spec["val"].is<const char*>() && gestureKeyNow >= 0) {          // "layer while held" as a hold action: the layer returns when the key is released
     String v = spec["val"].as<const char*>();
     if (v.length() == 5 && v.startsWith("hold") && v[4] >= '1' && v[4] < '1' + LAYERS) {
@@ -1078,6 +1210,7 @@ static void runSpecJson(const String& js, const char* fallback, uint8_t sid) {
       momentaryKey = gestureKeyNow; setLayer((uint8_t)(v[4] - '1')); return;
     }
   }
+  if (!strcmp(t, "fx") && gestureKeyNow >= 0 && spec["val"].is<const char*>() && !strncmp(spec["val"].as<const char*>(), "hold_", 5)) holdModKey = gestureKeyNow;   // mod-tap: this key is the modifier while it is held
   if (!strcmp(t, "toggle") && spec["val"].is<JsonArrayConst>() && spec["val"].size() == 2) {
     uint8_t half = tglState[sid % sizeof tglState] ? 1 : 0;
     tglState[sid % sizeof tglState] = half ? 0 : 1;
@@ -1094,7 +1227,7 @@ static void runSlot(uint8_t i) {                                  // i: 0..6 = K
   char k[8]; slotKey(curLayer, i, k);
   const char* def = i < 7 ? DEFAULT_SLOT[curLayer][i] : "";
   if (i >= 7 && !prefs.isKey(k)) return;
-  runSpecJson(prefs.getString(k, String(def)), def, (curLayer * 15 + i) * 4);
+  runSpecJson(prefs.getString(k, String(def)), def, (curLayer * 15 + i) * 8);
 }
 static void evtLayer() {
   if (!hostActive()) return;
@@ -1110,6 +1243,7 @@ static void evtState() {                                          // {"evt":"sta
 }
 static void setLayer(uint8_t n) {
   if (n >= LAYERS) return;
+  if (n != curLayer) crumb(6, n);
   bool changed = n != curLayer;
   if (changed) stateDirty = true;
   curLayer = n; layerToastUntil = millis() + 1600; needRedraw = true;
@@ -1120,8 +1254,31 @@ static void setLayer(uint8_t n) {
 }
 
 // ================================================================ drawing helpers (all draw into the 240x240 sprite)
+static uint16_t blend565(uint16_t bg, uint16_t fg, int a) {                 // a 0..256 = how much of fg
+  int r = (((bg >> 11) & 31) * (256 - a) + ((fg >> 11) & 31) * a) >> 8, g = (((bg >> 5) & 63) * (256 - a) + ((fg >> 5) & 63) * a) >> 8, b = ((bg & 31) * (256 - a) + (fg & 31) * a) >> 8;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+static void arcBandAA(int cx, int cy, float ro, float ri, float a0, float a1, uint16_t col) {   // settings "aa": every pixel of the ring gets its exact coverage, so the edges are smooth
+  float span = a1 - a0; bool full = span >= 359.9f;
+  int x0 = max(0, (int)(cx - ro - 1)), x1 = min(239, (int)(cx + ro + 1)), y0 = max(0, (int)(cy - ro - 1)), y1 = min(239, (int)(cy + ro + 1));
+  float lo2 = (ri - 1.0f) * (ri - 1.0f), hi2 = (ro + 1.0f) * (ro + 1.0f);
+  for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) {
+    float dx = (float)(x - cx), dy = (float)(y - cy), d2 = dx * dx + dy * dy;
+    if (d2 > hi2 || d2 < lo2) continue;
+    float d = sqrtf(d2), cov = fminf(1.0f, fmaxf(0.0f, ro + 0.5f - d)) * fminf(1.0f, fmaxf(0.0f, d - ri + 0.5f));
+    if (cov <= 0.0f) continue;
+    if (!full) {
+      float ang = atan2f(dx, -dy) * 57.2957795f; if (ang < 0) ang += 360.0f;
+      float rel = fmodf(ang - a0 + 720.0f, 360.0f), k = d * 0.0174533f, sd = rel <= span ? fminf(rel, span - rel) : -fminf(rel - span, 360.0f - rel);
+      cov *= fminf(1.0f, fmaxf(0.0f, sd * k + 0.5f));
+      if (cov <= 0.0f) continue;
+    }
+    int a = (int)(cov * 256.0f); if (a >= 250) spr.drawPixel(x, y, col); else if (a > 3) spr.drawPixel(x, y, blend565(spr.readPixel(x, y), col, a));
+  }
+}
 static void arcBand(int cx, int cy, float ro, float ri, float a0, float a1, uint16_t col) {   // 0 deg = 12 o'clock, clockwise
   if (a1 <= a0) return;
+  if (aaOn) { arcBandAA(cx, cy, ro, ri, a0, a1, col); return; }
   int n = (int)ceilf((a1 - a0) / 4.0f); if (n < 1) n = 1;
   float da = (a1 - a0) / n;
   for (int i = 0; i < n; i++) {
@@ -1200,6 +1357,7 @@ static void sceneClockAlt(const struct tm& t) {
 
 static void sceneClock() {
   struct tm t; localTm(t);
+  if (clockStyle >= 6) { sceneClockExtra(t); return; }
   if ((clockStyle >= 1 && clockStyle <= 3) || clockStyle == 5) { sceneClockAlt(t); return; }
   float frac = 0;                                                  // style 4: the seconds hand sweeps smoothly
   if (clockStyle == 4) { struct timeval tv; gettimeofday(&tv, nullptr); frac = tv.tv_usec / 1e6f; }
@@ -1350,6 +1508,7 @@ static void sceneMenu() {                              // radial overlay: BRIGHT
 // small status overlays drawn on top of every sprite scene: layer badge + key-press ring
 static void drawOverlays() {
   uint32_t now = millis();
+  extOverlays();
   if (curLayer > 0 || (int32_t)(layerToastUntil - now) > 0) {
     char b[12]; snprintf(b, sizeof b, "L%d", curLayer + 1);
     if (lnames[curLayer][0]) { strncpy(b, lnames[curLayer], 10); b[10] = 0; }                  // the layer's own name (command "layer_names")
@@ -1357,6 +1516,12 @@ static void drawOverlays() {
     int bw = lnames[curLayer][0] ? 12 + 9 * (int)strlen(b) : 40;
     spr.fillRoundRect(120 - bw / 2, 214, bw, 20, 8, c);
     spr.setTextDatum(MC_DATUM); spr.setTextColor(C_BG); spr.drawString(b, 120, 224, 2);
+  }
+  if (tbOn || jogOn || leaderOn) {                                         // v2.0 pad modes: a pill at the top says what the dial and keys do right now
+    const char* pm = leaderOn ? "LEADER" : tbOn ? (tbFine ? "TRACKBALL FINE" : "TRACKBALL") : "JOG";
+    int pw = 16 + 9 * (int)strlen(pm);
+    spr.fillRoundRect(120 - pw / 2, 8, pw, 20, 8, C_WARN);
+    spr.setTextDatum(MC_DATUM); spr.setTextColor(C_BG); spr.drawString(pm, 120, 18, 2);
   }
   if ((int32_t)(ctxUntil - now) > 0 && ctxTxt[0]) {                      // command "ctx": the program name next to the layer badge
     int cw = 14 + 8 * (int)strlen(ctxTxt);
@@ -1610,6 +1775,7 @@ static void sceneHabits() {
 }
 static bool modeKey(int i) {                                      // a screen may claim some keys (like the focus timer claims K1 / K2); true = handled
   uint32_t now = millis();
+  if (mode > 20) return appKey(i);
   switch (mode) {
     case M_STOPW:
       if (i == 0) { if (swRun) { swAccum += now - swStartAt; swRun = false; } else { swStartAt = now; swRun = true; } needRedraw = true; return true; }
@@ -1847,6 +2013,7 @@ static void petTick() {
     needRedraw = true;
   }
   if ((uint32_t)(now - petSaveAt) >= 300000UL) petSave();
+  petReactTick();
 }
 static void petKey(int i) {
   uint32_t now = millis(); petActAt = now; needRedraw = true;
@@ -1860,7 +2027,8 @@ static void petKey(int i) {
 }
 static void scenePet() {
   uint32_t now = millis();
-  float bob = petSleep ? 2.0f * sinf(now / 900.0f) : 3.0f * sinf(now / 260.0f);
+  bool cheer = (int32_t)(petCheerUntil - now) > 0, sad = (int32_t)(petSadUntil - now) > 0, sweat = petSweats();
+  float bob = petSleep ? 2.0f * sinf(now / 900.0f) : cheer ? 9.0f * fabsf(sinf(now / 140.0f)) : 3.0f * sinf(now / 260.0f);
   int avg = (petHun + petHap + petEne) / 3;
   uint16_t body = avg >= 60 ? C_OK : avg >= 30 ? C_WARN : C_RED;
   spr.fillSprite(C_BG);
@@ -1879,6 +2047,9 @@ static void scenePet() {
   if (petSleep) { spr.setTextColor(C_ACC); spr.drawString("z", 176 + (int)bob, cy - 36, 4); spr.drawString("z", 192, cy - 56, 2); }
   else if (petHun < 25) { spr.setTextColor(C_WARN); spr.drawString("FOOD?", 180, cy - 40, 2); }
   else if (petAct == 2 && (uint32_t)(now - petActAt) < 900) { spr.setTextColor(C_ACC2); spr.drawString("<3", 178, cy - 36, 4); }
+  if (cheer) { spr.setTextColor(C_WARN); spr.drawString("YAY!", 120, cy - 70, 4); for (int k = 0; k < 4; k++) spr.fillCircle(60 + k * 40 + (int)(6 * sinf(now / 200.0f + k)), 40 + (int)(10 * cosf(now / 170.0f + k)), 3, C_WARN); }
+  else if (sad) { spr.setTextColor(C_ACC); spr.drawString("...", 120, cy - 70, 4); spr.fillCircle(150, cy - 2 + (int)((now / 60) % 20), 3, C_ACC); }
+  if (sweat && !petSleep) { spr.fillTriangle(168, cy - 40, 162, cy - 28, 174, cy - 28, C_ACC); spr.fillCircle(168, cy - 26, 6, C_ACC); spr.fillTriangle(70, cy - 30, 66, cy - 20, 74, cy - 20, C_ACC); spr.fillCircle(70, cy - 18, 4, C_ACC); }
   const char* nm[3] = {"FOOD", "FUN", "REST"}; uint8_t v[3] = {petHun, petHap, petEne};
   for (int i = 0; i < 3; i++) {
     int x = 58 + i * 46;
@@ -1977,6 +2148,7 @@ static void sceneViz() {
   if (!live) { spr.setTextColor(C_GRAY); spr.drawString(vizAt ? "no sound" : "waiting for the app", 120, 214, 1); }
 }
 static bool modeDial(int steps) {                                  // the dial inside a screen that uses it; true = handled
+  if (mode > 20) return appDial(steps);
   switch (mode) {
     case M_PONG: case M_BREAK: padX = constrain(padX + steps * 10, 40.0f, 200.0f); needRedraw = true; return true;
     case M_FLAP: fpFlap(); return true;
@@ -1987,6 +2159,7 @@ static bool modeDial(int steps) {                                  // the dial i
   return false;
 }
 static void gamesTick() {
+  if (mode > 20) appTick();
   switch (mode) {
     case M_PONG: pgTick(false); break;
     case M_BREAK: pgTick(true); break;
@@ -2052,6 +2225,8 @@ static void sceneSaver() {
     if (!lifePop) lifeRand();
     uint32_t now = millis(); if ((uint32_t)(now - lifeAt) >= 160) { lifeAt = now; lifeStep(); if (!lifePop || lifeSame > 40) lifeRand(); }
     drawLife(false);
+  } else if (saverStyle >= 8) {                                // sketch / plasma / lava / matrix / Lissajous / aurora (apps_sys.h)
+    saverExtra(saverStyle);
   } else {                                                     // dim clock that drifts every minute (no burn-in)
     struct tm t; localTm(t); char b[8];
     snprintf(b, sizeof b, "%02d:%02d", t.tm_hour, t.tm_min);
@@ -2081,7 +2256,7 @@ static void renderScene() {
     case M_SIMON: sceneSimon(); break;
     case M_DIAG:  sceneDiag(); break;
     case M_VIZ:   sceneViz(); break;
-    default:      sceneGifMsg(); break;
+    default:      if (mode > 20) appScene(); else sceneGifMsg(); break;
   }
 }
 static void applyRotation() {
@@ -2108,6 +2283,7 @@ static void renderFrame() {
   if (!okSprite) return;
   if (uploading) sceneUpload();
   else if (remActive && !menuOpen) sceneReminder();
+  else if (pinLocked && pinAll) scenePinLock();
   else if (saverOn && !menuOpen) sceneSaver();
   else {
     if ((menuOpen || popupOpen) && mode == M_GIF) spr.fillSprite(C_BG); else renderScene();
@@ -2124,8 +2300,11 @@ static uint32_t renderInterval() {
     if ((msgUntil && (int32_t)(msgUntil - t) > -400) || (ctxUntil && (int32_t)(ctxUntil - t) > -400)) return 200; }
   if (partyUntil) return 40;
   if (remActive) return 50;
-  if (saverOn) return saverStyle == 3 ? 5000 : 45;
+  if (saverOn) return saverStyle == 3 ? 5000 : saverStyle >= 9 ? 70 : 45;
   if (flashAt && millis() - flashAt < 280 && mode != M_GIF) return 30;
+  if (confirmOn || (macroRun && macroLong && macroRingOn)) return 50;
+  if (ripplesOn && ripplesActive()) return 30;
+  if (pinLocked && pinAll) return 100;
   switch (mode) {
     case M_POMO:  return (pomoState == PS_RUN || pomoState == PS_DONE) ? 250 : 100000;
     case M_MEDIA: return playing ? 90 : 100000;
@@ -2145,7 +2324,8 @@ static uint32_t renderInterval() {
     case M_SIMON: return 60;
     case M_DIAG:  return 500;
     case M_VIZ:   return 60;
-    case M_CLOCK: return clockStyle == 4 ? 40 : 100000;
+    case 21: case 22: case 23: case 24: case 25: case 26: case 27: case 28: case 29: case 30: case 31: case 32: return appInterval();
+    case M_CLOCK: return clockStyle == 4 || (clockStyle == 6 && clockFlipping()) ? 40 : 100000;
     default:      return 100000;                       // clock redraws on second change
   }
 }
@@ -2369,7 +2549,9 @@ static void gifService() {
 static void setMode(uint8_t m) {
   if (m < 1 || m > NUM_MODES) return;
   if (m != mode) { prefs.putUChar("mode", m); stateDirty = true; if (fadeOn) { fadeAt = millis(); applyBacklight(); } }
-  mode = m; needRedraw = true;
+  mode = m; needRedraw = true; crumb(5, m); applyBacklight();                 // per-screen brightness
+  if (m > 20) appEnter(m);
+  if (m != M_STREAM) strLeave();
   if (m != M_SNAKE) snRun = false;                                // leaving a game pauses / resets it
   pgState = 0; fpState = 0; smState = 0;
   if (m == M_LIFE && !lifePop) lifeRand();
@@ -2440,22 +2622,22 @@ static void menuClick() {
 // DOUBLE-TAP action decides on release: tap = released before G_HOLD_MS (and, with a double-tap action, not followed by a second press
 // within G_DBL_MS); hold = still down after G_HOLD_MS; double = second press within G_DBL_MS. Pure state machine, driven with explicit
 // timestamps so it can be tested with synthetic timing (see cmdGestureTest).
-enum : uint8_t { G_TAP = 1, G_HOLD = 2, G_DOUBLE = 4, G_TRIPLE = 8, G_HOLD_END = 16 };       // G_HOLD_END: a key whose hold action fired was let go
-static const uint32_t G_HOLD_MS = 450, G_DBL_MS = 260;
+enum : uint8_t { G_TAP = 1, G_HOLD = 2, G_DOUBLE = 4, G_TRIPLE = 8, G_HOLD_END = 16, G_HOLD2 = 32, G_HOLD3 = 64 };       // G_HOLD_END: a key whose hold action fired was let go
+static const uint32_t G_HOLD_MS = 450, G_DBL_MS = 260, G_HOLD2_MS = 1000, G_HOLD3_MS = 2000;
 struct GestureFsm {
   bool down = false, holdFired = false, consumed = false, pending = false;
   uint8_t taps = 0;                                              // taps so far in a double / triple-tap sequence
   uint32_t downAt = 0, upAt = 0;
-  uint8_t step(bool isDown, uint32_t now, bool hasHold, bool hasDbl, bool hasTri = false) {
+  uint8_t step(bool isDown, uint32_t now, bool hasHold, bool hasDbl, bool hasTri = false, uint8_t tier = 0) {   // tier: bit 0 = a 1 s hold action exists, bit 1 = a 2 s one (they fire on release)
     uint8_t m = 0;
     if (pending && !down && (uint32_t)(now - upAt) > G_DBL_MS) {                                          // the multi-tap window closed
       pending = false;
       if (hasTri) { m |= (taps >= 2 && hasDbl) ? G_DOUBLE : G_TAP; taps = 0; } else m |= G_TAP;
     }
-    if (down && !holdFired && !consumed && hasHold && (uint32_t)(now - downAt) >= G_HOLD_MS) { holdFired = true; m |= G_HOLD; }
+    if (down && !holdFired && !consumed && hasHold && !tier && (uint32_t)(now - downAt) >= G_HOLD_MS) { holdFired = true; m |= G_HOLD; }
     if (isDown && !down) {                                      // press
       down = true; downAt = now; holdFired = false; consumed = false;
-      if (!hasHold && !hasDbl && !hasTri && !pending) { consumed = true; m |= G_TAP; }                    // plain key: act at once
+      if (!hasHold && !hasDbl && !hasTri && !tier && !pending) { consumed = true; m |= G_TAP; }                    // plain key: act at once
       else if (pending) {
         pending = false;
         if (hasTri) { taps++; if (taps >= 3) { taps = 0; consumed = true; m |= G_TRIPLE; } }             // 2nd tap: wait for a 3rd on release
@@ -2464,6 +2646,12 @@ struct GestureFsm {
     } else if (!isDown && down) {                               // release
       down = false; upAt = now;
       if (holdFired) m |= G_HOLD_END;
+      if (tier && !consumed && !holdFired) {                    // tiered holds: the longest tier reached decides, on release
+        uint32_t held = (uint32_t)(now - downAt);
+        if ((tier & 2) && held >= G_HOLD3_MS) { m |= G_HOLD3; consumed = true; }
+        else if ((tier & 3) && held >= G_HOLD2_MS && (tier & 1)) { m |= G_HOLD2; consumed = true; }
+        else if (hasHold && held >= G_HOLD_MS) { m |= G_HOLD; consumed = true; }
+      }
       if (!consumed && !holdFired) { if (hasDbl || hasTri) { pending = true; if (hasTri && taps == 0) taps = 1; } else m |= G_TAP; }
       consumed = false; holdFired = false;
     }
@@ -2477,7 +2665,7 @@ struct GestureFsm {
 };
 // ---- the five keys together: gestures per key plus chords (two neighbouring keys pressed within CHORD_MS of each other). Pure and driven with explicit
 // timestamps, like GestureFsm, so the timing can be tested without hardware (see cmdKeyTest).
-enum : uint8_t { KE_TAP, KE_HOLD, KE_DOUBLE, KE_TRIPLE, KE_CHORD, KE_HOLD_END };
+enum : uint8_t { KE_TAP, KE_HOLD, KE_DOUBLE, KE_TRIPLE, KE_CHORD, KE_HOLD_END, KE_HOLD2, KE_HOLD3 };
 static const uint32_t CHORD_MS = 45;
 struct KeyEvents { uint8_t n = 0, kind[16], idx[16]; void add(uint8_t k, uint8_t i) { if (n < 16) { kind[n] = k; idx[n] = i; n++; } } };
 struct KeyPipeline {
@@ -2486,15 +2674,17 @@ struct KeyPipeline {
   uint32_t cat[5] = {0, 0, 0, 0, 0};
   uint8_t eff = 0;                                               // bit i: key i is (still) counted as pressed by its gesture machine after the last step
   void prime(int i, uint32_t now) { fsm[i].down = true; fsm[i].consumed = true; fsm[i].downAt = now; cst[i] = 3; }
-  void dispatch(int i, uint32_t now, bool down, bool hh, bool dd, bool tt, KeyEvents& ev) {
-    uint8_t m = fsm[i].step(down, now, hh, dd, tt);
+  void dispatch(int i, uint32_t now, bool down, bool hh, bool dd, bool tt, KeyEvents& ev, uint8_t tier = 0) {
+    uint8_t m = fsm[i].step(down, now, hh, dd, tt, tier);
     if (m & G_TAP) ev.add(KE_TAP, i);
     if (m & G_HOLD) ev.add(KE_HOLD, i);
     if (m & G_DOUBLE) ev.add(KE_DOUBLE, i);
     if (m & G_TRIPLE) ev.add(KE_TRIPLE, i);
     if (m & G_HOLD_END) ev.add(KE_HOLD_END, i);
+    if (m & G_HOLD2) ev.add(KE_HOLD2, i);
+    if (m & G_HOLD3) ev.add(KE_HOLD3, i);
   }
-  void step(const bool* raw, uint32_t now, uint8_t chordMask, uint8_t hold, uint8_t dbl, uint8_t tri, KeyEvents& ev) {
+  void step(const bool* raw, uint32_t now, uint8_t chordMask, uint8_t hold, uint8_t dbl, uint8_t tri, KeyEvents& ev, uint8_t h2 = 0, uint8_t h3 = 0) {
     eff = 0;
     for (int i = 0; i < 5; i++) {
       bool involved = chordMask && ((i > 0 && ((chordMask >> (i - 1)) & 1)) || (i < 4 && ((chordMask >> i) & 1)));
@@ -2512,7 +2702,7 @@ struct KeyPipeline {
             }
             break;
           case 1:
-            if (!raw[i]) { dispatch(i, now, true, (hold >> i) & 1, (dbl >> i) & 1, (tri >> i) & 1, ev); cst[i] = 0; e = false; }   // a short tap: deliver press and release together
+            if (!raw[i]) { dispatch(i, now, true, (hold >> i) & 1, (dbl >> i) & 1, (tri >> i) & 1, ev, (uint8_t)(((h2 >> i) & 1) | (((h3 >> i) & 1) << 1))); cst[i] = 0; e = false; }   // a short tap: deliver press and release together
             else if ((uint32_t)(now - cat[i]) >= CHORD_MS) { cst[i] = 2; e = true; }
             else e = false;
             break;
@@ -2520,20 +2710,26 @@ struct KeyPipeline {
           default: e = false; if (!raw[i]) cst[i] = 0; break;
         }
       }
-      dispatch(i, now, e, (hold >> i) & 1, (dbl >> i) & 1, (tri >> i) & 1, ev);
+      dispatch(i, now, e, (hold >> i) & 1, (dbl >> i) & 1, (tri >> i) & 1, ev, (uint8_t)(((h2 >> i) & 1) | (((h3 >> i) & 1) << 1)));
       if (e) eff |= (1 << i);
     }
   }
 };
 static KeyPipeline kPipe;
+static char gestureChar(const char* g) {                         // protocol name -> NVS letter (0 = unknown): hold h, double d, triple t, hold 1 s j, hold 2 s k, dial-held ("shift") s
+  return !strcmp(g, "hold") ? 'h' : !strcmp(g, "double") ? 'd' : !strcmp(g, "triple") ? 't' : !strcmp(g, "hold2") ? 'j' : !strcmp(g, "hold3") ? 'k' : !strcmp(g, "shift") ? 's' : 0;
+}
 static void gestureKey(uint8_t lay, uint8_t i, char g, char* out) {          // NVS key of a hold ('h') / double-tap ('d') action: "hs3", "dL1s3"
   char b[8]; slotKey(lay, i, b); out[0] = g; strcpy(out + 1, b);
 }
 static void loadGestureFlags() {
   for (uint8_t l = 0; l < LAYERS; l++) {
-    gHold[l] = gDbl[l] = gTri[l] = gChord[l] = gDial[l] = 0;
+    gHold[l] = gDbl[l] = gTri[l] = gChord[l] = gDial[l] = gH2[l] = gH3[l] = gShift[l] = gModTap[l] = 0;
     for (uint8_t i = 0; i < 5; i++) {
-      char k[10]; gestureKey(l, i, 'h', k); if (prefs.isKey(k)) gHold[l] |= (1 << i);
+      char k[10]; gestureKey(l, i, 'h', k); if (prefs.isKey(k)) { gHold[l] |= (1 << i); if (prefs.getString(k, "").indexOf("\"hold_") >= 0) gModTap[l] |= (1 << i); }
+      gestureKey(l, i, 'j', k); if (prefs.isKey(k)) gH2[l] |= (1 << i);
+      gestureKey(l, i, 'k', k); if (prefs.isKey(k)) gH3[l] |= (1 << i);
+      gestureKey(l, i, 's', k); if (prefs.isKey(k)) gShift[l] |= (1 << i);
       gestureKey(l, i, 'd', k); if (prefs.isKey(k)) gDbl[l] |= (1 << i);
       gestureKey(l, i, 't', k); if (prefs.isKey(k)) gTri[l] |= (1 << i);
     }
@@ -2543,10 +2739,10 @@ static void loadGestureFlags() {
 }
 static const uint8_t NSLOTS = 15;
 static void clearLayerKeys(uint8_t l) {                           // every key, gesture, chord and dial-click action of one layer
-  static const char GC[3] = {'h', 'd', 't'};
+  static const char GC[6] = {'h', 'd', 't', 'j', 'k', 's'};
   for (uint8_t i = 0; i < NSLOTS; i++) {
     char k[8]; slotKey(l, i, k); prefs.remove(k);
-    if (i < 5) for (uint8_t c = 0; c < 3; c++) { char g[10]; gestureKey(l, i, GC[c], g); prefs.remove(g); }
+    if (i < 5) for (uint8_t c = 0; c < 6; c++) { char g[10]; gestureKey(l, i, GC[c], g); prefs.remove(g); }
   }
 }
 static void runGesture(uint8_t i, char g) {
@@ -2554,10 +2750,140 @@ static void runGesture(uint8_t i, char g) {
   String js = prefs.getString(k, "");
   if (!js.length()) return;
   gestureKeyNow = (g == 'h') ? (int8_t)i : (int8_t)-1;
-  runSpecJson(js, nullptr, (curLayer * 15 + i) * 4 + (g == 'h' ? 1 : g == 'd' ? 2 : 3));
+  runSpecJson(js, nullptr, (curLayer * 15 + i) * 8 + (g == 'h' ? 1 : g == 'd' ? 2 : g == 't' ? 3 : g == 'j' ? 4 : g == 'k' ? 5 : 6));
   gestureKeyNow = -1;
 }
+// ---- v2.0: leader sequences ("leader" fx key, then up to 3 keys -> an action), mod-tap, trackball, jog
+static void evtPadFx(const char* evt, const char* what, int a = -1) {
+  if (!hostActive()) return;
+  int32_t keep = reqId; reqId = -1;
+  JsonDocument d; d["evt"] = evt; d["what"] = what; if (a >= 0) d["n"] = a;
+  JsonArray k = d["keys"].to<JsonArray>(); if (!strcmp(evt, "leader")) for (uint8_t i = 0; i < leaderN; i++) k.add(leaderKeys[i]);
+  sendDoc(d);
+  reqId = keep;
+}
+static void leaderLoad() {
+  leaderSeqs.clear();
+  String js = prefs.getString("ldr", "");
+  if (!js.length()) return;
+  JsonDocument d; if (deserializeJson(d, js)) return;
+  for (JsonVariantConst v : d.as<JsonArrayConst>()) {
+    JsonObjectConst o = v.as<JsonObjectConst>(); JsonArrayConst k = o["k"];
+    if (k.isNull() || k.size() < 1 || k.size() > 3 || leaderSeqs.size() >= 24) continue;
+    LeaderSeq q; q.n = 0; for (JsonVariantConst x : k) q.k[q.n++] = (uint8_t)x.as<int>();
+    serializeJson(o["a"], q.spec); leaderSeqs.push_back(q);
+  }
+}
+static int leaderMatch(bool& longer) {                            // exact match of the keys so far (index or -1); longer = a longer sequence starts the same way
+  int hit = -1; longer = false;
+  for (size_t s = 0; s < leaderSeqs.size(); s++) {
+    const LeaderSeq& q = leaderSeqs[s];
+    if (q.n < leaderN) continue;
+    bool eq = true; for (uint8_t j = 0; j < leaderN; j++) if (q.k[j] != leaderKeys[j]) { eq = false; break; }
+    if (!eq) continue;
+    if (q.n == leaderN) hit = (int)s; else longer = true;
+  }
+  return hit;
+}
+static void leaderEnd(int hit, const char* what) {
+  String sp = hit >= 0 ? leaderSeqs[hit].spec : String();
+  evtPadFx("leader", what);
+  leaderOn = false; leaderN = 0; needRedraw = true;
+  showToast(hit >= 0 ? "LEADER OK" : "NO MATCH");
+  if (hit >= 0) runSpecJson(sp, nullptr, LAYERS * 15 * 8 - 1);
+}
+static bool leaderFeed(int i) {                                   // a key tap while the leader mode is on: true = consumed
+  if (!leaderOn) return false;
+  leaderAt = millis();
+  if (leaderN < 3) leaderKeys[leaderN++] = (uint8_t)(i + 1);
+  bool longer; int h = leaderMatch(longer);
+  if (h >= 0 && !longer) leaderEnd(h, "hit");
+  else if (h < 0 && !longer) leaderEnd(-1, "miss");
+  else { char t[12]; snprintf(t, sizeof t, "LEADER %u", leaderN); showToast(t); }
+  return true;
+}
+static void leaderTimeout() {
+  bool longer; int h = leaderN ? leaderMatch(longer) : -1;
+  leaderEnd(h, h >= 0 ? "hit" : "timeout");
+}
+static void releaseHeldMods() {
+  static const uint8_t MC[4] = {0x80, 0x81, 0x82, 0x83};
+  for (int b = 0; b < 4; b++) if (heldMods & (1 << b)) Keyboard.release(MC[b]);
+  heldMods = 0; holdModKey = -1;
+}
+static void reholdMods() {                                        // a macro's releaseAll must not drop the modifier of a mod-tap key that is still held
+  static const uint8_t MC[4] = {0x80, 0x81, 0x82, 0x83};
+  for (int b = 0; b < 4; b++) if (heldMods & (1 << b)) Keyboard.press(MC[b]);
+}
+static void tbMove(int steps) {                                   // trackball mode: the dial moves the pointer (K5 held = vertical), the faster the turn the further
+  uint32_t now = millis();
+  uint32_t dt = turnDtOverride >= 0 ? (uint32_t)turnDtOverride : (lastTurnAt ? now - lastTurnAt : 1000);
+  turnDtOverride = -1; lastTurnAt = now;
+  int n = steps < 0 ? -steps : steps;
+  int per = tbFine ? 1 : 6;
+  int acc = tbFine ? 1 : (dt / (uint32_t)n < 40 ? 3 : dt / (uint32_t)n < 90 ? 2 : 1);
+  int d = per * acc * n; if (d > 120) d = 120;
+  if (steps < 0) d = -d;
+  if (keyBtn[4].read() == LOW) Mouse.move(0, (int8_t)d, 0, 0); else Mouse.move((int8_t)d, 0, 0, 0);
+}
+static void jogTurn(int steps) {                                  // jog / shuttle mode for video editors: dial = arrows, K4 held = frame step, K5 held = up / down
+  static const uint8_t K_UP = 0xDA, K_DOWN = 0xD9, K_LEFT = 0xD8, K_RIGHT = 0xD7;
+  int n = steps < 0 ? -steps : steps; if (n > 8) n = 8;
+  bool fwd = steps > 0;
+  for (int i = 0; i < n; i++) {
+    if (keyBtn[3].read() == LOW) Keyboard.write(fwd ? '.' : ',');
+    else { uint8_t c = keyBtn[4].read() == LOW ? (fwd ? K_UP : K_DOWN) : (fwd ? K_RIGHT : K_LEFT); Keyboard.press(c); delay(6); Keyboard.release(c); }
+  }
+}
+static void inertiaService() {
+  if (inertiaV == 0) return;
+  uint32_t now = millis();
+  if ((uint32_t)(now - inertiaAt) < 25) return;
+  inertiaAt = now;
+  inertiaV *= 0.86f; inertiaAcc += inertiaV;
+  int w = (int)inertiaAcc; inertiaAcc -= w;
+  if (fabsf(inertiaV) < 0.4f) { inertiaV = 0; inertiaAcc = 0; return; }
+  if (w) { if (inertiaH) Mouse.move(0, 0, 0, (int8_t)w); else Mouse.move(0, 0, (int8_t)w, 0); }
+}
+static void encCalFinish() {                                      // the dial rested: calEdges / calSum describe one click turned clockwise
+  bool ok = calEdges >= 1 && calEdges <= 4;
+  if (ok) { encEdges = (uint8_t)calEdges; encInvertRt = calSum < 0 ? !encInvertRt : encInvertRt; prefs.putUChar("eedg", encEdges); prefs.putBool("einv", encInvertRt); }
+  int32_t seen = calEdges; encCal = 0; calEdges = calSum = 0; encRem = 0;
+  if (hostActive()) {
+    int32_t keep = reqId; reqId = -1;
+    JsonDocument d; d["evt"] = "enccal"; d["done"] = ok; d["seen"] = seen; d["edges"] = encEdges; d["invert"] = encInvertRt; sendDoc(d);
+    reqId = keep;
+  }
+  showToast(ok ? "DIAL OK" : "DIAL ?"); needRedraw = true;
+}
+static bool usbIsSuspended() {
+#if DC_HAS_WAKE
+  return tud_suspended();
+#else
+  return false;
+#endif
+}
+static void usbWake() {                                           // a key or the dial wakes a sleeping PC (remote wake-up); ignored while the host is awake
+#if DC_HAS_WAKE
+  if (usbWakeOn && tud_suspended()) { tud_remote_wakeup(); usbWakes++; }
+#endif
+  usbWasSuspended = 0;
+}
+static void swhService(bool force) {                              // switch health counters: saved to flash at most every 30 s (and only when they changed)
+  static uint32_t at = 0;
+  uint32_t now = millis();
+  if (!swDirty || (!force && (uint32_t)(now - at) < 30000)) return;
+  at = now; swDirty = false;
+  JsonDocument d; JsonArray p = d["p"].to<JsonArray>(), c = d["c"].to<JsonArray>();
+  for (int i = 0; i < 5; i++) { p.add(swPress[i]); c.add(swChatter[i]); }
+  String js; serializeJson(d, js); prefs.putString("swh", js);
+}
 // ---- dial acceleration: the faster the dial turns, the more often the action (volume ...) repeats
+static uint8_t curveMult(uint32_t dtPerDetent, uint8_t curve) {   // per-layer dial curves: 1 smooth, 2 flat (no acceleration), 3 aggressive
+  if (curve == 1) return dtPerDetent < 25 ? 5 : dtPerDetent < 45 ? 4 : dtPerDetent < 70 ? 3 : dtPerDetent < 110 ? 2 : 1;
+  if (curve == 3) return dtPerDetent < 35 ? 10 : dtPerDetent < 80 ? 6 : dtPerDetent < 140 ? 3 : dtPerDetent < 220 ? 2 : 1;
+  return 1;
+}
 static uint8_t accelMult(uint32_t dtPerDetent, uint8_t level) {
   if (level == 0) return 1;
   if (dtPerDetent < 35) return level == 1 ? 3 : 6;
@@ -2568,9 +2894,14 @@ static uint8_t accelMult(uint32_t dtPerDetent, uint8_t level) {
 static void onKey(int i) {                              // the key's TAP action
   flashAt = millis(); needRedraw = true;                  // key-press ring (sprite screens)
   activity();
+  if (ripplesOn && i < 5) ripplesAdd(i);
+  if (pinLocked && pinAll) { pinKey(i); return; }
+  if (confirmOn) { confirmCancel(); return; }
+  if (macroRun && macroLong && macroRingOn) { macro.clear(); macroIdx = 0; macroRun = false; macroLong = false; textPos = 0; Keyboard.releaseAll(); reholdMods(); showToast("CANCELLED"); return; }
   konamiFeed((uint8_t)(i + 1));
   if (menuOpen) uiTouch();
   if (popupOpen && i < 5) { popupKey(i); return; }
+  if (leaderOn && i < 5 && leaderFeed(i)) return;
   if (mode == M_POMO && i < 2) { if (i == 0) pomoToggle(); else pomoReset(); return; }   // K1/K2 = timer controls in focus mode
   if (!menuOpen && modeKey(i)) return;                      // stopwatch / breathing / dice / reaction / snake / habits claim some keys
   if (keyToast && i < 5) showToast(lbl[curLayer][i]);
@@ -2578,6 +2909,8 @@ static void onKey(int i) {                              // the key's TAP action
 }
 static void onKeyGesture(int i, char g) {               // 'h' hold / 'd' double-tap / 't' triple-tap
   flashAt = millis(); needRedraw = true; activity();
+  crumb(2, (uint8_t)i, (uint16_t)(uint8_t)g);
+  if ((pinLocked && pinAll) || confirmOn) return;
   if (menuOpen) { uiTouch(); return; }
   runGesture(i, g);
 }
@@ -2587,8 +2920,13 @@ static void onEncPressTurn(int steps) {                       // dial pressed + 
   for (int i = 0; i < n; i++) runSlot(steps > 0 ? 7 : 8);
 }
 static void onEncSteps(int steps) {
+  if (pinLocked && pinAll) { pinDial(steps); return; }
+  if (confirmOn) return;
+  if (usbModeActive() && !menuOpen && usbModeDial(steps)) return;
   if (menuOpen) { menuTurn(steps); return; }
   if (popupOpen) { popupTurn(steps); return; }
+  if (tbOn) { tbMove(steps); return; }
+  if (jogOn) { jogTurn(steps); return; }
   if (modeDial(steps)) return;                                          // games / pet / diagnostics / life use the dial themselves
   if (dialLock) { showToast("DIAL LOCK"); return; }                    // locked dial: turns do nothing (a click still opens the menu)
   if (mode == M_SNAKE && snRun) { snakeTurn(steps); return; }
@@ -2600,13 +2938,15 @@ static void onEncSteps(int steps) {
   uint32_t dt = turnDtOverride >= 0 ? (uint32_t)turnDtOverride : (lastTurnAt ? now - lastTurnAt : 1000);
   turnDtOverride = -1; lastTurnAt = now;
   int n = steps < 0 ? -steps : steps;
-  n *= accelMult(dt / (uint32_t)(n ? n : 1), dialAccel);
+  n *= dialCurve[curLayer] ? curveMult(dt / (uint32_t)(n ? n : 1), dialCurve[curLayer]) : accelMult(dt / (uint32_t)(n ? n : 1), dialAccel);
   if (n > 24) n = 24;
   lastTurnRuns = (uint8_t)n;
   for (int i = 0; i < n; i++) runSlot(steps > 0 ? 5 : 6);
 }
 static void encTurned(int steps) {                       // every detent, whatever screen / menu state: counter + event for the Dev tab
   activity();
+  if (usbWasSuspended) usbWake();
+  crumb(3, steps > 0, (uint16_t)(steps < 0 ? -steps : steps)); ltDial(steps);
   konamiFeed(steps > 0 ? 6 : 7);
   if (detentLed) ledFlash(14, 14, 14, 30);
   encPos += steps;
@@ -2614,13 +2954,21 @@ static void encTurned(int steps) {                       // every detent, whatev
 }
 static void onEncClick() {
   activity();
+  if (pinLocked && pinAll) { pinClick(); return; }
+  if (confirmOn) { confirmCancel(); return; }
   if (menuOpen) { menuClick(); return; }
   if (popupOpen) { popupClick(); return; }
+  if (usbModeActive() && usbModeClick()) return;
+  if (mode > 20 && appClick()) return;
+  if (tbOn) { Mouse.click(1); return; }
+  if (jogOn) { Keyboard.write(' '); return; }
   menuOpen = true; menuSel = 0; menuEdit = 0; menuMode = mode; savedBright = brightness; uiTouch(); needRedraw = true;
 }
 static void onEncLong() {
   activity();
+  if (confirmOn) return;                                          // the 1 s hold that confirms is timed in inputsService()
   if (menuOpen) { menuCloseNow(); return; }
+  if (tbOn || jogOn || leaderOn) { tbOn = jogOn = leaderOn = false; leaderN = 0; showToast("PAD MODE OFF"); needRedraw = true; evtPadFx("padmode", "off"); return; }
   setMode(nextEnabledMode(mode, 1));
 }
 // ---- pad functions ("fx" actions) and the helpers behind them
@@ -2647,6 +2995,21 @@ static void fxRun(uint8_t n) {
   else if (!strcmp(nm, "popup")) { popupOpen = true; popupSel = 0; popupAt = millis(); needRedraw = true; }
   else if (!strcmp(nm, "switch_next")) switcherStep(1);
   else if (!strcmp(nm, "switch_prev")) switcherStep(-1);
+  else if (!strcmp(nm, "leader")) {
+    leaderOn = !leaderOn; leaderN = 0; leaderAt = millis();
+    if (leaderOn) { showToast("LEADER"); evtPadFx("leader", "start"); } else evtPadFx("leader", "cancel");
+    needRedraw = true;
+  }
+  else if (!strncmp(nm, "hold_", 5)) {                                                 // mod-tap: hold the key = hold the modifier (released with the key)
+    static const uint8_t MC[4] = {0x80, 0x81, 0x82, 0x83};
+    int b = !strcmp(nm + 5, "ctrl") ? 0 : !strcmp(nm + 5, "shift") ? 1 : !strcmp(nm + 5, "alt") ? 2 : 3;
+    Keyboard.press(MC[b]); heldMods |= (uint8_t)(1 << b); needRedraw = true;
+  }
+  else if (!strcmp(nm, "trackball") || !strcmp(nm, "jog")) {
+    bool tb = nm[0] == 't'; bool on = tb ? !tbOn : !jogOn;
+    tbOn = tb ? on : false; jogOn = tb ? false : on; leaderOn = false; tbFine = false;
+    showToast(on ? (tb ? "TRACKBALL" : "JOG") : "PAD MODE OFF"); evtPadFx("padmode", on ? (tb ? "trackball" : "jog") : "off"); needRedraw = true;
+  }
 }
 static void switcherStep(int dir) {                               // dial as window switcher: the first detent presses Alt (Cmd on a Mac) and Tab, later ones only Tab; Alt is let go when the dial rests
   uint8_t mod = osMac ? 0x83 : 0x82;
@@ -2669,6 +3032,8 @@ static void scenePopup() {                                        // like the ra
     float a = c * DEG_TO_RAD;
     char b[12]; if (lbl[curLayer][i][0]) snprintf(b, sizeof b, "%s", lbl[curLayer][i]); else snprintf(b, sizeof b, "KEY %d", i + 1);
     spr.setTextColor(sel ? C_BG : C_TXT);
+    { uint8_t ic[72]; char ik[6]; apIconKey(curLayer, (uint8_t)i, ik);                          // a 24x24 icon of the key (cmd "icon") replaces its name
+      if (legendMode == 2 && apIconLoad(ik, ic)) { apIconDraw(120 + lroundf(92 * sinf(a)) - 12, 120 - lroundf(92 * cosf(a)) - 12, ic, sel ? C_BG : C_TXT); continue; } }
     spr.drawString(b, 120 + lroundf(92 * sinf(a)), 120 - lroundf(92 * cosf(a)), 2);
   }
   spr.fillCircle(120, 120, 66, C_BG); spr.drawCircle(120, 120, 66, C_DIM2);
@@ -2685,15 +3050,18 @@ static void konamiFeed(uint8_t code) {
 }
 static void onKeyHoldEnd(int i) {                                 // a key whose hold action fired was released
   if (momentaryKey == i) { momentaryKey = -1; setLayer(momentaryPrev); }
+  if (holdModKey == i) releaseHeldMods();
 }
 static void onChord(uint8_t p) {                                  // keys p+1 and p+2 pressed together
   flashAt = millis(); needRedraw = true; activity();
+  if ((pinLocked && pinAll) || confirmOn) return;
   if (menuOpen) { uiTouch(); return; }
   if (keyToast) showToast(lbl[curLayer][p]);
   runSlot(9 + p);
 }
 static void encMulti(uint8_t n) {                                 // n clicks of the dial within the window: 1 = menu, 2 / 3 = the configured actions
   activity();
+  if ((pinLocked && pinAll) || confirmOn) { onEncClick(); return; }
   if (menuOpen || popupOpen) { onEncClick(); return; }
   if (n >= 3 && (gDial[curLayer] & 2)) runSlot(14);
   else if (n >= 2 && (gDial[curLayer] & 1)) runSlot(13);
@@ -2711,8 +3079,15 @@ static void IRAM_ATTR encISR() {
   encAccum += (gpio_get_level((gpio_num_t)PIN_ENC_A) != gpio_get_level((gpio_num_t)PIN_ENC_B)) ? 1 : -1;   // IRAM-safe reads
 }
 static const uint32_t REPEAT_DELAY_MS = 400, REPEAT_EVERY_MS = 90;
+static uint32_t repeatEvery(uint32_t heldMs) {                   // curve 1: a slow start (170 ms) that speeds up to 35 ms after about 2 s, like a real keyboard
+  if (!repeatCurve) return REPEAT_EVERY_MS;
+  uint32_t t = heldMs > REPEAT_DELAY_MS ? heldMs - REPEAT_DELAY_MS : 0;
+  uint32_t v = t >= 2000 ? 35 : 170 - (uint32_t)((135UL * t) / 2000UL);
+  return v;
+}
 static void inputsService() {
   uint32_t now = millis();
+  usbWasSuspended = usbIsSuspended();
   static bool gInit = false;
   static uint32_t repAt[5] = {0, 0, 0, 0, 0};
   if (!gInit) {                                                 // a key already held at power-up must not count as a press
@@ -2720,44 +3095,73 @@ static void inputsService() {
     for (int i = 0; i < 5; i++) if (keyBtn[i].read() == LOW) kPipe.prime(i, now);
   }
   bool raw[5];
+  static bool shMask[5] = {false, false, false, false, false};
   for (int i = 0; i < 5; i++) {
     keyBtn[i].update();
-    if (keyBtn[i].fell()) { evtKey(i + 1, 1); flashAt = now; needRedraw = true; activity(); }
-    if (keyBtn[i].rose()) evtKey(i + 1, 0);
+    if (keyBtn[i].fell()) {
+      evtKey(i + 1, 1); flashAt = now; needRedraw = true; activity(); swPress[i]++; swDirty = true; swDownAt[i] = now; crumb(1, (uint8_t)i, curLayer);
+      if (usbWasSuspended) usbWake();
+      if (encHeld && ((gShift[curLayer] >> i) & 1) && !menuOpen && !popupOpen && !tbOn && !jogOn && !usbModeActive()) {   // dial held + key: the key's "shifted" action
+        shMask[i] = true; encShiftUsed = true; encLongDone = true; dcCount = 0; runGesture((uint8_t)i, 's');
+      }
+      for (int j = 0; j < 5; j++) if (j != i && ((gModTap[curLayer] >> j) & 1) && kPipe.fsm[j].down && !kPipe.fsm[j].holdFired) kPipe.fsm[j].downAt = now - G_HOLD_MS;   // mod-tap: another key pressed while a mod-tap key is down = it is a modifier
+    }
+    if (keyBtn[i].rose()) { evtKey(i + 1, 0); if ((uint32_t)(now - swDownAt[i]) < 15) { swChatter[i]++; swDirty = true; } }
     raw[i] = keyBtn[i].read() == LOW;                           // INPUT_PULLUP: pressed = LOW
+    if (shMask[i]) { if (!raw[i]) shMask[i] = false; raw[i] = false; }
   }
+  if (usbModeActive()) {                                        // MIDI / game controller mode: the keys only send notes / buttons
+    for (int i = 0; i < 5; i++) { if (keyBtn[i].fell()) usbModeKey(i, true); if (keyBtn[i].rose()) usbModeKey(i, false); raw[i] = false; }
+  }
+  if (tbOn) {                                                   // trackball mode: K1 left, K2 middle, K3 right button; K4 toggles fine / coarse; K5 held = the dial moves Y
+    static const uint8_t TBB[3] = {1, 4, 2};
+    for (int i = 0; i < 5; i++) {
+      if (keyBtn[i].fell()) { if (i < 3) Mouse.press(TBB[i]); else if (i == 3) { tbFine = !tbFine; needRedraw = true; } }
+      if (keyBtn[i].rose() && i < 3) Mouse.release(TBB[i]);
+      raw[i] = false;
+    }
+  }
+  if (leaderOn && (int32_t)(now - leaderAt) > 1500) leaderTimeout();
+  if (heldMods && (holdModKey < 0 || (!raw[holdModKey] && !kPipe.fsm[holdModKey].down))) releaseHeldMods();
   KeyEvents ev;
-  kPipe.step(raw, now, gChord[curLayer], gHold[curLayer], gDbl[curLayer], gTri[curLayer], ev);
-  for (uint8_t n = 0; n < ev.n; n++) {
-    uint8_t i = ev.idx[n];
+  kPipe.step(raw, now, gChord[curLayer], gHold[curLayer], gDbl[curLayer], gTri[curLayer], ev, gH2[curLayer], gH3[curLayer]);
+  for (uint8_t n2 = 0; n2 < ev.n * 2u; n2++) {                  // pass 1: hold events first (a mod-tap key must hold its modifier before the key that was pressed with it runs)
+    uint8_t n = n2 % ev.n, i = ev.idx[n];
+    if ((n2 < ev.n) != (ev.kind[n] == KE_HOLD)) continue;
     switch (ev.kind[n]) {
       case KE_TAP: onKey(i); break;
       case KE_HOLD: onKeyGesture(i, 'h'); break;
       case KE_DOUBLE: onKeyGesture(i, 'd'); break;
       case KE_TRIPLE: onKeyGesture(i, 't'); break;
+      case KE_HOLD2: onKeyGesture(i, 'j'); break;
+      case KE_HOLD3: onKeyGesture(i, 'k'); break;
       case KE_HOLD_END: onKeyHoldEnd(i); break;
       default: onChord(i); break;
     }
   }
   for (int i = 0; i < 5; i++) {                                 // key repeat: a held key with only a tap action runs it again every 90 ms after 400 ms
-    bool plain = !(((gHold[curLayer] | gDbl[curLayer] | gTri[curLayer]) >> i) & 1);
+    bool plain = !(((gHold[curLayer] | gDbl[curLayer] | gTri[curLayer] | gH2[curLayer] | gH3[curLayer]) >> i) & 1);
     if (((kPipe.eff >> i) & 1) && raw[i] && ((repeatMask >> i) & 1) && kPipe.fsm[i].consumed && plain && !menuOpen && !popupOpen) {
       if ((uint32_t)(now - kPipe.fsm[i].downAt) >= REPEAT_DELAY_MS && repAt[i] <= kPipe.fsm[i].downAt) repAt[i] = now;
-      else if (repAt[i] > kPipe.fsm[i].downAt && (uint32_t)(now - repAt[i]) >= REPEAT_EVERY_MS) { repAt[i] = now; runSlot((uint8_t)i); }
+      else if (repAt[i] > kPipe.fsm[i].downAt && (uint32_t)(now - repAt[i]) >= repeatEvery(now - kPipe.fsm[i].downAt)) { repAt[i] = now; runSlot((uint8_t)i); }
     }
   }
   encBtn.update();
-  if (encBtn.fell()) { encDownAt = millis(); encHeld = true; encLongDone = false; evtEncSw(1); }
+  if (encBtn.fell()) { encDownAt = millis(); encHeld = true; encLongDone = false; encShiftUsed = false; evtEncSw(1); crumb(4); ltClick(); if (usbWasSuspended) usbWake(); }
   if (encBtn.rose()) evtEncSw(0);
   if (encHeld && !encLongDone && millis() - encDownAt >= ENC_HOLD_MS) { encLongDone = true; dcCount = 0; onEncLong(); }
-  if (encBtn.rose()) { if (encHeld && !encLongDone) encClickRegister(now); encHeld = false; }
+  if (confirmOn && encHeld && (uint32_t)(millis() - encDownAt) >= 1000) { confirmRun(); }
+  if (encBtn.rose()) { if (encHeld && !encLongDone && !encShiftUsed) encClickRegister(now); encHeld = false; }
   if (dcCount && (uint32_t)(now - dcAt) > G_DBL_MS) { uint8_t n = dcCount; dcCount = 0; encMulti(n); }    // the double / triple click window closed
   int32_t d;
   portENTER_CRITICAL(&encMux); d = encAccum; encAccum = 0; portEXIT_CRITICAL(&encMux);
+  if (encCal && d) { calEdges += d < 0 ? -d : d; calSum += d; calAt = now; }
+  if (encCal && calEdges && (uint32_t)(now - calAt) > 350) encCalFinish();                 // the dial rested: one click was turned clockwise
   encRem += d;
-  int steps = encRem / ENC_EDGES_PER_DETENT;
-  encRem -= steps * ENC_EDGES_PER_DETENT;
-  if (ENC_INVERT) steps = -steps;
+  int steps = encRem / encEdges;
+  encRem -= steps * encEdges;
+  if (encInvertRt) steps = -steps;
+  if (encCal) { encRem = 0; steps = 0; }
   if (steps) {
     encTurned(steps);
     char pk[8]; slotKey(curLayer, steps > 0 ? 7 : 8, pk);
@@ -2860,6 +3264,13 @@ static void cmdHello() {
   cp.add("games"); cp.add("pet"); cp.add("diag"); cp.add("viz"); cp.add("labels"); cp.add("bootlog"); cp.add("rollback"); cp.add("cards2"); cp.add("saver2");
   cp.add("clock2"); cp.add("display2"); cp.add("konami");
   cp.add("stateevt"); cp.add("batch"); cp.add("snap2"); cp.add("ctx"); cp.add("lnames"); cp.add("toast"); cp.add("accent"); cp.add("perf");   // firmware 1.6
+  cp.add("leader"); cp.add("tiers"); cp.add("shiftlayer"); cp.add("modtap"); cp.add("repcurve"); cp.add("dialcurve"); cp.add("inertia"); cp.add("trackball"); cp.add("jog");   // firmware 2.0
+  cp.add("enccal"); cp.add("swhealth");
+  cp.add("legend"); cp.add("icons"); cp.add("snippets"); cp.add("radial"); cp.add("typer"); cp.add("totp"); cp.add("pin"); cp.add("confirm"); cp.add("macroring"); cp.add("sketch"); cp.add("calc");   // firmware 2.0 apps
+  cp.add("timers"); cp.add("calendar"); cp.add("blocks"); cp.add("puzzles"); cp.add("space"); cp.add("stream"); cp.add("clock3"); cp.add("saver3"); cp.add("ripples"); cp.add("pet2"); cp.add("fold"); cp.add("aa");
+  if (DC_HAS_MIDI) cp.add("midi"); if (DC_HAS_PAD) cp.add("gamepad"); if (DC_HAS_MSC) cp.add("usbdrive");
+  cp.add("screenbright"); cp.add("ledevents"); cp.add("suspenddim"); cp.add("lifetime"); cp.add("crumbs");
+  if (DC_HAS_WAKE) cp.add("usbwake");
   if (DC_ENABLE_WIFI) cp.add("wifi");
   if (DC_HAS_OTA) cp.add("ota");
   sendDoc(d);
@@ -2892,6 +3303,7 @@ static void cmdInfo() {
   d["ip"] = wifiIp(); d["wifi_build"] = (bool)DC_ENABLE_WIFI;
   d["boot"] = bootLog; d["proto"] = PROTO_LEVEL;
   d["loop_max_us"] = loopMaxUs; d["loop_avg_us"] = loopCnt ? (uint32_t)(loopSumUs / loopCnt) : 0; d["rx_overruns"] = rxOverruns; d["usb_drops"] = usbDrops;
+  d["usb_suspended"] = usbIsSuspended(); d["usb_wakes"] = usbWakes;
   sendDoc(d);
 }
 static void cmdLed(JsonDocument& doc) {
@@ -3091,7 +3503,7 @@ static void cmdGetKeys(JsonDocument& doc) {                // lets the app verif
     if (sl < 1 || sl > 15) { nack("key"); return; }
     const char* gest = doc["gesture"] | "tap";
     if (strcmp(gest, "tap")) {                                // a hold / double / triple-tap action: stored or absent (there is no default)
-      char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : !strcmp(gest, "triple") ? 't' : 0;
+      char gch = gestureChar(gest);
       if (!gch || sl > 5) { nack("gesture"); return; }
       char gk[10]; gestureKey((uint8_t)lay, (uint8_t)(sl - 1), gch, gk);
       String gj = prefs.getString(gk, "");
@@ -3117,7 +3529,8 @@ static void cmdGetKeys(JsonDocument& doc) {                // lets the app verif
     String js = prefs.getString(k, "");
     JsonObject o = a.add<JsonObject>();
     o["s"] = i + 1; o["def"] = js.length() == 0; o["len"] = (uint32_t)js.length();
-    if (i < 5) { o["h"] = (bool)((gHold[lay] >> i) & 1); o["d"] = (bool)((gDbl[lay] >> i) & 1); o["t"] = (bool)((gTri[lay] >> i) & 1); }
+    if (i < 5) { o["h"] = (bool)((gHold[lay] >> i) & 1); o["d"] = (bool)((gDbl[lay] >> i) & 1); o["t"] = (bool)((gTri[lay] >> i) & 1);
+      o["h2"] = (bool)((gH2[lay] >> i) & 1); o["h3"] = (bool)((gH3[lay] >> i) & 1); o["sh"] = (bool)((gShift[lay] >> i) & 1); }
     o["crc"] = js.length() ? crc32u(0, (const uint8_t*)js.c_str(), js.length()) : 0u;
   }
   { JsonArray pt = d["pt"].to<JsonArray>(); for (uint8_t i = 7; i < 9; i++) { char k[8]; slotKey((uint8_t)lay, i, k); pt.add(prefs.isKey(k)); } }   // dial press+turn right / left set?
@@ -3230,7 +3643,7 @@ static void cmdInput(JsonDocument& doc) {               // virtual key presses: 
     int k = doc["k"] | 0;
     if (k < 1 || k > 5) { nack("key"); return; }
     const char* g = doc["g"] | "tap";
-    if (!strcmp(g, "hold") || !strcmp(g, "double") || !strcmp(g, "triple")) { evtKey(k, 1); onKeyGesture(k - 1, g[0] == 'h' ? 'h' : g[0] == 'd' ? 'd' : 't'); evtKey(k, 0); ack("input"); return; }
+    if (gestureChar(g)) { evtKey(k, 1); onKeyGesture(k - 1, gestureChar(g)); evtKey(k, 0); ack("input"); return; }
     if (!strcmp(g, "release")) { onKeyHoldEnd(k - 1); ack("input"); return; }                      // tests: the key that held a "layer while held" action is let go
     if (strcmp(g, "tap")) { nack("gesture"); return; }
     evtKey(k, 1); onKey(k - 1); evtKey(k, 0);
@@ -3258,7 +3671,7 @@ static void cmdInput(JsonDocument& doc) {               // virtual key presses: 
   else { nack("input"); return; }
   ack("input");
 }
-#ifdef DC_SIM
+#if defined(DC_SIM) || defined(DC_NATIVE)
 static bool cmdDebug(const char* cmd) {                  // emulator-only: provoke a panic to test crash-loop / safe mode
   if (!strcmp(cmd, "debug_crash")) { ack("debug_crash"); delay(50); volatile int* p = nullptr; *p = 1; return true; }
   return false;
@@ -3275,6 +3688,11 @@ static void settingsReply() {
   d["theme"] = themeIdx; d["accent"] = accentIdx; d["tint"] = tintOn; d["rotation"] = rotation; d["pixel_shift"] = pixelShift; d["fade"] = fadeOn; d["boot_anim"] = bootAnim;
   d["splash"] = splashTxt; d["detent_led"] = detentLed; d["key_toast"] = keyToast; d["repeat_mask"] = repeatMask; d["dial_lock"] = dialLock;
   d["host_dim"] = hostDim; d["pomo_today"] = pomoToday;
+  d["repeat_curve"] = repeatCurve; d["wheel_inertia"] = wheelInertia; d["usb_wake"] = usbWakeOn;
+  { JsonArray dc = d["dial_curve"].to<JsonArray>(); for (uint8_t l = 0; l < LAYERS; l++) dc.add(dialCurve[l]); }
+  d["enc_edges"] = encEdges; d["enc_invert"] = encInvertRt;
+  d["legend"] = legendMode; d["macro_ring"] = macroRingOn;
+  extSettingsReply(d);
   sendDoc(d);
 }
 static bool optInt(JsonDocument& doc, const char* key, int lo, int hi, int& out, bool& bad) {
@@ -3286,14 +3704,26 @@ static bool optInt(JsonDocument& doc, const char* key, int lo, int hi, int& out,
 }
 static void cmdSettings(JsonDocument& doc) {
   bool bad = false; int da = dialAccel, cs = clockStyle, ss = saverSec, st = saverStyle, nf = nightFrom, nt = nightTo, nl = nightLevel;
-  bool hDa = optInt(doc, "dial_accel", 0, 2, da, bad), hCs = optInt(doc, "clock_style", 0, 5, cs, bad), hSs = optInt(doc, "saver_s", 0, 3600, ss, bad),
-       hSt = optInt(doc, "saver_style", 1, 7, st, bad), hNf = optInt(doc, "night_from", 0, 23, nf, bad), hNt = optInt(doc, "night_to", 0, 23, nt, bad),
+  bool hDa = optInt(doc, "dial_accel", 0, 2, da, bad), hCs = optInt(doc, "clock_style", 0, 8, cs, bad), hSs = optInt(doc, "saver_s", 0, 3600, ss, bad),
+       hSt = optInt(doc, "saver_style", 1, 13, st, bad), hNf = optInt(doc, "night_from", 0, 23, nf, bad), hNt = optInt(doc, "night_to", 0, 23, nt, bad),
        hNl = optInt(doc, "night_level", 5, 255, nl, bad);
-  int mm = modeMask; bool hMm = optInt(doc, "mode_mask", 1, 0x000FFFFF, mm, bad);
+  uint32_t mm = modeMask; bool hMm = !doc["mode_mask"].isNull();
+  if (hMm) { if (!doc["mode_mask"].is<uint32_t>() || doc["mode_mask"].as<uint32_t>() == 0) bad = true; else mm = doc["mode_mask"].as<uint32_t>(); }
   bool hNo = !doc["night_on"].isNull();
   if (hNo && !doc["night_on"].is<bool>()) bad = true;
   int th = themeIdx, ro = rotation, rm = repeatMask;
   bool hTh = optInt(doc, "theme", 0, 6, th, bad), hRo = optInt(doc, "rotation", 0, 3, ro, bad), hRm = optInt(doc, "repeat_mask", 0, 31, rm, bad);
+  int rc = repeatCurve, ee = encEdges; bool hRc = optInt(doc, "repeat_curve", 0, 1, rc, bad), hEe = optInt(doc, "enc_edges", 1, 4, ee, bad);
+  int lg = legendMode; bool hLg = optInt(doc, "legend", 0, 2, lg, bad);
+  bool hMr = !doc["macro_ring"].isNull(); if (hMr && !doc["macro_ring"].is<bool>()) bad = true;
+  bool hWi = !doc["wheel_inertia"].isNull(), hUw = !doc["usb_wake"].isNull(), hEi = !doc["enc_invert"].isNull();
+  if ((hWi && !doc["wheel_inertia"].is<bool>()) || (hUw && !doc["usb_wake"].is<bool>()) || (hEi && !doc["enc_invert"].is<bool>())) bad = true;
+  bool hDcv = !doc["dial_curve"].isNull(); uint8_t dcv[LAYERS] = {0, 0, 0};
+  if (hDcv) {
+    JsonArrayConst a = doc["dial_curve"].as<JsonArrayConst>();
+    if (a.isNull() || a.size() != LAYERS) bad = true;
+    else for (uint8_t l = 0; l < LAYERS; l++) { if (!a[l].is<int>() || a[l].as<int>() < 0 || a[l].as<int>() > 3) bad = true; else dcv[l] = (uint8_t)a[l].as<int>(); }
+  }
   int ac = accentIdx; bool hAc = optInt(doc, "accent", 0, 5, ac, bad);                              // 1.6: the app's accent colour
   static const char* const BOOLS[7] = {"tint", "pixel_shift", "fade", "boot_anim", "detent_led", "key_toast", "dial_lock"};
   bool hasB[7], valB[7];
@@ -3305,13 +3735,23 @@ static void cmdSettings(JsonDocument& doc) {
   if (hSp) {
     if (!doc["splash"].is<const char*>()) bad = true;
     else {
-      sp = doc["splash"].as<String>(); sp.trim();
+      sp = foldMaybe(doc["splash"].as<const char*>()); sp.trim();
       if (sp.length() > 12) bad = true;
       for (unsigned j = 0; j < sp.length(); j++) if ((uint8_t)sp[j] < 32 || (uint8_t)sp[j] > 126) bad = true;
     }
   }
+  bool hExt = extSettingsParse(doc, bad);
   if (bad) { nack("settings"); return; }
+  if (hExt) extSettingsApply();
   if (hTh) { themeIdx = (uint8_t)th; prefs.putUChar("theme", themeIdx); applyTheme(); }
+  if (hLg) { legendMode = (uint8_t)lg; prefs.putUChar("legend", legendMode); needRedraw = true; }
+  if (hMr) { macroRingOn = doc["macro_ring"].as<bool>(); prefs.putBool("mring", macroRingOn); }
+  if (hRc) { repeatCurve = (uint8_t)rc; prefs.putUChar("repc", repeatCurve); }
+  if (hEe) { encEdges = (uint8_t)ee; encRem = 0; prefs.putUChar("eedg", encEdges); }
+  if (hWi) { wheelInertia = doc["wheel_inertia"].as<bool>(); prefs.putBool("winer", wheelInertia); if (!wheelInertia) inertiaV = 0; }
+  if (hUw) { usbWakeOn = doc["usb_wake"].as<bool>(); prefs.putBool("uwake", usbWakeOn); }
+  if (hEi) { encInvertRt = doc["enc_invert"].as<bool>(); prefs.putBool("einv", encInvertRt); }
+  if (hDcv) { memcpy(dialCurve, dcv, sizeof dialCurve); prefs.putString("dcrv", String((char)('0' + dcv[0])) + String((char)('0' + dcv[1])) + String((char)('0' + dcv[2]))); }
   if (hAc) { accentIdx = (uint8_t)ac; prefs.putUChar("accent", accentIdx); applyTheme(); }
   if (hRo) { rotation = (uint8_t)ro; prefs.putUChar("rot", rotation); applyRotation(); }
   if (hRm) { repeatMask = (uint8_t)rm; prefs.putUChar("repm", repeatMask); }
@@ -3331,7 +3771,7 @@ static void cmdSettings(JsonDocument& doc) {
   if (hNt) { nightTo = (uint8_t)nt; prefs.putUChar("nd_t", nightTo); }
   if (hNl) { nightLevel = (uint8_t)nl; prefs.putUChar("nd_l", nightLevel); }
   if (hNo) { nightOn = doc["night_on"].as<bool>(); prefs.putBool("nd_on", nightOn); }
-  if (hMm) { modeMask = (uint32_t)mm; prefs.putULong("mmask2", modeMask); }
+  if (hMm) { modeMask = mm; prefs.putULong("mmask2", modeMask); }
   if (hNf || hNt || hNl || hNo) applyBacklight();
   settingsReply();
 }
@@ -3368,7 +3808,7 @@ static void cmdLabels(JsonDocument& doc) {
     if (a.isNull() || a.size() != 7) { nack("labels"); return; }
     String joined; char tmp[7][9];
     for (int i = 0; i < 7; i++) {
-      String v = a[i].as<String>(); v.trim();
+      String v = foldMaybe(a[i].as<const char*>() ? a[i].as<const char*>() : ""); v.trim();
       if (v.length() > 8) { nack("labels"); return; }
       for (unsigned j = 0; j < v.length(); j++) if ((uint8_t)v[j] < 32 || (uint8_t)v[j] > 126 || v[j] == '|') { nack("labels"); return; }
       strncpy(tmp[i], v.c_str(), 8); tmp[i][8] = 0; joined += v; if (i < 6) joined += '|';
@@ -3386,7 +3826,7 @@ static void showToast(const char* t) { if (!t || !*t) return; strncpy(toastTxt, 
 static void cmdBootLog(JsonDocument& doc) {
   if (doc["clear"] | false) { memset(rstCount, 0, sizeof rstCount); prefs.putBytes("rstc", rstCount, sizeof rstCount); usbConnects = usbDrops = 0; }
   JsonDocument d; d["ok"] = true; d["evt"] = "boot_log";
-  d["log"] = bootLog; d["reset"] = resetReasonStr(resetReason); d["crashes"] = crashCount; d["disp_why"] = dispWhy;
+  d["log"] = bootLog; d["crumbs"] = crumbsTail(8); d["reset"] = resetReasonStr(resetReason); d["crashes"] = crashCount; d["disp_why"] = dispWhy;
   JsonArray c = d["counts"].to<JsonArray>(); for (int i = 0; i < 6; i++) c.add(rstCount[i]);
   d["usb_connects"] = usbConnects; d["usb_drops"] = usbDrops;
   d["up_ms"] = millis(); d["heap"] = ESP.getFreeHeap(); d["heap_min"] = ESP.getMinFreeHeap();
@@ -3423,7 +3863,7 @@ static void cmdRemapBatch(JsonDocument& doc) {
     int key = it["key"] | 0;
     if (key < 1 || key > 15) { nack("key"); return; }
     const char* gest = it["gesture"] | "tap";
-    char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : !strcmp(gest, "triple") ? 't' : 0;
+    char gch = gestureChar(gest);
     if (strcmp(gest, "tap") && !gch) { nack("gesture"); return; }
     if (gch && key > 5) { nack("key"); return; }
     int lay = it["layer"] | 0;
@@ -3431,7 +3871,7 @@ static void cmdRemapBatch(JsonDocument& doc) {
     Plan p; p.lay = (uint8_t)lay; p.key = (uint8_t)key; p.g = gch; p.clear = it["clear"] | false;
     if (p.clear && (gch || key >= 8)) { plan.push_back(p); continue; }       // removing a gesture / dial press+turn / chord / dial-click action
     JsonDocument spec;
-    spec["type"] = it["type"]; spec["val"] = it["val"];
+    spec["type"] = it["type"]; spec["val"] = it["val"]; if (it["confirm"] | false) spec["confirm"] = true;
     std::vector<Step> tmp;
     if (!parseSpec(spec.as<JsonVariantConst>(), tmp)) { nack("spec"); return; }
     serializeJson(spec, p.s);
@@ -3453,7 +3893,7 @@ static void cmdRemapBatch(JsonDocument& doc) {
 }
 // {"cmd":"ctx","text":"VS Code"} (cap "ctx"): the app tells the pad which program the layer follows; shown for 2.5 s next to the layer badge ("" clears it)
 static void cmdCtx(JsonDocument& doc) {
-  const char* t = doc["text"] | "";
+  String ft = foldMaybe(doc["text"] | ""); const char* t = ft.c_str();
   size_t n = strlen(t);
   if (n > 16) { nack("too_long"); return; }
   if (!printableAscii(t)) { nack("bad_arg"); return; }
@@ -3467,9 +3907,10 @@ static void cmdLayerNames(JsonDocument& doc) {
   JsonArrayConst a = doc["names"].as<JsonArrayConst>();
   if (!a.isNull()) {
     if (a.size() != LAYERS) { nack("names"); return; }
-    for (uint8_t i = 0; i < LAYERS; i++) { const char* t = a[i] | ""; if (!a[i].is<const char*>() || strlen(t) > 10 || !printableAscii(t)) { nack("names"); return; } }
+    String fn[LAYERS];
+    for (uint8_t i = 0; i < LAYERS; i++) { fn[i] = foldMaybe(a[i] | ""); const char* t = fn[i].c_str(); if (!a[i].is<const char*>() || strlen(t) > 10 || !printableAscii(t)) { nack("names"); return; } }
     for (uint8_t i = 0; i < LAYERS; i++) {
-      const char* t = a[i] | ""; strncpy(lnames[i], t, 10); lnames[i][10] = 0;
+      const char* t = fn[i].c_str(); strncpy(lnames[i], t, 10); lnames[i][10] = 0;
       char k[6]; snprintf(k, sizeof k, "ln%u", i); prefs.putString(k, lnames[i]);
     }
     layerToastUntil = millis() + 1600; needRedraw = true;
@@ -3480,7 +3921,7 @@ static void cmdLayerNames(JsonDocument& doc) {
 }
 // {"cmd":"toast","text":"Build passed","kind":"ok|warn|err","secs":3} (cap "toast"): a banner from the app; not drawn over games or GIFs
 static void cmdToast(JsonDocument& doc) {
-  const char* t = doc["text"] | "";
+  String ft = foldMaybe(doc["text"] | ""); const char* t = ft.c_str();
   size_t n = strlen(t);
   if (!n) { nack("bad_arg"); return; }
   if (n > 24) { nack("too_long"); return; }
@@ -3573,7 +4014,7 @@ static void cmdHabits(JsonDocument& doc) {
     if (a.isNull() || a.size() != 5) { nack("names"); return; }
     char nm[5][11]; String joined;
     for (int i = 0; i < 5; i++) {
-      String v = a[i].as<String>(); v.trim();
+      String v = foldMaybe(a[i].as<const char*>() ? a[i].as<const char*>() : ""); v.trim();
       if (!v.length() || v.length() > 10) { nack("names"); return; }
       for (unsigned j = 0; j < v.length(); j++) if ((uint8_t)v[j] < 32 || (uint8_t)v[j] > 126 || v[j] == '|') { nack("names"); return; }
       strncpy(nm[i], v.c_str(), 10); nm[i][10] = 0; joined += v; if (i < 4) joined += '|';
@@ -3603,7 +4044,7 @@ static void cmdReminders(JsonDocument& doc) {
     for (size_t i = 0; i < 3; i++) {
       int m = 0; String t;
       if (i < a.size()) {
-        m = a[i]["m"] | 0; t = a[i]["t"].as<String>(); t.trim();
+        m = a[i]["m"] | 0; t = foldMaybe(a[i]["t"] | ""); t.trim();
         if (m < 0 || m > 1440 || t.length() > 16) { nack("list"); return; }
         for (unsigned j = 0; j < t.length(); j++) if ((uint8_t)t[j] < 32 || (uint8_t)t[j] > 126 || t[j] == '|' || t[j] == ';') { nack("list"); return; }
         if (m && !t.length()) { nack("list"); return; }
@@ -3631,12 +4072,62 @@ static void cmdReboot(JsonDocument& doc) {
   esp_restart();
 }
 
+// {"cmd":"leader","seqs":[{"k":[1,2],"a":{"type":"combo","val":["PRIMARY","s"]}}, ...]} (cap "leader"): up to 24 sequences of 1-3 keys; no "seqs" = read
+static void cmdLeader(JsonDocument& doc) {
+  if (!doc["seqs"].isNull()) {
+    JsonArrayConst a = doc["seqs"].as<JsonArrayConst>();
+    if (a.isNull() || a.size() > 24) { nack("seqs"); return; }
+    JsonDocument keep; JsonArray out = keep.to<JsonArray>();
+    for (JsonVariantConst v : a) {
+      JsonObjectConst o = v.as<JsonObjectConst>(); JsonArrayConst k = o["k"];
+      if (k.isNull() || k.size() < 1 || k.size() > 3) { nack("seqs"); return; }
+      for (JsonVariantConst x : k) if (!x.is<int>() || x.as<int>() < 1 || x.as<int>() > 5) { nack("seqs"); return; }
+      JsonDocument spec; spec["type"] = o["a"]["type"]; spec["val"] = o["a"]["val"];
+      std::vector<Step> tmp; if (!parseSpec(spec.as<JsonVariantConst>(), tmp)) { nack("spec"); return; }
+      JsonObject e = out.add<JsonObject>(); e["k"] = k; e["a"] = spec;
+    }
+    String js; serializeJson(keep, js);
+    if (js.length() > 3800) { nack("too_long"); return; }
+    if (out.size()) prefs.putString("ldr", js); else prefs.remove("ldr");
+    leaderLoad();
+  }
+  JsonDocument d; d["ok"] = true; d["evt"] = "leader"; d["on"] = leaderOn; d["n"] = (uint32_t)leaderSeqs.size();
+  JsonArray sq = d["seqs"].to<JsonArray>();
+  for (const LeaderSeq& q : leaderSeqs) { JsonObject o = sq.add<JsonObject>(); JsonArray k = o["k"].to<JsonArray>(); for (uint8_t j = 0; j < q.n; j++) k.add(q.k[j]); JsonDocument sp; if (!deserializeJson(sp, q.spec)) o["a"] = sp; }
+  sendDoc(d);
+}
+// {"cmd":"switches"} (cap "swhealth"): press counters and contact-chatter counters of the five switches; {"op":"reset"} clears, {"op":"save"} writes now
+static void cmdSwitches(JsonDocument& doc) {
+  const char* op = doc["op"] | "";
+  if (!strcmp(op, "reset")) { for (int i = 0; i < 5; i++) swPress[i] = swChatter[i] = 0; swDirty = true; swhService(true); }
+  else if (!strcmp(op, "save")) { swDirty = true; swhService(true); }
+  else if (*op) { nack("op"); return; }
+  JsonDocument d; d["ok"] = true; d["evt"] = "switches";
+  JsonArray p = d["presses"].to<JsonArray>(), c = d["chatter"].to<JsonArray>();
+  for (int i = 0; i < 5; i++) { p.add(swPress[i]); c.add(swChatter[i]); }
+  sendDoc(d);
+}
+// {"cmd":"enccal","op":"start|cancel|set|get","edges":2,"invert":false} (cap "enccal"): start, then turn the dial ONE click clockwise: the pad learns its edges per click and its direction
+static void cmdEncCal(JsonDocument& doc) {
+  const char* op = doc["op"] | "get";
+  if (!strcmp(op, "start")) { encCal = 1; calEdges = calSum = 0; calAt = millis(); encRem = 0; showToast("TURN 1 CLICK"); needRedraw = true; }
+  else if (!strcmp(op, "cancel")) { encCal = 0; calEdges = calSum = 0; }
+  else if (!strcmp(op, "set")) {
+    int e = doc["edges"] | (int)encEdges;
+    if (e < 1 || e > 4) { nack("edges"); return; }
+    encEdges = (uint8_t)e; prefs.putUChar("eedg", encEdges);
+    if (!doc["invert"].isNull()) { encInvertRt = doc["invert"] | false; prefs.putBool("einv", encInvertRt); }
+    encRem = 0;
+  } else if (strcmp(op, "get")) { nack("op"); return; }
+  JsonDocument d; d["ok"] = true; d["evt"] = "enccal_state"; d["cal"] = encCal; d["edges"] = encEdges; d["invert"] = encInvertRt; sendDoc(d);
+}
 static void handleLine(const String& line) {
   JsonDocument doc;
   reqId = -1;
   if (deserializeJson(doc, line)) { nack("json"); return; }
   const char* cmd = doc["cmd"] | "";
   reqId = doc["id"] | -1;
+  if (strcmp(cmd, "stats") && strcmp(cmd, "ping") && strcmp(cmd, "tiles") && cmd[0]) crumb(7, (uint8_t)cmd[0], (uint16_t)((uint8_t)cmd[1] | ((uint8_t)cmd[2] << 8)));
 
   if (!strcmp(cmd, "stats")) {                                  // no reply (1 Hz telemetry)
     hostCpu = (uint8_t)constrain(doc["cpu"].as<int>(), 0, 100);
@@ -3645,6 +4136,9 @@ static void handleLine(const String& line) {
     if (mode == M_TELEM) needRedraw = true;
   }
   else if (!strcmp(cmd, "hello")) cmdHello();
+  else if (!strcmp(cmd, "leader")) cmdLeader(doc);
+  else if (!strcmp(cmd, "switches")) cmdSwitches(doc);
+  else if (!strcmp(cmd, "enccal")) cmdEncCal(doc);
   else if (!strcmp(cmd, "ping")) { JsonDocument d; d["ok"] = true; d["evt"] = "pong"; d["up"] = millis(); if (!doc["t"].isNull()) d["t"] = doc["t"]; sendDoc(d); }
   else if (!strcmp(cmd, "info")) cmdInfo();
   else if (!strcmp(cmd, "led")) cmdLed(doc);
@@ -3673,7 +4167,7 @@ static void handleLine(const String& line) {
     int key = doc["key"] | 0;
     if (key < 1 || key > 15) { nack("key"); return; }                 // 8 / 9 = dial pressed + turned right / left (1.4); 10-13 = chords K1+K2 ... K4+K5; 14 / 15 = dial double / triple click (1.5)
     const char* gest = doc["gesture"] | "tap";
-    char gch = !strcmp(gest, "hold") ? 'h' : !strcmp(gest, "double") ? 'd' : !strcmp(gest, "triple") ? 't' : 0;
+    char gch = gestureChar(gest);
     if (strcmp(gest, "tap") && !gch) { nack("gesture"); return; }
     if (gch && key > 5) { nack("key"); return; }                      // only the five keys have hold / double-tap actions
     int glay = doc["layer"] | 0;
@@ -3685,7 +4179,7 @@ static void handleLine(const String& line) {
       char pk[8]; slotKey((uint8_t)glay, (uint8_t)(key - 1), pk); prefs.remove(pk); loadGestureFlags(); ack("remap"); return;
     }
     JsonDocument spec;
-    spec["type"] = doc["type"]; spec["val"] = doc["val"];
+    spec["type"] = doc["type"]; spec["val"] = doc["val"]; if (doc["confirm"] | false) spec["confirm"] = true;
     std::vector<Step> tmp;
     if (!parseSpec(spec.as<JsonVariantConst>(), tmp)) { nack("spec"); return; }
     String s; serializeJson(spec, s);
@@ -3819,6 +4313,7 @@ static void handleLine(const String& line) {
     }
     cmdGifList();
   }
+  else if (cmdExt(cmd, doc)) { }
   else nack("unknown_cmd");
   reqId = -1;
 }
@@ -3849,14 +4344,14 @@ static void loadSettings() {
   gifRot = prefs.getUShort("grot", 0); if (gifRot > 3600) gifRot = 0;
   dispOff = prefs.getBool("nodisp", false);
   dialAccel = prefs.getUChar("dacc", 0); if (dialAccel > 2) dialAccel = 0;
-  clockStyle = prefs.getUChar("cstyle", 0); if (clockStyle > 5) clockStyle = 0;
+  clockStyle = prefs.getUChar("cstyle", 0); if (clockStyle > 8) clockStyle = 0;
   saverSec = prefs.getUShort("savs", 0); if (saverSec > 3600) saverSec = 0;
-  saverStyle = prefs.getUChar("savst", 1); if (saverStyle < 1 || saverStyle > 7) saverStyle = 1;
+  saverStyle = prefs.getUChar("savst", 1); if (saverStyle < 1 || saverStyle > 13) saverStyle = 1;
   nightOn = prefs.getBool("nd_on", false);
   nightFrom = prefs.getUChar("nd_f", 22); if (nightFrom > 23) nightFrom = 22;
   nightTo = prefs.getUChar("nd_t", 7); if (nightTo > 23) nightTo = 7;
   nightLevel = prefs.getUChar("nd_l", 30); if (nightLevel < 5) nightLevel = 30;
-  modeMask = (prefs.isKey("mmask2") ? prefs.getULong("mmask2", 0x3F) : (uint32_t)prefs.getUShort("mmask", 0x003F)) & 0x000FFFFFu; if (!modeMask) modeMask = 0x003F;
+  modeMask = (prefs.isKey("mmask2") ? prefs.getULong("mmask2", 0x3F) : (uint32_t)prefs.getUShort("mmask", 0x003F)) & 0xFFFFFFFFu; if (!modeMask) modeMask = 0x003F;
   themeIdx = prefs.getUChar("theme", 0); if (themeIdx > 6) themeIdx = 0;
   accentIdx = prefs.getUChar("accent", 0); if (accentIdx > 5) accentIdx = 0;
   for (uint8_t l = 0; l < LAYERS; l++) { char k[6]; snprintf(k, sizeof k, "ln%u", l); String v = prefs.getString(k, ""); strncpy(lnames[l], v.c_str(), 10); lnames[l][10] = 0; }
@@ -3864,6 +4359,14 @@ static void loadSettings() {
   tintOn = prefs.getBool("tint", false); pixelShift = prefs.getBool("pshift", false); fadeOn = prefs.getBool("fade", false);
   bootAnim = prefs.getBool("banim", true); detentLed = prefs.getBool("detled", false); keyToast = prefs.getBool("ktoast", false); dialLock = prefs.getBool("dlock", false);
   repeatMask = prefs.getUChar("repm", 0) & 31;
+  repeatCurve = prefs.getUChar("repc", 0) > 1 ? 0 : prefs.getUChar("repc", 0);
+  wheelInertia = prefs.getBool("winer", false); usbWakeOn = prefs.getBool("uwake", true);
+  encEdges = prefs.getUChar("eedg", ENC_EDGES_PER_DETENT); if (encEdges < 1 || encEdges > 4) encEdges = ENC_EDGES_PER_DETENT;
+  encInvertRt = prefs.getBool("einv", ENC_INVERT);
+  { String dc = prefs.getString("dcrv", "000"); for (uint8_t l = 0; l < LAYERS; l++) dialCurve[l] = (l < dc.length() && dc[l] >= '0' && dc[l] <= '3') ? (uint8_t)(dc[l] - '0') : 0; }
+  leaderLoad();
+  legendMode = prefs.getUChar("legend", 0) > 2 ? 0 : prefs.getUChar("legend", 0); macroRingOn = prefs.getBool("mring", true);
+  { String sw = prefs.getString("swh", ""); JsonDocument d; if (sw.length() && !deserializeJson(d, sw)) for (int i = 0; i < 5; i++) { swPress[i] = d["p"][i] | 0u; swChatter[i] = d["c"][i] | 0u; } }
   { String sp = prefs.getString("splash", ""); strncpy(splashTxt, sp.c_str(), 12); splashTxt[12] = 0; }
   loadLabels();
   pomoLoadToday();
@@ -3913,6 +4416,11 @@ static void bootAnimRun() {                                       // ~0.9 s star
   }
 }
 
+#include "apps.h"
+#include "apps_cmd.h"
+#include "apps_sys.h"
+#include "apps_usb.h"
+
 void setup() {
   // ---- 1. LED first: the very first visible sign of life (purple), before anything can fail
   ledBoot(24, 0, 24);
@@ -3929,13 +4437,14 @@ void setup() {
   if (rtcMagic != RTC_MAGIC || resetReason == ESP_RST_POWERON) rtcDispTry = 0;
   rtcCrashCount = crashed ? rtcCrashCount + 1 : 0;
   crashCount = rtcCrashCount;
+  crumbBoot((uint8_t)resetReason, (uint16_t)crashCount);
   safeMode = DC_FORCE_SAFE || crashCount >= 3;
   bootNote(resetReasonStr(resetReason), !crashed);
 
   // ---- 3. settings, then USB (serial + HID) - no display / filesystem work before the PC can see the device
   okPrefs = prefs.begin("deskcomp", false);
   bootNote("prefs", okPrefs);
-  loadSettings();                    // needs kbLayout before Keyboard.begin() below
+  loadSettings(); extLoad();                    // needs kbLayout before Keyboard.begin() below
   loadGestureFlags();
   {                                                                // reset statistics (power-on / software / panic / watchdog / brownout / other)
     if (prefs.getBytes("rstc", rstCount, sizeof rstCount) != sizeof rstCount) memset(rstCount, 0, sizeof rstCount);
@@ -3958,6 +4467,7 @@ void setup() {
 #endif
   ConsumerControl.begin();
   Mouse.begin();
+  usbExtraBegin();
   USB.begin();
 #endif
   rxLine.reserve(RX_MAX + 16);
@@ -4026,6 +4536,10 @@ void loop() {
   serialService();
   inputsService();
   macroTick();
+  inertiaService();
+  swhService(false);
+  extService();
+  ltTick();
   pomoTick();
   snakeTick();
   reactTick();
@@ -4060,9 +4574,9 @@ void loop() {
   { static uint32_t svAt = 0, ndAt = 0;                         // screensaver start / night dimming follow the clock, twice a second / every 15 s
     if ((uint32_t)(now - svAt) >= 500) {
       svAt = now;
-      bool can = saverSec > 0 && okSprite && mode != M_GIF && !menuOpen && !uploading && !dispHoldUntil && !(mode == M_POMO && pomoState == PS_RUN) &&
+      bool can = effSaverSec() > 0 && okSprite && mode != M_GIF && !menuOpen && !uploading && !dispHoldUntil && !(mode == M_POMO && pomoState == PS_RUN) &&
                  !remActive && !popupOpen && !gameBusy() && !(mode == M_STOPW && swRun) && !(mode == M_BREATH && brRun) && !(mode == M_SNAKE && snRun) && !(mode == M_REACT && (rxState == 1 || rxState == 2));
-      bool want = can && (uint32_t)(now - lastActivity) >= (uint32_t)saverSec * 1000UL;
+      bool want = can && (uint32_t)(now - lastActivity) >= (uint32_t)effSaverSec() * 1000UL;
       if (want != saverOn) { saverOn = want; needRedraw = true; }
     }
     if ((uint32_t)(now - ndAt) >= 15000) { ndAt = now; if (nightOn && effBright() != lastBl) applyBacklight(); }

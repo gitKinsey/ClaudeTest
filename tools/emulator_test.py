@@ -274,7 +274,7 @@ def t_modes_render(c):
         c.save(img, f"mode_{m}_{n}.png")
         expect(len(set(img.getdata())) >= 4, f"mode {m} ({n}) renders an almost empty screen")
         expect(e.request({"cmd": "ping"})["ok"], "alive")
-    expect(e.request({"cmd": "mode", "val": 21})["ok"] is True, "out-of-range mode is ignored, not fatal")
+    expect(e.request({"cmd": "mode", "val": 33})["ok"] is True, "out-of-range mode is ignored, not fatal")
     expect(e.request({"cmd": "hello"})["mode"] in (1, 2, 3, 4), "mode unchanged by invalid value")
 
 
@@ -532,7 +532,7 @@ def t_layers(c):
     e = c.e
     e.request({"cmd": "reset_keys"})
     h = e.request({"cmd": "hello"})
-    expect(h["layers"] == 3 and h["layer"] == 0 and h["modes"] == 20, f"hello layers/modes: {h}")
+    expect(h["layers"] == 3 and h["layer"] == 0 and h["modes"] == 32, f"hello layers/modes: {h}")
     for cap in ("layers", "mouse", "host", "info", "gifslots", "factory"):
         expect(cap in h["caps"], f"capability {cap} missing: {h['caps']}")
     expect("wifi" not in h["caps"] and "ota" not in h["caps"], f"the default build is cable-only: {h['caps']}")
@@ -874,7 +874,7 @@ def t_screens(c):
     e = c.e
     for cap in ("screens", "pressturn", "toggle", "wheelmods", "ledfx", "reminders", "habits"):
         expect(cap in e.request({"cmd": "hello"})["caps"], f"capability {cap}")
-    expect(e.request({"cmd": "hello"})["modes"] == 20 and e.request({"cmd": "hello"})["fw"] == "1.5.0", "20 screens, firmware 1.5.0")
+    expect(e.request({"cmd": "hello"})["modes"] == 32 and e.request({"cmd": "hello"})["fw"] == "1.5.0", "32 screens, firmware 1.5.0")
     expect(e.request({"cmd": "settings"})["mode_mask"] == 0x3F, "default: the six classic screens only")
     for bad in (0, 0x100000, -1):
         expect(e.request({"cmd": "settings", "mode_mask": bad})["err"] == "settings", f"mask {bad}")
@@ -1411,7 +1411,7 @@ def t_fw16(c):
     h = e.request({"cmd": "hello"})
     for cap in ("stateevt", "batch", "snap2", "ctx", "lnames", "toast", "accent", "perf"):
         expect(cap in h["caps"], f"capability {cap}")
-    expect(h["proto"] == 16, f"protocol level {h.get('proto')}")
+    expect(h["proto"] == 20, f"protocol level {h.get('proto')}")
     e.request({"cmd": "reset_keys"})
 
     # ---- remap_batch: stored like single remaps, all or nothing
@@ -1493,7 +1493,7 @@ def t_fw16(c):
 
     # ---- counters and the over-long request guard
     i = e.request({"cmd": "info"})
-    expect(i["proto"] == 16 and i["loop_max_us"] > 0 and i["loop_avg_us"] > 0 and i["loop_max_us"] >= i["loop_avg_us"] and "rx_overruns" in i and "usb_drops" in i, f"info counters {i}")
+    expect(i["proto"] == 20 and i["loop_max_us"] > 0 and i["loop_avg_us"] > 0 and i["loop_max_us"] >= i["loop_avg_us"] and "rx_overruns" in i and "usb_drops" in i, f"info counters {i}")
     before = i["rx_overruns"]
     r = e.request(b'{"cmd":"ping","pad":"' + b"x" * 7000 + b'"}\n', timeout=10)
     expect(r.get("err") == "too_long", f"an over-long request is refused: {r}")

@@ -43,6 +43,7 @@ class TFT_eSprite {
   void drawFastHLine(int32_t x, int32_t y, int32_t w, uint32_t c);
   void drawFastVLine(int32_t x, int32_t y, int32_t h, uint32_t c);
   void drawPixel(int32_t x, int32_t y, uint32_t c);
+  uint16_t readPixel(int32_t x, int32_t y) { if (x < 0 || y < 0 || x >= W || y >= H) return 0; size_t i = ((size_t)y * W + x) * 2; return (uint16_t)(buf[i] << 8 | buf[i + 1]); }
   void setTextColor(uint32_t fg) { fgc = fg; }
   void setTextColor(uint32_t fg, uint32_t) { fgc = fg; }
   void setTextDatum(uint8_t d) { datum = d; }
