@@ -1,0 +1,1945 @@
+% =====================================================================
+%  Mechanics III -- Study Document
+%  Typeset from handwritten lecture notes (Lectures 1--13, Sep--Oct 2026)
+%  with expanded explanations, derivations and worked examples.
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{bm}
+\usepackage{siunitx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,patterns,decorations.pathmorphing,decorations.markings,angles,quotes}
+\usepackage[most]{tcolorbox}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{fancyhdr}
+
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+\numberwithin{equation}{section}
+
+% ---------- notation ----------
+\newcommand{\vect}[1]{\bm{#1}}            % vectors: bold
+\newcommand{\tens}[1]{\underline{\underline{#1}}} % 2nd-order tensors
+\newcommand{\e}[1]{\vect{e}_{#1}}         % basis vectors
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\dv}[2]{\frac{\mathrm{d}#1}{\mathrm{d}#2}}
+\newcommand{\Id}{\tens{\mathbb{1}}}
+\newcommand{\cm}{\mathrm{cm}}
+\newcommand{\ext}{\mathrm{ext}}
+
+% ---------- boxes ----------
+\tcbset{
+  base/.style={enhanced,breakable,boxrule=0.6pt,arc=2pt,left=6pt,right=6pt,top=4pt,bottom=4pt,fonttitle=\bfseries},
+}
+\newtcolorbox{definition}[1][]{base,colback=blue!3,colframe=blue!50!black,title={Definition\ifx&#1&\else: #1\fi}}
+\newtcolorbox{keyresult}[1][]{base,colback=green!4,colframe=green!40!black,title={Key result\ifx&#1&\else: #1\fi}}
+\newtcolorbox{example}[1]{base,colback=orange!3,colframe=orange!60!black,title={#1}}
+\newtcolorbox{remark}[1][]{base,colback=gray!5,colframe=gray!60!black,title={Remark\ifx&#1&\else: #1\fi}}
+\newtcolorbox{pitfall}{base,colback=red!3,colframe=red!60!black,title={Common pitfall}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Mechanics III -- Study Notes}
+\rhead{\nouppercase{\leftmark}}
+\cfoot{\thepage}
+
+\title{\textbf{Mechanics III}\\[0.3em]\large Study Document: Dynamics of Particles, Systems of Particles and Rigid Bodies}
+\author{Typeset and expanded from handwritten lecture notes (Lectures 1--13)}
+\date{Autumn 2026}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{center}
+\begin{minipage}{0.85\textwidth}
+\small
+\textbf{How to use this document.}
+Everything from the handwritten notes is reproduced here, in the original order, with the original example numbering.
+On top of that, every result is \emph{derived} step by step, and short explanations are added where the notes only
+sketch an idea. Boxes are colour-coded:
+\begin{itemize}[nosep]
+  \item \textcolor{blue!50!black}{\textbf{blue}} -- definitions,
+  \item \textcolor{green!40!black}{\textbf{green}} -- key results / formulas to memorise,
+  \item \textcolor{orange!60!black}{\textbf{orange}} -- worked examples,
+  \item \textcolor{gray!60!black}{\textbf{grey}} -- remarks and intuition,
+  \item \textcolor{red!60!black}{\textbf{red}} -- common pitfalls.
+\end{itemize}
+\textbf{Notation.} Vectors are bold ($\vect r$; in handwriting/lecture they are underlined, $\underline r$),
+second-order tensors are double underlined ($\tens I$), $[\,\cdot\,]_C$ denotes components in frame $C$,
+and a dot denotes a time derivative, $\dot x = \mathrm dx/\mathrm dt$.
+Abbreviations: \textbf{DOF} = degree(s) of freedom, \textbf{FBD} = free-body diagram,
+\textbf{LMB} = linear momentum balance, \textbf{AMB} = angular momentum balance,
+\textbf{WEB} = work--energy balance, \textbf{ICR} = instantaneous centre of rotation,
+\textbf{IAR} = instantaneous axis of rotation, cm = centre of mass.
+\end{minipage}
+\end{center}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Single Particle Dynamics}
+% =====================================================================
+\textit{Lecture 1 (16.09.2026)}
+
+\begin{definition}[Particle]
+A \emph{particle} is an object of negligible size and shape -- mathematically, a point carrying a mass $m$.
+Its rotation is irrelevant; only its position matters.
+\end{definition}
+
+\emph{Kinematics} is the description of motion (positions, velocities, accelerations) \emph{without} asking what
+causes it. \emph{Kinetics} (Section~\ref{sec:particle-kinetics}) then relates the motion to forces.
+
+% ---------------------------------------------------------------------
+\subsection{Kinematics in a Cartesian reference frame}
+
+\begin{definition}[Cartesian frame]
+A Cartesian frame $C$ consists of
+\begin{itemize}[nosep]
+  \item a \textbf{fixed origin} $O$,
+  \item a \textbf{fixed orthonormal basis} $\e1,\e2,\e3$, i.e.\ $\e i\cdot\e j=\delta_{ij}$ and $\dot{\vect e}_i=\vect 0$.
+\end{itemize}
+\end{definition}
+
+\begin{center}
+\begin{tikzpicture}[scale=1.1,>=Stealth]
+  \draw[->,orange!80!black,thick] (0,0)--(1.4,0) node[right]{$\e1$};
+  \draw[->,orange!80!black,thick] (0,0)--(0,1.4) node[above]{$\e2$};
+  \draw[->,orange!80!black,thick] (0,0)--(-0.8,-0.6) node[below left]{$\e3$};
+  \fill (0,0) circle (1.2pt) node[below right]{$O$};
+  \draw[->,teal,thick] (0,0)--(2.2,1.6) node[midway,above left]{$\vect r(t)$};
+  \fill[blue!70!black] (2.2,1.6) circle (2pt);
+  \draw[dashed,gray] (0.8,1.85) .. controls (1.6,1.5) and (2.6,1.9) .. (3.4,1.2) node[right]{trajectory};
+\end{tikzpicture}
+\end{center}
+
+\paragraph{Position.}
+\begin{equation}
+  \vect r(t) = \sum_{i=1}^{3} x_i(t)\,\e i ,
+\end{equation}
+where the scalar functions $x_i(t)$ are the \emph{coordinates}. Each independent coordinate that is needed to
+describe the configuration is one \emph{degree of freedom}.
+
+\begin{keyresult}
+A (free) particle in $d$ dimensions has $d$ degrees of freedom.
+\end{keyresult}
+(Particle rotation does not matter, hence DOF $=d$ -- compare rigid bodies in Section~\ref{sec:rigid}, which
+have additional rotational DOFs.)
+
+\paragraph{Velocity.}
+Because the basis vectors are \emph{constant} in a Cartesian frame, differentiation acts only on the coordinates:
+\begin{equation}
+  \vect v = \dv{\vect r}{t} = \sum_{i=1}^{d}\dv{x_i}{t}\,\e i = \sum_{i=1}^{d}\dot x_i\,\e i .
+\end{equation}
+
+\paragraph{Acceleration.}
+\begin{equation}
+  \vect a = \dv{\vect v}{t} = \sum_{i=1}^{d}\ddot x_i\,\e i .
+\end{equation}
+
+\paragraph{Geometric meaning.}
+Over an infinitesimal time step $\dd t$,
+\begin{equation}
+  \dd\vect r = \vect v\dd t,\qquad \dd\vect v = \vect a\dd t .
+\end{equation}
+So the velocity always points in the direction of $\dd\vect r$, i.e.\ it is \emph{tangent to the trajectory}
+(``where you are moving''), whereas the acceleration points in the direction of the \emph{change} of
+velocity $\vect v(t+\dd t)-\vect v(t)$. In particular the acceleration need \emph{not} be tangent to the path.
+
+\begin{center}
+\begin{tikzpicture}[scale=1.1,>=Stealth]
+  \coordinate (O) at (0,0);
+  \coordinate (A) at (-0.6,2.0);
+  \coordinate (B) at (0.6,2.25);
+  \draw[dashed,gray] (-1.6,1.4) .. controls (-0.8,2.0) and (0.4,2.3) .. (1.6,2.7);
+  \draw[->,teal,thick] (O)--(A) node[midway,left]{$\vect r(t)$};
+  \draw[->,teal,thick] (O)--(B) node[midway,right]{$\vect r(t+\dd t)$};
+  \draw[->,orange!80!black,very thick] (A)--(B) node[midway,above]{$\dd\vect r$};
+  \begin{scope}[xshift=4.2cm,yshift=1.2cm]
+    \draw[->,teal,thick] (0,0)--(1.5,0) node[above]{$\vect v(t)$};
+    \draw[->,teal,thick] (0,0)--(1.6,0.6) node[above]{$\vect v(t+\dd t)$};
+    \draw[->,red!70!black,thick] (1.5,0)--(1.6,0.6);
+    \node[red!70!black,right] at (1.6,0.2) {$\vect a\dd t$};
+  \end{scope}
+\end{tikzpicture}
+\end{center}
+
+\paragraph{Speed.}
+The speed is the magnitude of the velocity,
+\begin{equation}
+  v = |\vect v| = \sqrt{\vect v\cdot\vect v} = \sqrt{\dot x_1^2+\dot x_2^2+\dot x_3^2}.
+\end{equation}
+
+\paragraph{Component form.}
+Collecting the coordinates in a column (with the frame as subscript),
+\begin{equation}
+  [\vect r(t)]_C = \begin{pmatrix}x_1(t)\\x_2(t)\\x_3(t)\end{pmatrix},\qquad
+  [\vect v(t)]_C = \begin{pmatrix}\dot x_1\\\dot x_2\\\dot x_3\end{pmatrix},\qquad
+  [\vect a(t)]_C = \begin{pmatrix}\ddot x_1\\\ddot x_2\\\ddot x_3\end{pmatrix}.
+\end{equation}
+
+\begin{remark}
+Vectors are frame-independent objects; their \emph{components} depend on the chosen frame. That is why we write
+$[\vect r]_C$: the column is the representation of $\vect r$ in frame $C$.
+\end{remark}
+
+% ---------------------------------------------------------------------
+\subsubsection*{Finding the trajectory from the acceleration}
+
+\begin{example}{Example 1.1: Finding $\vect r(t)$ from a known $\vect a(t)$}
+\textbf{Idea.} Integrate twice. Start from the definition $\vect a=\mathrm d\vect v/\mathrm dt$ and separate:
+\begin{equation*}
+  \vect a(t)=\dv{\vect v}{t}\quad\Longleftrightarrow\quad
+  \int_{t_0}^{t}\vect a(\tau)\dd\tau=\int_{\vect v(t_0)}^{\vect v(t)}\dd\vect v
+  \quad\Longrightarrow\quad
+  \boxed{\vect v(t)=\vect v(t_0)+\int_{t_0}^{t}\vect a(\tau)\dd\tau}.
+\end{equation*}
+(Using definite integrals with the initial condition as lower limit means we never need an ``$+C$''.)
+Analogously, from $\vect v=\mathrm d\vect r/\mathrm dt$:
+\begin{equation*}
+  \boxed{\vect r(t)=\vect r(t_0)+\int_{t_0}^{t}\vect v(\tau)\dd\tau}.
+\end{equation*}
+
+\textbf{Application: free fall under gravity.} Choose $\e2$ pointing up, so
+$\vect a(t)=-g\,\e2=\text{const}$. Take $t_0=0$. Then
+\begin{align*}
+  \vect v(t) &= \vect v(0) - g\,t\,\e2,\\
+  \vect r(t) &= \vect r(0)+\int_0^t\big(\vect v(0)-g\tau\e2\big)\dd\tau
+             = \vect r(0)+\vect v(0)\,t-\frac{g t^2}{2}\,\e2 ,
+\end{align*}
+or in components
+\begin{equation*}
+  \begin{pmatrix}x_1(t)\\x_2(t)\\x_3(t)\end{pmatrix}
+  =\underbrace{\begin{pmatrix}x_1(0)\\x_2(0)\\x_3(0)\end{pmatrix}
+  +\begin{pmatrix}\dot x_1(0)\\\dot x_2(0)\\\dot x_3(0)\end{pmatrix}}_{\text{initial conditions}}t
+  +\begin{pmatrix}0\\-\tfrac{g t^2}{2}\\0\end{pmatrix}.
+\end{equation*}
+A second-order ODE needs \emph{two} vector initial conditions: $\vect r(0)$ and $\vect v(0)$.
+\end{example}
+
+\begin{example}{Clicker question: who hits the ground first?}
+Two identical particles are launched at the same time. Particle 1 starts vertically upward from the ground with
+initial velocity $v_0$; particle 2 is released from height $h$ with zero initial velocity. Both fall with constant
+acceleration $g$. From what height $h$ must particle 2 be released so that particle 1 hits the ground first?
+
+\textbf{Particle 1.} With $x_2^{(1)}(0)=0$, $\dot x_2^{(1)}(0)=v_0$:
+\begin{equation*}
+  x_2^{(1)}(t)=v_0t-\tfrac12 g t^2 = t\left(v_0-\tfrac12 g t\right)\overset{!}{=}0
+  \;\Longrightarrow\; t_1=0 \text{ (launch)},\quad t^{(1)}=\frac{2v_0}{g}\text{ (landing)}.
+\end{equation*}
+\textbf{Particle 2.} With $x_2^{(2)}(0)=h$, $\dot x_2^{(2)}(0)=0$:
+\begin{equation*}
+  x_2^{(2)}(t)=h-\tfrac12 g t^2\overset{!}{=}0\;\Longrightarrow\;t^{(2)}=\sqrt{\frac{2h}{g}}.
+\end{equation*}
+\textbf{Condition} $t^{(1)}<t^{(2)}$ (both sides positive, so squaring is allowed):
+\begin{equation*}
+  \frac{2v_0}{g}<\sqrt{\frac{2h}{g}}
+  \iff\frac{4v_0^2}{g^2}<\frac{2h}{g}
+  \iff\boxed{h>\frac{2v_0^2}{g}}.
+\end{equation*}
+Sanity check: particle 1 reaches a maximum height $v_0^2/(2g)$; particle 2 must start four times higher.
+\end{example}
+
+\begin{example}{Example 1.5: Finding $\vect r(t)$ from a known $\vect a(\vect v)$ or $\vect a(\vect x)$}
+\textbf{1) Drag (acceleration depends on velocity).} A particle moving through a medium experiences a drag.
+For slow motion, \emph{Stokes drag} is linear: $\vect a=-k\vect v$, $k>0$.
+Consider 1D: $\vect r=x\e1$, $\vect v=v\e1$, $\vect a=a\e1$ with $a=a(v)=-kv$.
+
+Since $a$ depends on $v$ and not explicitly on $t$, separate variables:
+\begin{equation*}
+  a(v)=\dv{v}{t}\;\Longrightarrow\;\int_{t_0}^{t}\dd\tau=\int_{v(t_0)}^{v(t)}\frac{\dd v}{a(v)}
+  =\int_{v(t_0)}^{v(t)}\frac{\dd v}{-kv}
+  \;\Longrightarrow\; t-t_0=-\frac1k\ln\frac{v(t)}{v(t_0)} .
+\end{equation*}
+Solving for $v$:
+\begin{equation*}
+  \boxed{v(t)=v(t_0)\,e^{-k(t-t_0)}} .
+\end{equation*}
+The velocity decays exponentially; integrating once more gives
+$x(t)=x(t_0)+\frac{v(t_0)}{k}\big(1-e^{-k(t-t_0)}\big)$, so the particle stops after a finite distance $v(t_0)/k$.
+
+\medskip
+\textbf{2) Rocket launch (acceleration depends on position).} Far from the earth, gravity depends on the altitude:
+$a=a(x)$. Use the chain rule to eliminate $t$:
+\begin{equation*}
+  a(x)=\dv{v}{t}=\dv{v}{x}\,\underbrace{\dv{x}{t}}_{=v}=v\,\dv{v}{x}.
+\end{equation*}
+Separate and integrate:
+\begin{equation*}
+  \int_{v(x_0)}^{v(x)}v\dd v=\int_{x_0}^{x}a(\xi)\dd\xi
+  \;\Longrightarrow\;\boxed{\tfrac12\big(v(x)^2-v(x_0)^2\big)=\int_{x_0}^{x}a(\xi)\dd\xi}.
+\end{equation*}
+This gives $v=v(x)$. To get the position as a function of time, separate once more:
+$v(x)=\mathrm dx/\mathrm dt\iff \dd t = \dd x/v(x)$, so $t-t_0=\int_{x_0}^{x}\mathrm d\xi/v(\xi)$, which can be
+inverted to $x(t)$.
+
+(The relation $\tfrac12\,\mathrm d(v^2)=a\dd x$ is the 1D precursor of the work--energy balance, Section~\ref{sec:web}.)
+\end{example}
+
+% ---------------------------------------------------------------------
+\subsection{Constrained motion}
+
+\begin{keyresult}[Counting DOFs with constraints]
+If a particle in $d$ dimensions is subject to $k$ \emph{independent} kinematic constraints, then it has
+\begin{equation}
+  \text{DOF} = d-k .
+\end{equation}
+\end{keyresult}
+
+\begin{example}{Example 1.6: (Un-)constrained motion}
+\begin{enumerate}[nosep]
+  \item \textbf{Free motion:} $\vect r=\sum_{i=1}^{d}x_i\e i$ $\Rightarrow$ $d$ DOFs.
+  \item \textbf{Particle on a rigid ground} (inclined plane with normal $\vect n$): the constraint
+        $\vect r\cdot\vect n=\text{const}$ keeps the particle on the plane. In 3D: $3-1=2$ DOFs,
+        $\vect r=x_1\e1+x_2\e2$ with $\e1,\e2$ in the plane.
+  \item \textbf{Particle on a rigid link} of length $L$ attached to a fixed point: $|\vect r|=L=\text{const}$
+        $\Rightarrow$ $d-1$ DOFs (a circle in 2D, a sphere in 3D).
+  \item \textbf{Particle in a tube / on a track:} only the path length $s$ is free $\Rightarrow$ 1 DOF suffices.
+\end{enumerate}
+\end{example}
+
+\begin{keyresult}[Reaction forces]
+Every constraint gives rise to a \textbf{reaction force} -- the force that ``enforces'' the constraint
+(normal force of the ground, tension in a link, \dots). Moreover, whenever the velocity vector changes
+(in magnitude \emph{or} direction) an acceleration exists, and hence (by Newton) a force must act.
+\end{keyresult}
+
+% ---------------------------------------------------------------------
+\subsection{Kinematics in polar coordinates (2D)}
+\textit{Lecture 2 (21.09.2026)}
+
+Describe the position by the distance $r(t)$ from the origin and the angle $\varphi(t)$ measured from $\e1$:
+\begin{equation}
+  \vect r(t)=\underbrace{r\cos\varphi}_{=x_1}\,\e1+\underbrace{r\sin\varphi}_{=x_2}\,\e2 .
+\end{equation}
+Differentiating directly (product + chain rule) gives
+\begin{equation}
+  \vect v=\dot{\vect r}=\big(\dot r\cos\varphi-r\sin\varphi\,\dot\varphi\big)\e1
+  +\big(\dot r\sin\varphi+r\cos\varphi\,\dot\varphi\big)\e2,
+\end{equation}
+and the acceleration in this form becomes very complicated. Much cleaner: use a \emph{co-rotating} basis.
+
+\begin{definition}[Polar (co-rotating) basis]
+\begin{equation}
+  \e r(t)=\cos\varphi\,\e1+\sin\varphi\,\e2,\qquad
+  \e\varphi(t)=-\sin\varphi\,\e1+\cos\varphi\,\e2 .
+\end{equation}
+It rotates with the particle; it is \textbf{time dependent} but still orthonormal:
+$|\e r|=|\e\varphi|=1$, $\e r\cdot\e\varphi=0$.
+\end{definition}
+
+\begin{center}
+\begin{tikzpicture}[scale=1.3,>=Stealth]
+  \draw[->,orange!80!black,thick] (0,0)--(1.2,0) node[right]{$\e1$};
+  \draw[->,orange!80!black,thick] (0,0)--(0,1.2) node[above]{$\e2$};
+  \draw[thick] (0,0)--(2.4,1.6);
+  \fill[blue!70!black] (2.4,1.6) circle (2pt);
+  \node at (1.0,1.0) {$r$};
+  \draw[->,teal,thick] (2.4,1.6)--++(0.83,0.555) node[right]{$\e r$};
+  \draw[->,teal,thick] (2.4,1.6)--++(-0.555,0.83) node[above]{$\e\varphi$};
+  \draw (0.7,0) arc (0:33.7:0.7); \node at (0.9,0.25){$\varphi$};
+\end{tikzpicture}
+\end{center}
+
+\paragraph{Derivatives of the basis vectors.} By the chain rule,
+\begin{keyresult}
+\begin{align}
+  \dot{\vect e}_r &= -\sin\varphi\,\dot\varphi\,\e1+\cos\varphi\,\dot\varphi\,\e2=\dot\varphi\,\e\varphi,\\
+  \dot{\vect e}_\varphi &= -\cos\varphi\,\dot\varphi\,\e1-\sin\varphi\,\dot\varphi\,\e2=-\dot\varphi\,\e r.
+\end{align}
+\end{keyresult}
+\begin{remark}
+These are the only two identities you need. Interpretation: a unit vector can only rotate, so its derivative is
+perpendicular to it, with magnitude equal to the rotation rate $\dot\varphi$.
+\end{remark}
+
+\paragraph{Position.} $\vect r(t)=r(t)\,\e r(t)$.
+
+\paragraph{Velocity.} Product rule:
+\begin{equation}
+  \vect v=\dot{\vect r}=\dot r\,\e r+r\,\dot{\vect e}_r=\boxed{\dot r\,\e r+r\dot\varphi\,\e\varphi}.
+\end{equation}
+The radial part $\dot r$ is due to the change of distance (``radius change''), the circumferential part $r\dot\varphi$
+is due to rotation.
+
+\begin{definition}[Angular velocity / acceleration]
+\begin{equation}
+  \omega\coloneqq\dot\varphi\ \ [\si{\radian\per\second}],\qquad
+  \dot\omega=\ddot\varphi\ \ [\si{\radian\per\second\squared}].
+\end{equation}
+\end{definition}
+
+\paragraph{Acceleration.} Differentiate the velocity once more, again using the basis identities:
+\begin{align}
+  \vect a=\dot{\vect v}
+  &=\ddot r\,\e r+\dot r\,\dot{\vect e}_r+\dot r\dot\varphi\,\e\varphi+r\ddot\varphi\,\e\varphi+r\dot\varphi\,\dot{\vect e}_\varphi\nonumber\\
+  &=\ddot r\,\e r+\dot r\dot\varphi\,\e\varphi+\dot r\dot\varphi\,\e\varphi+r\ddot\varphi\,\e\varphi-r\dot\varphi^2\,\e r\nonumber\\
+  &=\boxed{\big(\ddot r-r\dot\varphi^2\big)\e r+\big(2\dot r\dot\varphi+r\ddot\varphi\big)\e\varphi}.
+\end{align}
+\begin{itemize}[nosep]
+  \item $-r\dot\varphi^2$: \textbf{centripetal acceleration} (always points towards the origin),
+  \item $2\dot r\dot\varphi$: \textbf{Coriolis term} -- if you move outwards on a rotating platform you have to
+        accelerate sideways, because the circumferential speed $r\dot\varphi$ grows with $r$,
+  \item $r\ddot\varphi$: tangential acceleration due to angular acceleration.
+\end{itemize}
+
+\begin{pitfall}
+$v_r=\dot r$, but $a_r\neq\dot v_r$! Because the basis is time dependent, the components of $\vect a$ are
+\emph{not} the time derivatives of the components of $\vect v$. The same holds for the $\varphi$-parts.
+\end{pitfall}
+
+\begin{example}{Example 1.7: Particle on a taut, inextensible string}
+The particle moves on a circle of radius $L$: $r(t)=L=\text{const}\Rightarrow\dot r=\ddot r=0$. Then
+\begin{align*}
+  \vect v(t)&=L\dot\varphi(t)\,\e\varphi(t),\qquad |\vect v|=L|\dot\varphi|=L|\omega|,\\
+  \vect a(t)&=-L\dot\varphi^2(t)\,\e r(t)+L\ddot\varphi(t)\,\e\varphi(t).
+\end{align*}
+For uniform rotation, $\dot\varphi=\omega=\text{const}$:
+\begin{equation*}
+  \vect v=L\omega\,\e\varphi,\qquad
+  \vect a=-L\omega^2\,\e r=-\frac{v^2}{L}\,\e r\quad\text{(centripetal acceleration)}.
+\end{equation*}
+Even at constant speed there is an acceleration, because the \emph{direction} of $\vect v$ changes.
+\end{example}
+
+\begin{example}{Clicker: walking radially on a rotating disk}
+A disk rotates with $\omega=\text{const}$; a particle moves radially \emph{inwards} at constant speed $v_0$,
+so $\dot r=-v_0$, $\ddot r=0$, $\dot\varphi=\omega$, $\ddot\varphi=0$. Then
+\begin{align*}
+  \vect v&=\dot r\,\e r+r\dot\varphi\,\e\varphi=-v_0\,\e r+r\omega\,\e\varphi,\\
+  \vect a&=-r\omega^2\,\e r+2(-v_0)\omega\,\e\varphi,\\
+  |\vect a|&=\sqrt{(r\omega^2)^2+(2v_0\omega)^2}.
+\end{align*}
+Since $v_0$ and $\omega$ are constant, $|\vect a|$ is minimal when $r=0$ (centre of the disk):
+$|\vect a|_{\min}=2|v_0\omega|$ -- the Coriolis part never vanishes.
+\end{example}
+
+% ---------------------------------------------------------------------
+\subsection{Kinematics of space curves (path coordinates)}
+
+If the path is known (a track, a road), parametrise the position by the \emph{path length} $s=s(t)$ measured along the
+curve: $\vect r=\vect r(s)$.
+
+\begin{definition}[Tangent and normal vectors]
+\begin{itemize}[nosep]
+\item Unit tangent: $\e t=\dfrac{\vect v}{|\vect v|}=\dfrac{\vect v}{v}=\dv{\vect r}{s}$.
+\item Speed: $v=|\vect v|=\dot s=\mathrm ds/\mathrm dt$.
+\item Unit (principal) normal $\e n$: points towards the centre of the \emph{osculating circle}, whose radius
+  $\rho$ is the local radius of curvature.
+\end{itemize}
+\end{definition}
+
+\paragraph{Velocity.} $\vect v=v\,\e t=\dot s\,\e t$.
+
+\paragraph{Acceleration.} Product rule: $\vect a=\ddot s\,\e t+\dot s\,\dot{\vect e}_t$. The tangent vector turns as
+we move along the curve; locally the curve is a circle of radius $\rho$, so the tangent turns by the angle
+$\dd\theta=\dd s/\rho$, giving $\dv{\e t}{s}=\frac1\rho\e n$ and therefore
+$\dot{\vect e}_t=\dv{\e t}{s}\dot s=\frac{\dot s}{\rho}\e n$. Hence
+\begin{keyresult}[Path coordinates]
+\begin{equation}
+  \vect v=\dot s\,\e t,\qquad
+  \vect a=\underbrace{\ddot s\,\e t}_{\text{along the path}}+\underbrace{\frac{v^2}{\rho}\,\e n}_{\text{towards centre of curvature}} .
+\end{equation}
+\end{keyresult}
+\textbf{Special case: flat ground.} $\rho\to\infty\Rightarrow v^2/\rho\to0\Rightarrow\vect a=\ddot s\,\e t$.
+
+\begin{example}{Example 1.10: Circular motion}
+For a circle of radius $R$: $\rho=R=\text{const}$, path length $s(t)=R\varphi(t)$. So
+\begin{equation*}
+  \vect v=\dot s\,\e t=R\dot\varphi\,\e t,\qquad
+  \vect a=\ddot s\,\e t+\frac{v^2}{\rho}\e n=R\ddot\varphi\,\e t+\frac{v^2}{R}\e n.
+\end{equation*}
+Compare with polar coordinates for $r=R=\text{const}$:
+$\vect a=R\ddot\varphi\,\e\varphi-\frac{v^2}{R}\e r$. The tangential terms agree ($\e t=\e\varphi$), and the
+normal terms agree because $\e n$ always points towards the centre of the osculating circle while $\e r$
+points away from it: $\e n=-\e r$.
+\end{example}
+
+\begin{remark}[Practical application: track design]
+If a straight track is joined directly to a circular arc, the curvature $1/\rho$ jumps from $0$ to $1/R$, so the
+normal acceleration $v^2/\rho$ (and the force on the passengers) jumps \emph{instantaneously}. A better design
+uses a transition curve whose radius changes smoothly, so that $v^2/\rho$ grows gradually (e.g.\ a clothoid,
+where curvature grows linearly with $s$). In a looping, an ``inverted teardrop'' shape keeps $v^2/\rho$
+roughly constant.
+\end{remark}
+
+% ---------------------------------------------------------------------
+\section{Single Particle Kinetics}\label{sec:particle-kinetics}
+\textit{Lecture 3 (23.09.2026)}
+
+\begin{definition}[Linear momentum]
+\begin{equation}
+  \vect p=m\vect v \qquad(\text{German: ``Impuls''}).
+\end{equation}
+\end{definition}
+
+% ---------------------------------------------------------------------
+\subsection{Linear momentum balance (Newton's axioms)}
+
+\begin{keyresult}[Linear momentum balance (LMB)]
+\begin{equation}
+  \sum_i\vect F_i=\dv{\vect p}{t}=\dv{}{t}(m\vect v),
+\end{equation}
+where $\sum_i\vect F_i$ is the \emph{net force} acting on the particle. This holds in an \emph{inertial} frame.
+\end{keyresult}
+
+\paragraph{Special cases.}
+\begin{itemize}
+  \item \textbf{Statics:} $\vect v=\vect 0\Rightarrow\vect p=\vect 0\Rightarrow\sum_i\vect F_i=\vect 0$.
+  \item \textbf{Zero net force:} $\sum_i\vect F_i=\vect 0\Rightarrow\vect p=\text{const}\Rightarrow m\vect v=\text{const}$
+        (\emph{Newton's first axiom}: uniform straight-line motion).
+  \item \textbf{Constant mass:} $\dot m=0\Rightarrow\dot{\vect p}=m\dot{\vect v}$ and
+        \begin{equation}\boxed{\sum_i\vect F_i=m\vect a}\qquad(\text{\emph{Newton's second axiom}}).\end{equation}
+        The force determines the \emph{change} of velocity, not the velocity itself.
+  \item \textbf{Zero mass:} $m=0\Rightarrow\vect p=\vect 0\Rightarrow\sum_i\vect F_i=\vect 0$ -- massless objects
+        (ropes, light pulleys, links) must always be in force equilibrium, even when they accelerate.
+\end{itemize}
+
+\paragraph{Newton's third axiom (``actio = reactio'').}
+If body $A$ exerts a force $\vect F$ on body $B$, then $B$ exerts $-\vect F$ on $A$. This is what makes
+\emph{free-body diagrams} (FBDs) consistent: when we cut two bodies apart, the contact force appears on both
+cut faces with opposite signs.
+
+\begin{example}{FBD of a mass resting on a block}
+A small mass $m$ sits on a block of mass $M$ which rests on the ground (gravity $g$ downwards, $\e2$ up).
+Cut the system into its parts:
+\begin{itemize}[nosep]
+  \item mass $m$: weight $-mg\,\e2$, contact force from the block $N_1\e2$;
+  \item block $M$: weight $-Mg\,\e2$, contact force from the mass $-N_1\e2$ (Newton 3), ground force $N_2\e2$
+        (really a distributed pressure, but we only care about its resultant).
+\end{itemize}
+LMB in $\e2$:
+\begin{equation*}
+  N_1-mg=m a_1,\qquad N_2-N_1-Mg=M a_2 .
+\end{equation*}
+\end{example}
+
+\begin{example}{Example 1.12: Block sliding on frictionless ground}
+\textbf{Kinematics.} The block can only move horizontally: $\vect r(t)=x_1(t)\e1$,
+$\vect v=\dot x_1\e1$, $\vect a=\ddot x_1\e1$.
+
+\textbf{Friction.} Friction coefficient $\mu=0$ $\Rightarrow$ no friction force.
+
+\textbf{Kinetics (LMB).}
+\begin{equation*}
+  \sum_i\vect F_i=(N-mg)\e2=m\vect a=m\ddot x_1\e1 .
+\end{equation*}
+The left side only has an $\e2$-component, the right side only an $\e1$-component, so both must vanish:
+\begin{equation*}
+  N=mg,\qquad \ddot x_1=0\Rightarrow\vect v=\text{const}.
+\end{equation*}
+\end{example}
+
+\paragraph{Coulomb friction.}
+\begin{itemize}
+  \item \textbf{Static friction} (no relative sliding): the friction force $\vect R$ adjusts itself, with
+        $|\vect R|\le\mu_0|\vect N|$ ($\mu_0$: static friction coefficient).
+  \item \textbf{Kinetic (dynamic) friction} (sliding): magnitude fixed, direction opposite to the sliding velocity,
+\begin{equation}
+  \boxed{\vect R=-\mu|\vect N|\frac{\vect v}{|\vect v|}}\qquad(\mu:\text{ dynamic friction coefficient}).
+\end{equation}
+\end{itemize}
+
+\begin{example}{Example 1.13: Sliding down a rough incline}
+\begin{center}
+\begin{tikzpicture}[scale=1.0,>=Stealth]
+  \draw[thick] (0,0)--(5,0)--(0,2.9)--cycle;
+  \fill[pattern=north east lines] (0,0) rectangle (5,-0.15);
+  \begin{scope}[shift={(2.0,1.74)},rotate=-30]
+    \draw[fill=blue!15,thick] (-0.5,0) rectangle (0.5,0.6);
+    \coordinate (c) at (0,0.3);
+    \draw[->,red!70!black,thick] (0,0.6)--(0,1.4) node[above]{$N$};
+    \draw[->,red!70!black,thick] (-0.5,0.3)--(-1.3,0.3) node[left]{$R$};
+    \draw[->,orange!80!black,thick] (1.2,0.3)--(2.0,0.3) node[right]{$\e1$};
+    \draw[->,orange!80!black,thick] (1.2,0.3)--(1.2,1.1) node[above]{$\e2$};
+  \end{scope}
+  \draw[->,red!70!black,thick] (2.15,2.0)--(2.15,0.9) node[below]{$mg$};
+  \draw (4.2,0) arc (180:150:0.8); \node at (3.9,0.2) {$\alpha$};
+\end{tikzpicture}
+\end{center}
+Coordinates: $\e1$ down the slope, $\e2$ normal to it.
+
+\textbf{Kinematics.} $\vect r=x_1\e1$, $\vect v=\dot x_1\e1$, $\vect a=\ddot x_1\e1$ (the block stays on the slope).
+
+\textbf{Kinetics.} $\mu>0$ $\Rightarrow$ friction. The block slides ($\dot x_1>0$), so kinetic friction acts
+up the slope: $\vect R=-R\e1$ with $R=\mu N$.
+
+\textbf{LMB.} Gravity $mg$ decomposes into $mg\sin\alpha$ along $\e1$ and $-mg\cos\alpha$ along $\e2$:
+\begin{equation*}
+  \sum_i\vect F_i=(mg\sin\alpha-R)\e1+(N-mg\cos\alpha)\e2=m\ddot x_1\e1 .
+\end{equation*}
+Compare components:
+\begin{align*}
+  \e2:&\quad N=mg\cos\alpha,\\
+  \e1:&\quad mg\sin\alpha-R=m\ddot x_1 .
+\end{align*}
+With $R=\mu N=\mu mg\cos\alpha$:
+\begin{equation*}
+  \boxed{\ddot x_1=g\big(\sin\alpha-\mu\cos\alpha\big)}.
+\end{equation*}
+If $\tan\alpha<\mu$ then $\ddot x_1<0$: the block is braking (decelerating) and eventually stops.
+\end{example}
+
+\begin{example}{Example 1.14: Projectile motion}
+Only gravity acts: LMB $m\vect a=m\vect g\Rightarrow\vect a=\vect g$, independent of the mass.
+Hence the horizontal velocity stays exactly the same throughout the flight, and the vertical motion is the free fall
+of Example~1.1. The trajectory is a parabola.
+\end{example}
+
+\begin{example}{Example 1.15: Particle on a string (uniform circular motion)}
+A mass $m$ on a string of constant length $L$ rotates around a fixed point. From polar kinematics (Example 1.7),
+\begin{equation*}
+  \text{LMB:}\quad\sum_i\vect F_i=m\vect a=m\big(-L\omega^2\e r+L\dot\omega\,\e\varphi\big).
+\end{equation*}
+With $\omega=\text{const}$ the only force (ignoring gravity) is the string force $S$ pulling towards the centre:
+\begin{equation*}
+  -S\,\e r=-mL\omega^2\,\e r\quad\Longrightarrow\quad\boxed{S=mL\omega^2}.
+\end{equation*}
+\end{example}
+
+% ---------------------------------------------------------------------
+\subsection{Balance of angular momentum}
+
+\begin{definition}[Angular momentum with respect to a reference point $B$]
+\begin{equation}
+  \vect H_B=\vect r_{BP}\times\vect p,\qquad \vect p=m\vect v_P,
+\end{equation}
+where $\vect r_{BP}=\vect r_P-\vect r_B$ points from the reference point $B$ to the particle $P$.
+(German: ``Drall'' / ``Drehimpuls''.)
+\end{definition}
+
+\paragraph{Derivation of the AMB.}
+Differentiate with the product rule:
+\begin{equation*}
+  \dot{\vect H}_B=\dot{\vect r}_{BP}\times\vect p+\vect r_{BP}\times\dot{\vect p}.
+\end{equation*}
+\begin{itemize}[nosep]
+\item First term: $\dot{\vect r}_{BP}=\vect v_P-\vect v_B$, and $\vect v_P\times\vect p=\vect v_P\times m\vect v_P=\vect 0$
+      (parallel vectors), so $\dot{\vect r}_{BP}\times\vect p=-\vect v_B\times\vect p$.
+\item Second term: by LMB $\dot{\vect p}=\sum_i\vect F_i$, so
+      $\vect r_{BP}\times\sum_i\vect F_i\eqqcolon\vect M_B$ is the \emph{net torque} (moment) about $B$.
+\end{itemize}
+Thus $\dot{\vect H}_B=-\vect v_B\times\vect p+\vect M_B$, or
+\begin{keyresult}[Angular momentum balance (AMB)]
+\begin{equation}
+  \vect M_B=\dot{\vect H}_B+\vect v_B\times\vect p .
+\end{equation}
+\end{keyresult}
+For a single particle the AMB contains no new information beyond the LMB ($\sum\vect F_i=\dot{\vect p}$) --
+it was derived from it -- but it is often much more convenient, because reaction forces passing through $B$
+drop out of $\vect M_B$.
+
+\paragraph{Special cases.}
+\begin{itemize}
+  \item \textbf{Statics:} $\vect H_B=\vect 0$, $\vect p=\vect 0\Rightarrow\vect M_B=\vect 0$
+        (makes sense, as the particle does not move).
+  \item \textbf{Massless particle:} $\vect p=\vect 0$, $\vect H_B=\vect 0\Rightarrow\vect M_B=\vect 0$ (as in statics).
+  \item \textbf{$B$ fixed} ($\vect v_B=\vect 0$) \textbf{or $B$ moving parallel to the particle}
+        ($\vect v_B\parallel\vect v_P$): $\vect M_B=\dot{\vect H}_B$.
+        \emph{Choose $B$ like this whenever possible!}
+  \item \textbf{No torque} about $B$ (and $\vect v_B\times\vect p=\vect 0$):
+        $\dot{\vect H}_B=\dv{}{t}(\vect r_{BP}\times m\vect v_P)=\vect 0$ -- angular momentum is conserved.
+\end{itemize}
+
+\paragraph{Special case: 2D, in polar coordinates around a fixed point $B$.}
+With $\vect r_{BP}=r\,\e r$ and $\vect v_P=v_r\e r+v_\varphi\e\varphi$, and $\e r\times\e r=\vect 0$,
+$\e r\times\e\varphi=\e3$:
+\begin{equation*}
+  \vect H_B=m\,r\e r\times\big(v_r\e r+v_\varphi\e\varphi\big)=m\,r\,v_\varphi\,\e3=m r^2\omega\,\e3 .
+\end{equation*}
+Writing $\vect M_B=M_B\e3$, the AMB becomes the scalar equation
+\begin{equation}
+  \boxed{M_B=\dv{}{t}\big(m r^2\omega\big)}\qquad\text{(AMB in 2D with fixed $B$)} .
+\end{equation}
+If additionally $r(t)=R=\text{const}$ (and $m=\text{const}$):
+\begin{equation}
+  M_B=mR^2\dot\omega=\underbrace{mR^2}_{I_B}\ddot\varphi .
+\end{equation}
+$I_B=mR^2$ is the \emph{mass moment of inertia} -- the rotational analogue of the mass in the LMB
+($F=ma\;\leftrightarrow\;M_B=I_B\ddot\varphi$): it measures the resistance against angular acceleration.
+
+% ---------------------------------------------------------------------
+\subsection{Work--energy balance}\label{sec:web}
+\textit{Lecture 4 (28.09.2026)}
+
+\paragraph{Derivation.} Start from the LMB, which always holds, and integrate it along the path from
+$\vect r_1=\vect r(t_1)$ to $\vect r_2=\vect r(t_2)$ (assume $m=\text{const}$):
+\begin{equation*}
+  \int_{\vect r_1}^{\vect r_2}\dv{}{t}(m\vect v)\cdot\dd\vect r=\int_{\vect r_1}^{\vect r_2}\sum_i\vect F_i\cdot\dd\vect r\eqqcolon W_{12}.
+\end{equation*}
+On the left use $\dd\vect r=\vect v\dd t$:
+\begin{equation*}
+  m\int_{t_1}^{t_2}\dv{\vect v}{t}\cdot\vect v\dd t=m\int_{\vect v(t_1)}^{\vect v(t_2)}\vect v\cdot\dd\vect v
+  =\frac{m|\vect v(t_2)|^2}{2}-\frac{m|\vect v(t_1)|^2}{2}.
+\end{equation*}
+\begin{keyresult}[Work--energy balance (WEB)]
+\begin{equation}
+  T(t_2)-T(t_1)=W_{12},\qquad T=\frac{m|\vect v|^2}{2},\qquad
+  W_{12}=\int_{\vect r_1}^{\vect r_2}\sum_i\vect F_i\cdot\dd\vect r .
+\end{equation}
+$T$ is the \emph{kinetic energy}, $W_{12}$ the \emph{work} done on the particle from 1 to 2:
+\emph{the change in kinetic energy equals the work done}.
+\end{keyresult}
+\begin{remark}
+Forces perpendicular to the motion ($\vect F\perp\dd\vect r$) do no work -- e.g.\ the normal force on a fixed surface,
+or the string force on a pendulum. That is why the WEB is so useful: such reaction forces simply disappear.
+\end{remark}
+
+\begin{example}{Example 1.21: Frictional sliding -- where does the particle stop?}
+A block with initial velocity $v_0$ slides on rough ground ($\mu$). Kinematics: $\vect r=x_1\e1$.
+
+\textbf{Kinetic energy:} $T(t_1)=\tfrac12 mv_0^2$, $T(t_2)=0$ (at rest).
+
+\textbf{Work:} the forces are $(N-mg)\e2$ and $-R\e1$ with $N=mg$, $R=\mu N$. Since $\dd\vect r=\dd x_1\e1$,
+only the friction force does work (forces perpendicular to the motion do no work):
+\begin{equation*}
+  W_{12}=\int_{x_1(t_1)}^{x_1(t_2)}(-\mu mg)\dd x_1=-\mu mg\,\Delta x .
+\end{equation*}
+\textbf{WEB:}
+\begin{equation*}
+  0-\tfrac12 mv_0^2=-\mu mg\,\Delta x\quad\Longrightarrow\quad\boxed{\Delta x=\frac{v_0^2}{2\mu g}}.
+\end{equation*}
+Note how we never needed the time.
+\end{example}
+
+\paragraph{Shortcut: conservative forces.}
+\begin{definition}[Conservative force, potential energy]
+A force $\vect F$ is \emph{conservative} if there exists a potential $V(\vect r)$ such that
+\begin{equation}
+  \vect F=-\dv{V}{\vect r}\;\;\big(=-\nabla V\big).
+\end{equation}
+$V(\vect r)$ is called the \emph{potential energy}.
+\end{definition}
+Example: gravity with $\e2$ up, $V(\vect r)=mg\,\vect r\cdot\e2=mg x_2$ $\Rightarrow$ $\vect F=-\nabla V=-mg\e2$. \checkmark
+
+For a conservative force the work is path independent:
+\begin{equation}
+  W_{12}=\int_{\vect r_1}^{\vect r_2}\vect F\cdot\dd\vect r=\int_{\vect r_1}^{\vect r_2}-\dv{V}{\vect r}\cdot\dd\vect r
+  =-\int_{V(\vect r_1)}^{V(\vect r_2)}\dd V=\boxed{V(\vect r_1)-V(\vect r_2)} .
+\end{equation}
+\textbf{Check} with a particle sliding along a frictionless curved track from height $h_1$ to $h_2$:
+the normal force is $\perp\vect v$ and does no work, so only $-mg\e2$ counts:
+$W_{12}=\int -mg\e2\cdot\dd\vect r=-mg\int_{x_2(t_1)}^{x_2(t_2)}\dd x_2=-mg(h_2-h_1)=V_1-V_2$. \checkmark
+
+\paragraph{Reformulated WEB.}
+Split the forces into conservative ones (with potential $V$) and non-conservative ones:
+\begin{equation*}
+  W_{12}=V(\vect r_1)-V(\vect r_2)+W_{12}^{\text{non-cons.}},\qquad
+  W_{12}^{\text{non-cons.}}=\int_{\vect r_1}^{\vect r_2}\sum_i\vect F_i^{\text{non-cons.}}\cdot\dd\vect r .
+\end{equation*}
+Inserting into the WEB:
+\begin{keyresult}[WEB with potential energy]
+\begin{equation}
+  T(t_2)+V(\vect r_2)-\big[T(t_1)+V(\vect r_1)\big]=W_{12}^{\text{non-cons.}} .
+\end{equation}
+\end{keyresult}
+\begin{definition}[Conservative system]
+A system is conservative if work is done \emph{only} by conservative forces. Then $W_{12}^{\text{non-cons.}}=0$ and
+\begin{equation}
+  T(t_2)+V(\vect r_2)=T(t_1)+V(\vect r_1)\quad\Longrightarrow\quad\boxed{T+V=\text{const}}
+\end{equation}
+(conservation of mechanical energy: $E_{\text{kin}}+E_{\text{pot}}=\text{const}$).
+\end{definition}
+
+\begin{example}{Example 1.22: Maximum flight height}
+A projectile is launched with speed $v_0$ at angle $\alpha$; no air drag. Gravity is conservative.
+
+At launch (1): $T_1=\frac m2v_0^2$, $V_1=0$.
+At the top (2): the vertical velocity vanishes, while the horizontal velocity is unchanged (Example 1.14), so
+$T_2=\frac m2(v_0\cos\alpha)^2$, $V_2=mg\,x_{2,\max}$.
+
+Energy conservation:
+\begin{equation*}
+  \frac m2v_0^2+0=\frac m2(v_0\cos\alpha)^2+mg\,x_{2,\max}
+  \;\Longrightarrow\;x_{2,\max}=\frac{v_0^2}{2g}\big(1-\cos^2\alpha\big)=\boxed{\frac{v_0^2}{2g}\sin^2\alpha}.
+\end{equation*}
+\end{example}
+
+\begin{example}{Example 1.23: Car in a looping}
+A car (particle $m$) starts from rest at height $h_0$ and rolls without friction ($\mu=0$, no engine, only gravity)
+down a ramp into a circular looping of radius $R$. Questions: (1) minimal $h_0$ to complete the looping;
+(2) the maximum force during the looping.
+
+\textbf{(1) Velocity from the WEB.} Only gravity does work, so energy is conserved:
+\begin{equation*}
+  mgh_0=mgh+\tfrac12mv^2\quad\Longrightarrow\quad v^2=2g(h_0-h)\ge0 .
+\end{equation*}
+This only gives the \emph{necessary} condition $h_0\ge h_{\max}=2R$. It is \textbf{not sufficient}: with
+$h_0$ slightly above $2R$ the car would still have speed at the top, but it falls off the track \emph{before}
+reaching it -- it must also be pressed against the track.
+
+\textbf{Sufficient condition: $N(\varphi)\ge0$} (the car stays on the track). Let $\varphi$ be measured from the
+bottom (entrance) of the looping, $\e r$ pointing outwards from the centre, $h=R-R\cos\varphi$.
+LMB in the $\e r$ direction (normal force pushes inwards, gravity component $mg\cos\varphi$ outwards,
+acceleration $a_r=-R\dot\varphi^2=-v^2/R$):
+\begin{equation*}
+  -N(\varphi)+mg\cos\varphi=-mR\dot\varphi^2=-m\frac{v^2}{R}
+  \;\Longrightarrow\;N(\varphi)=mg\cos\varphi+\frac{mv^2}{R}.
+\end{equation*}
+Insert $v^2=2g(h_0-h)$ and $h=R(1-\cos\varphi)$:
+\begin{equation*}
+  N(\varphi)=mg\cos\varphi+\frac{2mg(h_0-R+R\cos\varphi)}{R}
+  =mg\left(3\cos\varphi-2+\frac{2h_0}{R}\right).
+\end{equation*}
+\textbf{Worst case:} top of the looping, $\varphi=\pi$ ($\cos\varphi=-1$):
+\begin{equation*}
+  N(\pi)=mg\left(-3-2+\frac{2h_0}{R}\right)\ge0\quad\Longrightarrow\quad\boxed{h_0\ge\frac{5R}{2}} .
+\end{equation*}
+\textbf{(2) Maximum force} at the bottom, $\varphi=0$ ($\cos\varphi=1$), for the minimal $h_0=5R/2$:
+\begin{equation*}
+  N_{\max}=N(0)=mg\left(3-2+5\right)=\boxed{6mg}.
+\end{equation*}
+Passengers feel six times their weight at the entrance of a circular looping -- the reason real loopings are not circular.
+\end{example}
+
+\textit{Lecture 5 (30.09.2026)}
+
+\begin{example}{Example 1.17: Pendulum -- three ways to get the equation of motion}
+A mass $m$ on a massless string of length $R$, pivot $B$ fixed, angle $\varphi$ from the downward vertical.
+Question: what is $\ddot\varphi$?
+
+\textbf{FBD.} String force $F$ (towards $B$, i.e.\ $-F\e r$) and weight $mg$ (downwards). In polar coordinates
+around $B$ (with $\e r$ pointing from $B$ to the mass), gravity has components $mg\cos\varphi\,\e r-mg\sin\varphi\,\e\varphi$.
+
+\textbf{(a) LMB} using the polar acceleration with $r=R=\text{const}$:
+\begin{equation*}
+  \sum\vect F_i=(-F+mg\cos\varphi)\e r-mg\sin\varphi\,\e\varphi=m\big(-R\dot\varphi^2\e r+R\ddot\varphi\,\e\varphi\big).
+\end{equation*}
+Comparing coefficients:
+\begin{align*}
+  \e\varphi:&\quad mR\ddot\varphi=-mg\sin\varphi\;\Rightarrow\;\boxed{\ddot\varphi=-\frac gR\sin\varphi},\\
+  \e r:&\quad F=mg\cos\varphi+mR\dot\varphi^2 .
+\end{align*}
+(Same structure as the normal force in the looping: $mR\dot\varphi^2=mv^2/R$.)
+
+\textbf{(b) AMB} about the fixed point $B$ (the string force passes through $B$, so it has no moment;
+gravity has lever arm $R\sin\varphi$):
+\begin{equation*}
+  M_B=-mgR\sin\varphi\overset{!}{=}mR^2\ddot\varphi\;\Rightarrow\;\ddot\varphi=-\frac gR\sin\varphi .
+\end{equation*}
+The unknown string force never appears -- this is the advantage of choosing $B$ at the pivot.
+
+\textbf{(c) WEB.} The system is conservative (no drag; $F\perp\vect v$ does no work), so $T+V=\text{const}$.
+With $V=0$ at the pivot height and release from rest at a height $-h_0$:
+\begin{equation*}
+  -mgh_0=-mg\underbrace{R\cos\varphi}_{h(\varphi)}+\frac m2\underbrace{R^2\dot\varphi^2}_{v^2}.
+\end{equation*}
+Differentiate with respect to time (the left side is constant):
+\begin{equation*}
+  0=mgR\sin\varphi\,\dot\varphi+\frac m2R^2\,2\dot\varphi\ddot\varphi
+  \;\Longrightarrow\;g\sin\varphi+R\ddot\varphi=0\;\Longrightarrow\;\ddot\varphi=-\frac gR\sin\varphi .
+\end{equation*}
+For small angles ($\sin\varphi\approx\varphi$) this is a harmonic oscillator with $\omega_0=\sqrt{g/R}$.
+\end{example}
+
+% ---------------------------------------------------------------------
+\subsection{Particle impact on a rigid, smooth wall}
+
+The wall is rigid (does not move, not deformable) and smooth (frictionless, so it only pushes along its normal $\e n$).
+During the very short impact the wall force $\vect F(t)$ is huge.
+
+\paragraph{Impulse.} Integrate the LMB over the impact interval $[t_-,t_+]$:
+\begin{equation*}
+  \dv{}{t}(m\vect v)=\vect F(t)\;\Longrightarrow\;\int_{m\vect v(t_-)}^{m\vect v(t_+)}\dd(m\vect v)=\int_{t_-}^{t_+}\vect F(t)\dd t .
+\end{equation*}
+\begin{definition}[Impulsive force / impulse]
+\begin{equation}
+  m\vect v(t_+)-m\vect v(t_-)=\int_{t_-}^{t_+}\vect F(t)\dd t\eqqcolon\hat{\vect F}\qquad[\si{\newton\second}],
+\end{equation}
+the total momentum transferred to the particle during the impact.
+\end{definition}
+
+\paragraph{Two phases.} Split the impact at the instant $t_0$ of maximum compression:
+\begin{itemize}[nosep]
+  \item \textbf{compression} $[t_-,t_0]$: the particle is slowed down and deformed,
+        $\hat{\vect F}_{\text{comp}}=\int_{t_-}^{t_0}\vect F\dd t$;
+  \item \textbf{restitution} $[t_0,t_+]$: the particle (partially) returns to its original shape,
+        $\hat{\vect F}_{\text{rest}}=\int_{t_0}^{t_+}\vect F\dd t$.
+\end{itemize}
+Since the wall is smooth, all impulses act along $\e n$: $\hat{\vect F}_i=\hat F_i\,\e n$.
+
+Decompose $\vect v=v_n\e n+v_t\e t$. LMB per phase:
+\begin{align*}
+  m\vect v(t_0)-m\vect v(t_-)&=\hat F_{\text{comp}}\e n,\\
+  m\vect v(t_+)-m\vect v(t_0)&=\hat F_{\text{rest}}\e n .
+\end{align*}
+\textbf{Tangential part:} no tangential impulse, so
+\begin{equation}
+  \boxed{v_t(t_-)=v_t(t_0)=v_t(t_+)} .
+\end{equation}
+\textbf{Normal part:} at maximum compression the normal velocity vanishes, $v_n(t_0)=0$, hence
+\begin{equation*}
+  -mv_n(t_-)=\hat F_{\text{comp}},\qquad mv_n(t_+)=\hat F_{\text{rest}} .
+\end{equation*}
+Two equations, but three unknowns ($v_n(t_+)$, $\hat F_{\text{comp}}$, $\hat F_{\text{rest}}$) -- we need a material law.
+
+\begin{definition}[Coefficient of restitution]
+\begin{equation}
+  e=\frac{\hat F_{\text{rest}}}{\hat F_{\text{comp}}}\in[0,1].
+\end{equation}
+\begin{itemize}[nosep]
+  \item $e=1$: (perfectly) elastic -- full recovery, $\hat F_{\text{comp}}=\hat F_{\text{rest}}$;
+  \item $e=0$: (perfectly) plastic impact -- no recovery, $\hat F_{\text{rest}}=0$;
+  \item $e\in(0,1)$: partially elastic -- partial recovery.
+\end{itemize}
+\end{definition}
+Combining:
+\begin{equation*}
+  -\frac{v_n(t_+)}{v_n(t_-)}=\frac{\hat F_{\text{rest}}}{\hat F_{\text{comp}}}=e
+  \quad\Longrightarrow\quad\boxed{v_n(t_+)=-e\,v_n(t_-)} .
+\end{equation*}
+(The sign flips because the particle bounces back.) So: $e=1$ -- normal velocity just flips; $e=0$ -- the particle
+stays at the wall, sliding along it with unchanged $v_t$; $e\in(0,1)$ -- $v_t$ stays, $|v_n|$ becomes $e|v_n|$.
+
+\begin{remark}[Why $e\le1$]
+\begin{equation*}
+  T(t_-)=\frac m2\big(v_n^2+v_t^2\big),\qquad T(t_+)=\frac m2\big((ev_n)^2+v_t^2\big).
+\end{equation*}
+$e>1$ would mean $T(t_+)>T(t_-)$: energy created from nothing -- physically impossible for a passive wall.
+\end{remark}
+
+\begin{example}{Example 1.26: Measuring $e$ -- particle dropped onto the ground}
+\textbf{Method 1 (rebound height).} Drop from rest at height $h_-$; it rebounds to $h_+$. Energy is conserved
+during the free flights (the WEB does not hold \emph{across} the collision, where energy is lost):
+\begin{equation*}
+  mgh_-=\frac m2v_n^2(t_-),\qquad mgh_+=\frac m2v_n^2(t_+)
+  \;\Longrightarrow\;\frac{h_+}{h_-}=\frac{v_n^2(t_+)}{v_n^2(t_-)}=e^2
+  \;\Longrightarrow\;\boxed{e=\sqrt{\frac{h_+}{h_-}}}.
+\end{equation*}
+\textbf{Method 2 (flight times).} Measure the time between subsequent impacts. After a bounce with upward speed $v_0$,
+LMB: $-mg=m\ddot x_2\Rightarrow x_2(t)=-\frac g2t^2+v_0t=t\left(v_0-\frac{gt}{2}\right)$, so the time of flight is
+$t^*=2v_0/g$. For two consecutive impacts:
+\begin{equation*}
+  t_1^*=\frac{2v_0}{g},\qquad t_2^*=\frac{2ev_0}{g}\quad\Longrightarrow\quad\boxed{e=\frac{t_2^*}{t_1^*}} .
+\end{equation*}
+\end{example}
+
+% =====================================================================
+\section{Dynamics of Systems of Particles}
+% =====================================================================
+\textit{Lecture 6 (05.10.2026)}
+
+\subsection{Kinematics}
+
+Consider $n$ particles with masses $m_i$ and positions $\vect r_i$.
+\begin{definition}[Total mass and centre of mass]
+\begin{equation}
+  M=\sum_{i=1}^{n}m_i,\qquad \vect r_\cm=\frac1M\sum_{i=1}^{n}m_i\vect r_i .
+\end{equation}
+\end{definition}
+
+\begin{definition}[Holonomic constraints]
+A kinematic constraint is \emph{holonomic} if it can be written as an equation between positions (and time):
+\begin{equation}
+  f(\vect r_1,\vect r_2,\dots,\vect r_n,t)=0 .
+\end{equation}
+Examples:
+\begin{itemize}[nosep]
+  \item rigid link between $i$ and $j$ (cannot change its length): $|\vect r_i(t)-\vect r_j(t)|=\text{const}$;
+  \item rigid system: $|\vect r_i-\vect r_j|=\text{const}$ for all pairs $i,j$ of the system.
+\end{itemize}
+\end{definition}
+
+\begin{keyresult}[DOFs of a system of particles]
+A system of $n$ particles in $d$ dimensions with $r$ independent holonomic constraints has
+\begin{equation}
+  \text{DOF}=nd-r .
+\end{equation}
+(Each particle contributes $d$ DOFs; each constraint removes one.)
+\end{keyresult}
+
+\begin{example}{Example 2.1: Counting DOFs}
+\begin{enumerate}[nosep]
+  \item \textbf{Two particles joined by a rigid link in 3D:} $2\cdot3-1=5$ DOFs
+        (3 for the position of one particle, 2 angles for the direction of the link).
+  \item \textbf{Two masses on ropes wound around a stepped pulley} (radii $r_0$, $r_1$, rotation $\varphi$):
+        $x_0=r_0\varphi$, $x_1=r_1\varphi$ $\Rightarrow$ $x_0/x_1=r_0/r_1$; everything is determined by $\varphi$:
+        1 DOF (for the up--down motion).
+  \item \textbf{Four particles forming a quadrilateral in 2D}, connected by four rigid links (a diagonal spring
+        is \emph{not} a constraint), one corner pinned, one on a roller:
+        $4\cdot2=8$ DOFs; pin $-2$, roller $-1$, rigid links $-4$ $\Rightarrow$ $8-7=1$ DOF in total.
+\end{enumerate}
+\end{example}
+
+\subsection{Kinetics}
+
+\paragraph{Internal and external forces.}
+On particle $i$ act an external force $\vect F_{i,\ext}$ and internal forces $\vect F_{ij}$ from every other particle
+$j$ (e.g.\ via massless connections). By Newton's third axiom, $\vect F_{ij}=-\vect F_{ji}$ (and they act along
+the connecting line). The net force on particle $i$ is
+\begin{equation*}
+  \vect F_i=\vect F_{i,\ext}+\sum_{j\neq i}\vect F_{ij}.
+\end{equation*}
+Summing over all particles, the internal forces cancel pairwise (for every force there is a reaction):
+\begin{equation}
+  \boxed{\sum_{i=1}^{n}\vect F_i=\sum_{i=1}^{n}\vect F_{i,\ext}+\vect 0}\qquad
+  \text{(sum of all forces = sum of external forces)}.
+\end{equation}
+
+\subsubsection{Balance of linear momentum}
+LMB for each particle: $\vect F_i=\dv{}{t}(m_i\vect v_i)$. Summing,
+\begin{equation*}
+  \sum_{i=1}^{n}\vect F_{i,\ext}=\sum_{i=1}^n\dv{}{t}(m_i\vect v_i)
+  =\dv{}{t}\Big(M\cdot\underbrace{\frac1M\sum_{i=1}^{n}m_i\dot{\vect r}_i}_{=\dot{\vect r}_\cm}\Big)
+  =\dv{}{t}\big(M\vect v_\cm\big).
+\end{equation*}
+\begin{keyresult}[LMB for a system of particles]
+\begin{equation}
+  \vect P=M\vect v_\cm,\qquad \sum_{i=1}^n\vect F_i^{\ext}=\dv{}{t}\big(M\vect v_\cm\big)
+  \;\overset{M=\text{const}}{\Longrightarrow}\;\sum_{i=1}^n\vect F_i^{\ext}=M\vect a_\cm .
+\end{equation}
+The centre of mass moves like a single particle of mass $M$ under the total external force.
+\end{keyresult}
+
+\begin{example}{Example 2.4: Falling dumbbell}
+Two masses $m_1,m_2$ joined by a rigid massless link fall under gravity.
+
+\textbf{LMB on the system:} only gravity is external, $m_1\vect g+m_2\vect g=(m_1+m_2)\vect a_\cm$
+$\Rightarrow\vect a_\cm=\vect g\Rightarrow\vect r_\cm(t)=\frac12\vect g t^2+\vect v_\cm(0)t+\vect r_\cm(0)$:
+the centre of mass flies on a parabola, no matter how the dumbbell tumbles.
+
+\textbf{LMB on each particle} (the link forces appear, with $\vect F_{12}=-\vect F_{21}$):
+\begin{equation*}
+  m_1\vect a_1=m_1\vect g+\vect F_{12},\qquad m_2\vect a_2=m_2\vect g+\vect F_{21}.
+\end{equation*}
+\end{example}
+
+\subsubsection{Work--energy balance for a system of particles}
+Summing the single-particle WEB $T_i(t_2)-T_i(t_1)=W_{i,12}$ over all particles:
+\begin{keyresult}
+\begin{equation}
+  T(t_2)-T(t_1)=W_{12},\qquad T(t)=\frac12\sum_{i=1}^n m_i|\vect v_i(t)|^2,\qquad
+  W_{12}=\sum_{i=1}^n\int_{\vect r_i(t_1)}^{\vect r_i(t_2)}\vect F_i\cdot\dd\vect r_i .
+\end{equation}
+\end{keyresult}
+\begin{pitfall}
+Unlike in the LMB, \emph{internal forces can do work} (e.g.\ a spring between two particles), so $\vect F_i$ here
+contains internal forces too.
+\end{pitfall}
+\paragraph{Special cases.}
+\begin{itemize}
+  \item Conservative forces: $W_{12}=V_1-V_2$. Conservative system: $T+V=\text{const}$.
+  \item \textbf{A rigid link never performs work.} Proof: from $|\vect r_i-\vect r_j|^2=\text{const}$, differentiating,
+        \begin{equation*}
+          2(\vect r_i-\vect r_j)\cdot(\dot{\vect r}_i-\dot{\vect r}_j)=0 .
+        \end{equation*}
+        The link forces act along the link, $\vect F_{ij}\parallel\vect r_i-\vect r_j$, and $\vect F_{ji}=-\vect F_{ij}$, so
+        their combined work is
+        \begin{equation*}
+          \int\vect F_{ij}\cdot\dd\vect r_i+\int\vect F_{ji}\cdot\dd\vect r_j
+          =\int_{t_1}^{t_2}\vect F_{ij}\cdot(\vect v_i-\vect v_j)\dd t=0,
+        \end{equation*}
+        since $\vect F_{ij}\parallel(\vect r_i-\vect r_j)\perp(\vect v_i-\vect v_j)$.
+\end{itemize}
+
+\subsubsection{Balance of angular momentum}
+For a system, $\vect H_B=\sum_{i=1}^n\vect r_{BP_i}\times\vect p_i$. Differentiate:
+\begin{equation*}
+  \dot{\vect H}_B=\sum_{i=1}^n\underbrace{\dot{\vect r}_{BP_i}}_{=\vect v_{P_i}-\vect v_B}\times\vect p_i
+  +\sum_{i=1}^n\vect r_{BP_i}\times\underbrace{\dot{\vect p}_i}_{=\vect F_i\ (\text{LMB})}
+  =\underbrace{\sum_{i}\vect v_{P_i}\times\vect p_i}_{=\vect 0}-\vect v_B\times\underbrace{\sum_i\vect p_i}_{=\vect P}
+  +\underbrace{\sum_i\vect r_{BP_i}\times\vect F_i}_{=\vect M_B}.
+\end{equation*}
+Internal forces are equal, opposite and collinear, so their torques cancel in pairs and $\vect M_B$ is the net
+\emph{external} torque.
+\begin{keyresult}[AMB for a system of particles]
+\begin{equation}
+  \vect M_B=\dot{\vect H}_B+\vect v_B\times\vect P,\qquad \vect P=M\vect v_\cm .
+\end{equation}
+\end{keyresult}
+
+\begin{example}{Example 2.5: Particles on a disk (2D)}
+$n$ particles $m_i$ are fixed on a massless disk rotating about the fixed centre $B$ with angle $\varphi(t)$;
+particle $i$ sits at radius $r_i$. Each moves on a circle: $\vect v_i=r_i\dot\varphi\,\e{\varphi,i}$. Then
+\begin{equation*}
+  \vect H_B=\sum_{i=1}^n\vect r_{BP_i}\times\vect p_i=\sum_{i=1}^n r_i\e{r,i}\times m_ir_i\dot\varphi\,\e{\varphi,i}
+  =\sum_{i=1}^nm_ir_i^2\,\dot\varphi\,\e3 .
+\end{equation*}
+AMB with $\vect v_B=\vect 0$:
+\begin{equation*}
+  \vect M_B^{\ext}=M_B\e3=\dot{\vect H}_B\;\Longrightarrow\;M_B^{\ext}=\underbrace{\Big(\sum_{i=1}^nm_ir_i^2\Big)}_{=I_B}\ddot\varphi .
+\end{equation*}
+\textbf{External torque due to gravity:}
+\begin{equation*}
+  \vect M_B^{\ext}=\sum_{i=1}^n\vect r_{BP_i}\times m_i\vect g=\Big(\sum_{i=1}^n m_i\vect r_{BP_i}\Big)\times\vect g
+  =M\vect r_{B,\cm}\times\vect g .
+\end{equation*}
+Gravity acts as if the whole mass sat at the centre of mass (this only works for a homogeneous gravity field).
+\end{example}
+
+\begin{example}{Example 2.6: A ring of particles}
+$n$ particles of mass $m_i=M/n$ evenly spaced on a circle of radius $R$:
+\begin{equation*}
+  I_B=\sum_{i=1}^nm_iR^2=\sum_{i=1}^n\frac MnR^2=MR^2 .
+\end{equation*}
+As $n\to\infty$ this is a rotating thin ring.
+\end{example}
+
+\textit{Lecture 7 (07.10.2026)}
+
+\begin{example}{Example 2.8: Atwood machine with driving torque}
+Two masses $m_1$ (left) and $m_2$ (right) hang on a rope over a massless wheel of radius $R$ with fixed bearing $B$;
+the wheel is driven by a torque $M_T$. Find $\ddot x$ and the bearing force.
+
+\textbf{Kinematics.} With $x_1$ measured downward on the left and $x_2$ upward on the right:
+$x_1=R\varphi$, $x_2=R\varphi$ $\Rightarrow$ $x_1=x_2\eqqcolon x$. 1 DOF.
+
+\textbf{Statics (for comparison):} $B_2=(m_1+m_2)g$, $B_1=0$ -- \emph{not valid in dynamics}.
+
+\textbf{Dynamics.} Cut the rope; the rope forces are $S_1$ (left) and $S_2$ (right).
+\begin{align*}
+  \text{LMB }m_1:&\quad m_1\ddot x=m_1g-S_1,\\
+  \text{LMB }m_2:&\quad m_2\ddot x=-m_2g+S_2,\\
+  \text{LMB wheel:}&\quad B_2=S_1+S_2\quad\text{(wheel is massless $\Rightarrow$ force equilibrium)},\\
+  \text{AMB wheel about }B:&\quad \underbrace{I_B}_{=0}\ddot\varphi=S_1R-S_2R+M_T=0\;\Rightarrow\;S_1-S_2=-\frac{M_T}{R}.
+\end{align*}
+Add the two particle equations: $(m_1+m_2)\ddot x=(m_1-m_2)g-S_1+S_2=(m_1-m_2)g+M_T/R$, so
+\begin{equation*}
+  \boxed{\ddot x=\frac{m_1-m_2}{m_1+m_2}\,g+\frac{M_T}{(m_1+m_2)R}} .\tag{$\ast$}
+\end{equation*}
+\textbf{Bearing force:}
+\begin{equation*}
+  B_2=S_1+S_2=m_1g-m_1\ddot x+m_2\ddot x+m_2g=\underbrace{(m_1+m_2)g}_{\text{statics}}+\underbrace{(m_2-m_1)\ddot x}_{\text{because it's moving}},
+\end{equation*}
+with $\ddot x$ from $(\ast)$.
+
+\textbf{Alternative: WEB.} The work done by a torque: a torque $M_T$ is equivalent to a force couple $F$ at distance
+$R$ on both sides ($M_T=2FR$). Rotating by $\dd\varphi$, each force moves $\dd r=R\dd\varphi$, so
+$2F\dd r=2FR\dd\varphi=M_T\dd\varphi$. Hence
+\begin{equation*}
+  T(t)+V(t)-\big[T(t_0)+V(t_0)\big]=\int_{\varphi_0}^{\varphi}M_T\dd\varphi=M_T(\varphi-\varphi_0):
+\end{equation*}
+\begin{equation*}
+  \frac{m_1}{2}\dot x^2+\frac{m_2}{2}\dot x^2+m_2gx-m_1gx-[\text{initial const.}]=M_T(\varphi-\varphi_0).
+\end{equation*}
+Differentiate with respect to time ($\dot\varphi=\dot x/R$):
+\begin{equation*}
+  m_1\dot x\ddot x+m_2\dot x\ddot x+m_2g\dot x-m_1g\dot x=M_T\frac{\dot x}{R}
+  \;\Longrightarrow\;(m_1+m_2)\ddot x=(m_1-m_2)g+\frac{M_T}{R}.\quad\checkmark
+\end{equation*}
+
+\textbf{Treat as one system.} With $\e2$ up and the wheel centre as origin, the masses hang at
+$x$-positions $-R$ and $+R$. LMB:
+\begin{equation*}
+  (m_1+m_2)\vect a_\cm=B_1\e1+(B_2-m_1g-m_2g)\e2 .
+\end{equation*}
+The vertical positions are $-x$ (left, going down) and $+x$ (right, going up) relative to a reference, so
+\begin{equation*}
+  \vect r_\cm=\frac{-m_1R+m_2R}{m_1+m_2}\e1+\frac{m_2x-m_1x}{m_1+m_2}\e2+\text{const}
+  \;\Longrightarrow\;\vect a_\cm=\frac{m_2-m_1}{m_1+m_2}\ddot x\,\e2 .
+\end{equation*}
+Hence $(m_2-m_1)\ddot x=B_2-m_1g-m_2g$ and $B_1=0$. \checkmark\ (same as before)
+\end{example}
+
+% ---------------------------------------------------------------------
+\subsection{Particle collisions}
+
+Two smooth spheres collide (small velocities, no friction). The collision plane is tangent to both at the contact
+point, $\e n$ is the common normal and $\e t$ lies in the plane. Particle 2 receives the impulse $\hat F\e n$,
+particle 1 receives $-\hat F\e n$ (Newton 3):
+\begin{equation*}
+  m_1\vect v_1(t_+)-m_1\vect v_1(t_-)=-\hat F\e n,\qquad m_2\vect v_2(t_+)-m_2\vect v_2(t_-)=\hat F\e n .
+\end{equation*}
+\textbf{Tangential components} are unchanged:
+\begin{equation}
+  \boxed{v_1^t(t_+)=v_1^t(t_-),\qquad v_2^t(t_+)=v_2^t(t_-)} .
+\end{equation}
+\textbf{Normal components}, split into compression and restitution:
+\begin{align*}
+  \text{compression:}&\quad m_1v_1^n(t_0)-m_1v_1^n(t_-)=-\hat F_{\text{comp}},\qquad m_2v_2^n(t_0)-m_2v_2^n(t_-)=\hat F_{\text{comp}},\\
+  \text{restitution:}&\quad m_1v_1^n(t_+)-m_1v_1^n(t_0)=-\hat F_{\text{rest}},\qquad m_2v_2^n(t_+)-m_2v_2^n(t_0)=\hat F_{\text{rest}}.
+\end{align*}
+4 equations but 6 unknowns (everything except $v_1^n,v_2^n$ at $t_-$). Two further conditions:
+\begin{enumerate}[nosep]
+  \item material law: $e=\hat F_{\text{rest}}/\hat F_{\text{comp}}$;
+  \item at maximum compression the two bodies move together: $v_1^n(t_0)=v_2^n(t_0)\eqqcolon v_0$.
+\end{enumerate}
+
+\paragraph{Solving.} Adding the two compression equations eliminates $\hat F_{\text{comp}}$:
+$(m_1+m_2)v_0=m_1v_1^n(t_-)+m_2v_2^n(t_-)$, i.e.\ $v_0$ is the cm velocity. Then
+$\hat F_{\text{comp}}=m_2(v_0-v_2^n(t_-))=\frac{m_1m_2}{m_1+m_2}\big(v_1^n(t_-)-v_2^n(t_-)\big)$ and
+$\hat F_{\text{rest}}=e\hat F_{\text{comp}}$. With $v_1^n(t_+)=v_1^n(t_-)-(1+e)\hat F_{\text{comp}}/m_1$ etc.:
+\begin{keyresult}[Normal velocities after collision]
+\begin{align}
+  v_1^n(t_+)&=\frac{m_1-e\,m_2}{m_1+m_2}\,v_1^n(t_-)+\frac{(1+e)\,m_2}{m_1+m_2}\,v_2^n(t_-),\\
+  v_2^n(t_+)&=\frac{m_2-e\,m_1}{m_1+m_2}\,v_2^n(t_-)+\frac{(1+e)\,m_1}{m_1+m_2}\,v_1^n(t_-),
+\end{align}
+and, equivalently (subtract the two equations),
+\begin{equation}
+  e=-\frac{v_2^n(t_+)-v_1^n(t_+)}{v_2^n(t_-)-v_1^n(t_-)}
+  \qquad\text{(ratio of relative normal velocities after/before).}
+\end{equation}
+\end{keyresult}
+\textbf{Also note:} there are no external forces in the normal direction, so linear momentum is conserved:
+\begin{equation}
+  m_1v_1^n(t_+)+m_2v_2^n(t_+)=m_1v_1^n(t_-)+m_2v_2^n(t_-).
+\end{equation}
+
+\paragraph{Special cases} (Examples 2.9, 2.10).
+\begin{itemize}
+  \item \textbf{Rigid wall:} $v_2^n=0$, $m_2\to\infty$: $\;v_1^n(t_+)=-e\,v_1^n(t_-)$ (as in Section~1).
+  \item \textbf{Plastic collision} ($e=0$): both move together,
+        $v_1^n(t_+)=v_2^n(t_+)=\dfrac{m_1v_1^n(t_-)+m_2v_2^n(t_-)}{m_1+m_2}$.
+  \item \textbf{Elastic collision with equal masses} ($e=1$, $m_1=m_2$): they switch velocities,
+        $v_1^n(t_+)=v_2^n(t_-)$, $v_2^n(t_+)=v_1^n(t_-)$ (Newton's cradle).
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\subsection{Particles with variable mass}
+
+\paragraph{Mass accretion.} A body of mass $m(t)$ and velocity $\vect v(t)$ absorbs in $\dd t$ a mass $\dd m$ that
+arrives with velocity $\vect v_m(t)$. Apply the LMB to the closed system ``body + $\dd m$'':
+\begin{align*}
+  \vect p(t)&=m(t)\vect v(t)+\dd m\,\vect v_m(t),\\
+  \vect p(t+\dd t)&=m(t+\dd t)\vect v(t+\dd t)
+  =\big[m+\dot m\dd t+O(\dd t^2)\big]\big[\vect v+\dot{\vect v}\dd t+O(\dd t^2)\big]\quad\text{(Taylor)}\\
+  &=m\vect v+\dot m\vect v\dd t+m\dot{\vect v}\dd t+O(\dd t^2).
+\end{align*}
+Hence, with $\dd m=\dot m\dd t$,
+\begin{equation*}
+  \dot{\vect p}=\lim_{\dd t\to0}\frac{\vect p(t+\dd t)-\vect p(t)}{\dd t}
+  =\dot m\vect v+m\dot{\vect v}-\dot m\vect v_m .
+\end{equation*}
+\begin{keyresult}[LMB with variable mass / rocket equation]
+\begin{equation}
+  \sum_i\vect F_i=m\vect a+\dot m(\vect v-\vect v_m)=m\vect a-\dot m\,\vect v_{\text{rel}},
+  \qquad \vect v_{\text{rel}}=\vect v_m-\vect v ,
+\end{equation}
+\begin{equation}
+  \Longleftrightarrow\quad m\vect a=\sum_i\vect F_i+\underbrace{\dot m\,\vect v_{\text{rel}}}_{=\text{thrust}} .
+\end{equation}
+\end{keyresult}
+\begin{pitfall}
+$\sum\vect F=\dv{}{t}(m\vect v)$ is \textbf{wrong} for variable mass: it is not Galilean invariant. Always use
+the relative velocity of the gained/lost mass.
+\end{pitfall}
+
+\begin{example}{Example 2.11: Rocket launch}
+A rocket of mass $m(t)$ moves up ($x$ up, $\vect v=\dot x\e2$) and ejects gas downward relative to the rocket:
+$\vect v_{\text{rel}}=\vect v_{\text{gas}}-\vect v_{\text{rocket}}=-c\,\e2$, $c>0$.
+External forces: gravity $-mg\e2$ and drag $-F_{\text{drag}}\e2$.
+\begin{equation*}
+  \sum\vect F_i=(-F_{\text{drag}}-mg)\e2\overset{!}{=}m\ddot x\,\e2+\dot m c\,\e2
+  \;\Longrightarrow\;\boxed{m\ddot x=-F_{\text{drag}}-mg-\dot m c} .
+\end{equation*}
+Because the rocket loses mass, $\dot m<0$, so $-\dot mc>0$ is the thrust; it must exceed $mg+F_{\text{drag}}$
+to accelerate the rocket upward.
+\end{example}
+
+% =====================================================================
+\section{Dynamics of Rigid Bodies}\label{sec:rigid}
+% =====================================================================
+\textit{Lecture 8 (12.10.2026)}
+
+A rigid body is the limit of a system of particles ($n\to\infty$, $\Delta m_i\to0$) in which all distances are
+fixed: $|\vect r_{AB}|=\text{const}$ for all points $A,B$ of the body $\mathcal B$.
+
+\subsection{Kinematics}
+
+\begin{definition}[Total mass and centre of mass of a body]
+With density $\rho=\mathrm dm/\mathrm dV$:
+\begin{equation}
+  M=\lim_{\substack{n\to\infty\\\Delta m_i\to0}}\sum_{i=1}^n\Delta m_i=\int_{\mathcal B}\dd m=\int_{\mathcal B}\rho\dd V,\qquad
+  \vect r_\cm(t)=\frac1M\int_{\mathcal B}\vect r(t)\dd m .
+\end{equation}
+\end{definition}
+
+\begin{keyresult}[DOFs of rigid bodies]
+An unconstrained rigid body in $d$ dimensions has $\dfrac{d(d+1)}{2}$ DOFs: $d$ translations plus $\frac{d(d-1)}{2}$ rotations.
+\begin{itemize}[nosep]
+  \item 1D: 1 DOF, \quad 2D: 3 DOFs ($x_1,x_2,\varphi$), \quad 3D: 6 DOFs (3 translations, 3 rotation angles).
+\end{itemize}
+$n$ rigid bodies in $d$ dimensions with $k$ independent holonomic constraints have
+\begin{equation}
+  \text{DOF}=n\,\frac{d(d+1)}{2}-k .
+\end{equation}
+\end{keyresult}
+
+\paragraph{How are the motions of points on a rigid body related?}
+For two points $A,B$ of the body:
+\begin{equation*}
+  \vect r_B=\vect r_A+\vect r_{AB},\qquad \vect v_B=\vect v_A+\dot{\vect r}_{AB},\qquad\vect a_B=\vect a_A+\ddot{\vect r}_{AB}.
+\end{equation*}
+Since $|\vect r_{AB}|$ is constant, $\vect r_{AB}$ can only change its direction -- $\dot{\vect r}_{AB}$ must be
+related to rotation (without rotation these terms are zero).
+
+\paragraph{Rotations (recall Mechanics I).}
+Define the angular velocity vector $\vect\omega(t)=\omega(t)\,\e\omega(t)$ ($\e\omega$: rotation axis; in 2D,
+$\e\omega=\e3$ is constant, out of the plane). For a body rotating about a fixed point $\Pi$,
+\begin{equation*}
+  \vect v_B=\vect\omega\times\vect r_{\Pi B},\qquad \vect v_A=\vect\omega\times\vect r_{\Pi A}
+  \;\Longrightarrow\;\vect v_B-\vect v_A=\vect\omega\times\underbrace{(\vect r_{\Pi B}-\vect r_{\Pi A})}_{=\vect r_{AB}}.
+\end{equation*}
+\begin{keyresult}[Velocity transfer formula]
+\begin{equation}
+  \vect v_B=\vect v_A+\vect\omega\times\vect r_{AB}\qquad\text{(valid in 2D and 3D, for any two points of the body).}
+\end{equation}
+\end{keyresult}
+
+\begin{example}{Example 3.1: Rolling disk (rolling without slipping)}
+\begin{center}
+\begin{tikzpicture}[scale=1.0,>=Stealth]
+  \draw[thick] (0,1) circle (1);
+  \fill[pattern=north east lines] (-2,0) rectangle (3,-0.15); \draw (-2,0)--(3,0);
+  \fill (0,1) circle (1.5pt) node[below left]{cm};
+  \fill (0,0) circle (1.5pt) node[below right]{$A$};
+  \fill (0,2) circle (1.5pt) node[above left]{$T$};
+  \draw[->,teal,thick] (0,1)--(1,1) node[right]{$v_\cm$};
+  \draw[->,teal,thick] (0,2)--(2,2) node[right]{$2v_\cm$};
+  \draw[dashed,teal] (0,0)--(2,2);
+  \draw[->,thick] (-0.75,1.85) arc (130:60:0.9); \node at (-0.7,2.25){$\omega$};
+\end{tikzpicture}
+\end{center}
+Kinematics: $x_\cm=R\varphi$ ($\varphi$: rotation angle), so $\dot x_\cm=R\dot\varphi=R\omega$.
+With $\vect\omega=-\omega\e3$ (clockwise when rolling in $+\e1$) and $\vect v_\cm=R\omega\e1$:
+\begin{align*}
+  \vect v_T&=\vect v_\cm+\vect\omega\times\vect r_{\cm,T}=R\omega\e1+(-\omega\e3)\times R\e2=R\omega\e1+R\omega\e1=2R\omega\e1,\\
+  \vect v_A&=\vect v_\cm+\vect\omega\times\vect r_{\cm,A}=R\omega\e1+(-\omega\e3)\times(-R\e2)=R\omega\e1-R\omega\e1=\vect 0 .
+\end{align*}
+The contact point is momentarily at rest; the velocity profile along the vertical diameter is linear.
+\end{example}
+
+\begin{keyresult}[Instantaneous centre of rotation (ICR)]
+For every rigid body in 2D (with $\omega\ne0$) there exists a point $\Pi$ with $\vect v_\Pi=\vect 0$, so that
+$\vect v_P=\vect\omega\times\vect r_{\Pi P}$ for every point $P$. Given one point $A$ with velocity $\vect v_A$:
+\begin{equation}
+  \vect r_{A\Pi}=\frac1\omega\big(\e\omega\times\vect v_A\big).
+\end{equation}
+(The ICR lies on the line through $A$ perpendicular to $\vect v_A$, at distance $|\vect v_A|/\omega$.)
+\end{keyresult}
+\emph{Check:} $\vect v_\Pi=\vect v_A+\vect\omega\times\vect r_{A\Pi}=\vect v_A+\e\omega\times(\e\omega\times\vect v_A)
+=\vect v_A-\vect v_A=\vect 0$, using $\e\omega\times(\e\omega\times\vect v)=-\vect v$ for $\vect v\perp\e\omega$.
+
+\begin{keyresult}[Theorem of projected velocities]
+For a rigid body, $\vect r_{AB}\cdot\vect r_{AB}=\text{const}$. Differentiating:
+\begin{equation*}
+  2\,\dot{\vect r}_{AB}\cdot\vect r_{AB}=0\iff(\vect v_B-\vect v_A)\cdot\vect r_{AB}=0\iff
+  \boxed{\vect v_B\cdot\vect r_{AB}=\vect v_A\cdot\vect r_{AB}} .
+\end{equation*}
+The velocity components of two points along their connecting line are equal (Mechanics I).
+\end{keyresult}
+
+\begin{example}{Example 3.2: Slider--crank mechanism}
+A crank $AB$ (length $L$) rotates about the fixed pivot $A$ with angular velocity $\vect\omega_2$; it makes the
+angle $\alpha$ with the ground. The connecting rod $BC$ (length $2L$, angle $\beta$ to the horizontal) drives a
+slider $C$ moving horizontally. Given $\omega_2$, find the slider speed $v_C$ ($\vect v_C=-v_C\e1$).
+
+\textbf{Geometry.} With $\e1$ to the right and $\e2$ up (B is above-left of A, C is below-left of B):
+\begin{equation*}
+  \vect r_{AB}=-L\cos\alpha\,\e1+L\sin\alpha\,\e2,\qquad
+  \vect r_{BC}=-2L\cos\beta\,\e1-2L\sin\beta\,\e2 ,
+\end{equation*}
+and since $C$ stays at the height of $A$: $L\sin\alpha=2L\sin\beta$.
+
+\textbf{Velocity of $B$} ($A$ fixed, $\vect\omega_2=\omega_2\e3$):
+\begin{equation*}
+  \vect v_B=\vect\omega_2\times\vect r_{AB}=-L\omega_2\big(\sin\alpha\,\e1+\cos\alpha\,\e2\big).
+\end{equation*}
+\textbf{Method 1 -- projected velocities} along $BC$: $\vect v_B\cdot\vect r_{BC}=\vect v_C\cdot\vect r_{BC}$:
+\begin{equation*}
+  \begin{pmatrix}-L\omega_2\sin\alpha\\-L\omega_2\cos\alpha\end{pmatrix}\cdot
+  \begin{pmatrix}-2L\cos\beta\\-2L\sin\beta\end{pmatrix}
+  =\begin{pmatrix}-v_C\\0\end{pmatrix}\cdot\begin{pmatrix}-2L\cos\beta\\-2L\sin\beta\end{pmatrix}
+\end{equation*}
+\begin{equation*}
+  \Longrightarrow\;2L^2\omega_2\big(\sin\alpha\cos\beta+\cos\alpha\sin\beta\big)=2Lv_C\cos\beta
+\end{equation*}
+\begin{equation*}
+  \Longrightarrow\;\boxed{v_C=\omega_2L\big(\sin\alpha+\cos\alpha\tan\beta\big)=\omega_2L\frac{\sin(\alpha+\beta)}{\cos\beta}} .
+\end{equation*}
+\textbf{Method 2 -- velocity transfer formula} (gives also the rod's angular velocity $\vect\omega_1$):
+\begin{equation*}
+  \vect v_C=\vect v_B+\vect\omega_1\times\vect r_{BC}=\underbrace{\vect v_A}_{=\vect 0}+\vect\omega_2\times\vect r_{AB}+\vect\omega_1\times\vect r_{BC}\overset{!}{=}-v_C\e1 ,
+\end{equation*}
+two scalar equations for the two unknowns $v_C$ and $\omega_1$.
+Note: $\vect\omega_1=\dot\beta\,\e3$, $\vect\omega_2=-\dot\alpha\,\e3$.
+\end{example}
+
+\paragraph{Acceleration transfer formula.} Differentiate $\vect v_B=\vect v_A+\vect\omega\times\vect r_{AB}$ in time,
+using $\dot{\vect r}_{AB}=\vect\omega\times\vect r_{AB}$:
+\begin{keyresult}[Acceleration transfer formula]
+\begin{equation}
+  \vect a_B=\vect a_A+\dot{\vect\omega}\times\vect r_{AB}+\vect\omega\times(\vect\omega\times\vect r_{AB}) .
+\end{equation}
+In 2D ($\vect\omega\perp\vect r_{AB}$): $\vect\omega\times(\vect\omega\times\vect r_{AB})=-\omega^2\vect r_{AB}$ (centripetal term).
+\end{keyresult}
+
+\begin{example}{Example 3.3: Rolling disk (accelerations)}
+$\vect v_\cm=R\omega\e1$, $\vect a_\cm=R\dot\omega\e1$, $\vect\omega=-\omega\e3$, $\dot{\vect\omega}=-\dot\omega\e3$.
+\begin{align*}
+  \vect a_T&=\vect a_\cm+\dot{\vect\omega}\times\vect r_{\cm,T}-\omega^2\vect r_{\cm,T}
+  =R\dot\omega\e1+(-\dot\omega\e3)\times R\e2-\omega^2R\e2=2R\dot\omega\e1-R\omega^2\e2,\\
+  \vect a_A&=R\dot\omega\e1+(-\dot\omega\e3)\times(-R\e2)-\omega^2(-R\e2)=\boxed{R\omega^2\e2} .
+\end{align*}
+The contact point has \emph{zero velocity but non-zero acceleration} -- it is accelerated upward, towards the centre.
+(The top point $T$ must accelerate inward too, because its velocity rotates.)
+\end{example}
+
+\begin{pitfall}
+The ICR has $\vect v_\Pi=\vect 0$ but in general $\vect a_\Pi\ne\vect 0$. Do not use $\vect a=\vect 0$ at the contact point
+of a rolling wheel.
+\end{pitfall}
+
+\textit{Lecture 9 (14.10.2026)}
+
+\begin{example}{Example 3.5: Ladder sliding down a wall}
+Two blocks of mass $m$ ($A$ on a frictionless vertical wall, $B$ on the frictionless floor) are connected by a massless
+rigid rod of length $L$; $\varphi$ is the angle of the rod from the vertical. Released from (almost) vertical,
+$\varphi\approx0$, at rest. Find $v_A,v_B,a_A,a_B$ and the forces.
+
+\textbf{DOF:} $2$ particles $\times$ 2D $=4$, minus 3 constraints (A on wall, B on floor, rod) $\Rightarrow$ 1 DOF: $\varphi(t)$.
+
+\textbf{Velocities.} $\vect r_A=L\cos\varphi\,\e2$, $\vect r_B=L\sin\varphi\,\e1$:
+\begin{equation*}
+  \vect v_A=-\dot\varphi L\sin\varphi\,\e2,\qquad\vect v_B=\dot\varphi L\cos\varphi\,\e1,\qquad\vect\omega=\dot\varphi\,\e3
+  \;(\text{up to sign convention}).
+\end{equation*}
+\textbf{WEB} (conservative; zero potential at floor level, only $A$ changes height):
+\begin{equation*}
+  mgL=mgL\cos\varphi+\frac m2v_A^2+\frac m2v_B^2=mgL\cos\varphi+\frac m2\dot\varphi^2L^2\big(\sin^2\varphi+\cos^2\varphi\big)
+\end{equation*}
+\begin{equation*}
+  \Longrightarrow\;\frac m2\dot\varphi^2L^2=mgL(1-\cos\varphi)\;\Longrightarrow\;\boxed{\dot\varphi^2=\frac{2g}{L}(1-\cos\varphi)} .
+\end{equation*}
+Differentiating: $2\dot\varphi\ddot\varphi=\frac{2g}{L}\sin\varphi\,\dot\varphi\Rightarrow\dot\omega=\ddot\varphi=\frac gL\sin\varphi$.
+
+\textbf{Accelerations.} Differentiate the velocities (equivalent to the transfer formula with $\vect r_{AB}=L\sin\varphi\,\e1-L\cos\varphi\,\e2$):
+\begin{align*}
+  a_A&\coloneqq-\ddot x_{2,A}=\ddot\varphi L\sin\varphi+\dot\varphi^2L\cos\varphi\quad(\text{downward})\\
+     &=g\sin^2\varphi+2g(1-\cos\varphi)\cos\varphi=\boxed{g\big(1+2\cos\varphi-3\cos^2\varphi\big)},\\
+  a_B&\coloneqq\ddot x_{1,B}=\ddot\varphi L\cos\varphi-\dot\varphi^2L\sin\varphi\\
+     &=g\sin\varphi\cos\varphi-2g(1-\cos\varphi)\sin\varphi=\boxed{g\sin\varphi\big(3\cos\varphi-2\big)} .
+\end{align*}
+\textbf{Forces.} Let $S$ be the rod force (tension positive), $H$ the wall force on $A$, $V$ the floor force on $B$.
+LMB on $A$ (vertical) and on $B$ (horizontal; $V$ does not appear there):
+\begin{equation*}
+  ma_A=mg+S\cos\varphi,\qquad ma_B=-S\sin\varphi\;\Longrightarrow\;\boxed{S=mg(2-3\cos\varphi)} .
+\end{equation*}
+Plugging in: $V=mg-S\cos\varphi$, $H=-S\sin\varphi$.
+
+\textbf{Interpretation.} For $\cos\varphi>2/3$, $S<0$: the rod is in compression and pushes $A$ against the wall.
+At $\cos\varphi=2/3$ the wall force $H$ becomes zero; beyond that it would have to pull, which a wall cannot do --
+block $A$ leaves the wall at $\varphi=\arccos(2/3)\approx48.2^\circ$ and the above solution is no longer valid.
+\end{example}
+
+% ---------------------------------------------------------------------
+\subsubsection*{Rigid body kinematics in 3D}
+The velocity transfer formula $\vect v_B=\vect v_A+\vect\omega\times\vect r_{AB}$ holds in 3D, but now the axis can
+change: $\vect\omega(t)=\omega(t)\,\e\omega(t)$ with $|\e\omega|=1$ defining the \emph{instantaneous axis of rotation} (IAR).
+\begin{keyresult}
+Unlike the ICR in 2D (which is stationary, $\vect v=\vect 0$), points on the IAR can have a velocity -- but only along the axis:
+\begin{equation}
+  \vect v_{\text{IAR}}=v_{\text{IAR}}\,\e\omega
+\end{equation}
+(screw motion). In 3D, if two points of a body have zero velocity, the IAR passes through both.
+\end{keyresult}
+
+\begin{example}{Example 3.6: Rolling cone}
+A cone with apex $O$ fixed at height $R$ on a vertical axis has its axis horizontal (length $L$) and its base circle
+(radius $R$) touching the ground at $A$; it rolls around the vertical axis with precession angle $\theta$ and spins about
+its own axis with angle $\varphi$. Given $\dot\theta$, find $\vect\omega$.
+
+For any point $C$ of the cone: $\vect v_C=\underbrace{\vect v_O}_{=\vect 0}+\vect\omega\times\vect r_{OC}$.
+Rolling: the contact point $A$ is momentarily at rest, so
+\begin{equation*}
+  \vect v_A=\vect\omega\times\vect r_{OA}=\vect 0\;\Longrightarrow\;\vect\omega\parallel\vect r_{OA}\quad(\text{both}\ne\vect 0).
+\end{equation*}
+The ray through $O$ and $A$ \emph{must be the IAR}: two points with zero velocity on the same body.
+
+\textbf{Finding $\vect\omega$.} The rotation is the sum of the precession about the vertical and the spin about the
+cone axis $\e r$:
+\begin{equation*}
+  \vect\omega=\dot\theta\,\e3-\dot\varphi\,\e r .
+\end{equation*}
+Since $\vect r_{OA}=L\e r-R\e3$, parallelism requires $\dot\theta/\dot\varphi=R/L=\tan\alpha$ ($\alpha$: half-angle of the cone),
+i.e.\ $R\dot\varphi=L\dot\theta$ (rolling condition). Therefore
+\begin{equation*}
+  \boxed{\vect\omega=\dot\theta\,\e3-\frac LR\dot\theta\,\e r} .
+\end{equation*}
+\emph{Angular velocities are additive} (as vectors).
+\end{example}
+
+% ---------------------------------------------------------------------
+\subsection{Kinetics of rigid bodies}
+
+\subsubsection{Balance of linear momentum}
+The total linear momentum of a rigid body $\mathcal B$:
+\begin{equation*}
+  \vect P=\lim_{\substack{n\to\infty\\\Delta m_i\to0}}\sum_{i=1}^n\vect v_i\Delta m_i=\int_{\mathcal B}\vect v\dd m
+  =\int_{\mathcal B}\vect v\rho\dd V=M\vect v_\cm,
+\end{equation*}
+using $\vect r_\cm=\frac1M\int_{\mathcal B}\vect r\dd m$ and differentiating.
+\begin{keyresult}[LMB for a rigid body]
+\begin{equation}
+  \vect P=M\vect v_\cm,\qquad\dv{\vect P}{t}=\sum_i\vect F_i^{\ext}
+  \;\overset{M=\text{const}}{\Longrightarrow}\;M\vect a_\cm=\sum_i\vect F_i^{\ext}.
+\end{equation}
+The body behaves like a ``super particle'' at its centre of mass. Example: only gravity $\Rightarrow M\vect a_\cm=M\vect g\Rightarrow\vect a_\cm=\vect g$.
+\end{keyresult}
+
+\subsubsection{Balance of angular momentum}
+\textit{Lecture 10 (19.10.2026)}
+
+Recall the AMB for a system of particles, $\vect M_B=\dot{\vect H}_B+\vect v_B\times\vect P$ with $\vect P=M\vect v_\cm$
+($\vect M_B$: external torque). The angular momentum of a rigid body about a point $B$ \emph{of the body}:
+\begin{equation*}
+  \vect H_B=\lim\sum_{i=1}^n\vect r_{BP_i}\times\Delta m_i\vect v_i=\int_{\mathcal B}(\vect r-\vect r_B)\times\vect v\dd m .
+\end{equation*}
+\textbf{Insert the velocity transfer formula} $\vect v=\vect v_B+\vect\omega\times(\vect r-\vect r_B)$:
+\begin{equation*}
+  \vect H_B=\underbrace{\int_{\mathcal B}(\vect r-\vect r_B)\dd m\times\vect v_B}_{(1)}
+  +\underbrace{\int_{\mathcal B}(\vect r-\vect r_B)\times\big[\vect\omega\times(\vect r-\vect r_B)\big]\dd m}_{(2)} .
+\end{equation*}
+\textbf{Term (1):}
+$\Big[\int_{\mathcal B}\vect r\dd m-\int_{\mathcal B}\vect r_B\dd m\Big]\times\vect v_B=M(\vect r_\cm-\vect r_B)\times\vect v_B$.
+
+\textbf{Term (2):} Let $\bar{\vect r}=\vect r-\vect r_B$. Using the identity $\vect a\times(\vect b\times\vect c)=\vect b(\vect a\cdot\vect c)-\vect c(\vect a\cdot\vect b)$:
+\begin{equation*}
+  \bar{\vect r}\times(\vect\omega\times\bar{\vect r})=(\bar{\vect r}\cdot\bar{\vect r})\vect\omega-\bar{\vect r}(\bar{\vect r}\cdot\vect\omega)
+  =\Big[(\bar{\vect r}\cdot\bar{\vect r})\Id-\bar{\vect r}\bar{\vect r}^{\mathsf T}\Big]\vect\omega,
+\end{equation*}
+where $\Id$ is the unit tensor (identity matrix) and $\bar{\vect r}\bar{\vect r}^{\mathsf T}$ the dyadic (outer) product. Since
+$\vect\omega$ does not depend on the position in the body, it can be pulled out of the integral:
+\begin{definition}[Mass moment of inertia tensor]
+\begin{equation}
+  \tens I_B=\int_{\mathcal B}\Big[(\bar{\vect r}\cdot\bar{\vect r})\Id-\bar{\vect r}\bar{\vect r}^{\mathsf T}\Big]\dd m,\qquad\bar{\vect r}=\vect r-\vect r_B .
+\end{equation}
+\end{definition}
+\begin{keyresult}[Angular momentum and AMB of a rigid body]
+\begin{align}
+  \vect H_B&=M(\vect r_\cm-\vect r_B)\times\vect v_B+\tens I_B\,\vect\omega,\\
+  \vect M_B&=\dv{}{t}\Big[M(\vect r_\cm-\vect r_B)\times\vect v_B+\tens I_B\,\vect\omega\Big]+\vect v_B\times\vect P .
+\end{align}
+\end{keyresult}
+
+\paragraph{Components of $\tens I_B$.} With $\bar{\vect r}=(\bar x_1,\bar x_2,\bar x_3)$,
+$(\bar{\vect r}\cdot\bar{\vect r})=\bar x_1^2+\bar x_2^2+\bar x_3^2$ and $(\bar{\vect r}\bar{\vect r}^{\mathsf T})_{ij}=\bar x_i\bar x_j$:
+\begin{equation}
+  [\tens I_B]=\int_{\mathcal B}\begin{bmatrix}
+    \bar x_2^2+\bar x_3^2 & -\bar x_1\bar x_2 & -\bar x_1\bar x_3\\
+    -\bar x_1\bar x_2 & \bar x_1^2+\bar x_3^2 & -\bar x_2\bar x_3\\
+    -\bar x_1\bar x_3 & -\bar x_2\bar x_3 & \bar x_1^2+\bar x_2^2
+  \end{bmatrix}\rho\dd V .
+\end{equation}
+Diagonal entries: moments of inertia about the axes (sum of squared distances \emph{to the axis});
+off-diagonal: products of inertia (deviation moments).
+
+\paragraph{Special cases.}
+\begin{itemize}
+  \item $B=$ centre of mass: $\vect r_\cm=\vect r_B$, the first term vanishes, and $\vect v_B\times\vect P=\vect v_\cm\times M\vect v_\cm=\vect 0$:
+        \begin{equation}\boxed{\vect M_\cm=\dv{}{t}\big(\tens I_\cm\vect\omega\big)}\end{equation}
+  \item $B$ stationary, $\vect v_B=\vect 0$: same form, $\vect M_B=\dv{}{t}(\tens I_B\vect\omega)$.
+        \emph{Always choose $B$ like that (one of these two)!}
+  \item If additionally $\tens I_B=\text{const}$: $\vect M_B=\tens I_B\dot{\vect\omega}$. (Recall 2D: $M_B=I_B\dot\omega$.)
+  \item If $B=\cm$ or $\vect v_B=\vect 0$, and no torque: $\tens I_B\vect\omega=\text{const}$ (angular momentum conserved).
+\end{itemize}
+
+\paragraph{Why is $\tens I_B$ a tensor?}
+If the axes are chosen such that $\tens I_\cm$ is diagonal, the 3D AMB decouples:
+\begin{equation*}
+  \begin{pmatrix}M_{\cm,1}\\M_{\cm,2}\\M_{\cm,3}\end{pmatrix}=
+  \begin{bmatrix}I_{\cm,1}&&\\&I_{\cm,2}&\\&&I_{\cm,3}\end{bmatrix}
+  \begin{pmatrix}\dot\omega_1\\\dot\omega_2\\\dot\omega_3\end{pmatrix}
+  \quad(\text{if }\tens I=\text{const}).
+\end{equation*}
+In general, however, $\tens I$ maps $\vect\omega$ to $\vect H$ in a \emph{different direction} -- a scalar cannot do that.
+The resistance to rotation depends on the axis, so a direction-dependent linear map (a 2nd-order tensor) is needed.
+
+\begin{example}{Example 3.7: Moment of inertia of a solid cylinder}
+Homogeneous cylinder, radius $R$, length $L$, axis along $x_3$, origin at the cm, $M=\rho\pi R^2L$.
+Cylindrical coordinates: $x_1=r\cos\varphi$, $x_2=r\sin\varphi$, $x_3=x_3$, $\dd V=r\dd r\dd\varphi\dd x_3$.
+\begin{equation*}
+  [\tens I_\cm]=\int_0^R\!\!\int_{-L/2}^{L/2}\!\!\int_0^{2\pi}
+  \begin{bmatrix}r^2\sin^2\varphi+x_3^2&-r^2\sin\varphi\cos\varphi&-r\cos\varphi\,x_3\\
+  &r^2\cos^2\varphi+x_3^2&-r\sin\varphi\,x_3\\ \text{sym.}&&r^2\end{bmatrix}\rho\,r\dd\varphi\dd x_3\dd r .
+\end{equation*}
+\begin{itemize}[nosep]
+\item Off-diagonals vanish: $\int_0^{2\pi}\sin\varphi\cos\varphi\dd\varphi=0$, $\int_0^{2\pi}\cos\varphi\dd\varphi=0$ (and $\int x_3\dd x_3=0$).
+\item $I_{33}=\rho\int_0^R r^3\dd r\cdot2\pi\cdot L=\rho\frac{R^4}{4}2\pi L=\underbrace{\rho\pi R^2L}_{M}\frac{R^2}{2}=\frac{MR^2}{2}$.
+\item $I_{11}$: $\rho\int r^3\dd r\int\sin^2\varphi\dd\varphi\int\dd x_3=\rho\frac{R^4}{4}\pi L=M\frac{R^2}{4}$, and
+      $\rho\int r\dd r\int\dd\varphi\int x_3^2\dd x_3=\rho\frac{R^2}{2}2\pi\frac{2}{3}\left(\frac L2\right)^3=M\frac{L^2}{12}$.
+\end{itemize}
+\begin{equation*}
+  \boxed{[\tens I_\cm]=\begin{bmatrix}\frac{MR^2}{4}+\frac{ML^2}{12}&0&0\\0&\frac{MR^2}{4}+\frac{ML^2}{12}&0\\0&0&\frac{MR^2}{2}\end{bmatrix}}
+\end{equation*}
+\end{example}
+
+\paragraph{Special cases: centroidal moments of inertia in 2D} (with respect to the cm, rotation about $\e3$):
+\begin{itemize}
+  \item \textbf{Disk / cylinder:} $M_\cm=I_\cm\dot\omega$ with $\boxed{I_\cm=\frac{MR^2}{2}}$.
+  \item \textbf{Slender rod/bar} (the cylinder with $R\to0$), rotating about an axis through the cm perpendicular to it:
+        $\boxed{I_\cm=\frac{ML^2}{12}}$.
+\end{itemize}
+\begin{remark}
+In these 2D examples we assumed $\dot I_\cm=0$. Justification: for rotation about $x_3$,
+$M_{\cm,3}=\dv{}{t}(I_{\cm,33}\omega_3)$ with $I_{\cm,33}=\int_{\mathcal B}(\bar x_1^2+\bar x_2^2)\rho\dd V=\int\bar r^2\rho\dd V$,
+which is constant because in a 2D rotation mass and shape (and the distances $\bar r$ to the axis) stay the same.
+Hence $\boxed{M_\cm=I_\cm\dot\omega}$.
+\end{remark}
+
+\begin{example}{Example: Pulling up a weight}
+A pulley (mass $M$, radius $R$, fixed axle, $I_\cm=MR^2/2$) is driven by a torque $T$; a rope wound on it lifts a weight $m$.
+Let $S$ be the rope force, $x$ the height of the weight.
+\begin{align*}
+  \text{LMB (weight):}&\quad m\ddot x=S-mg,\\
+  \text{AMB (pulley, about its fixed centre):}&\quad I_\cm\ddot\varphi=T-SR,\\
+  \text{kinematics:}&\quad x=R\varphi.
+\end{align*}
+Eliminate $S=\frac TR-\frac{I_\cm}{R}\ddot\varphi=\frac TR-\frac{MR}{2}\frac{\ddot x}{R}$:
+\begin{equation*}
+  m\ddot x=\frac TR-\frac M2\ddot x-mg\;\Longrightarrow\;\boxed{\ddot x=\frac{T/R-mg}{m+M/2}} .
+\end{equation*}
+The pulley acts like an additional mass $M/2$ that must be accelerated.
+\end{example}
+
+% ---------------------------------------------------------------------
+\subsection{The (mass) moment of inertia tensor}
+\textit{Lecture 11 (21.10.2026)}
+
+Recall $\tens I_B=\int_{\mathcal B}\big[(\vect r\cdot\vect r)\Id-\vect r\vect r^{\mathsf T}\big]\rho\dd V$, with $\vect r$ measured from $B$.
+
+\paragraph{Additivity.} Integrals over a union are sums of integrals, so if $\mathcal B=\mathcal B_1\cup\mathcal B_2$
+(both parts using the \emph{same} reference point $B$):
+\begin{equation}
+  \tens I_B=\int_{\mathcal B_1}\dots\dd V+\int_{\mathcal B_2}\dots\dd V=\tens I_{B,1}+\tens I_{B,2}.
+\end{equation}
+Holes can be handled by \emph{subtraction}: hollow cylinder $=$ full cylinder ($R_o$) $-$ inner cylinder ($R_i$):
+\begin{equation*}
+  \tens I_\cm=\tens I_\cm^{(o)}-\tens I_\cm^{(i)}.
+\end{equation*}
+From Example 3.7:
+\begin{equation*}
+  I_{11}=I_{22}=\frac{M_o}{12}\big(L^2+3R_o^2\big)-\frac{M_i}{12}\big(L^2+3R_i^2\big),\qquad
+  I_{33}=\frac{M_oR_o^2}{2}-\frac{M_iR_i^2}{2},\qquad M_{o/i}=\rho\pi R_{o/i}^2L .
+\end{equation*}
+\textbf{Thin ring} limit: $R_i=R-t/2$, $R_o=R+t/2$, $t\to0$:
+$I_{33}=\frac{\rho\pi L}{2}(R_o^4-R_i^4)=\frac{\rho\pi L}{2}(R_o^2+R_i^2)(R_o^2-R_i^2)\to\underbrace{\rho\,2\pi RtL}_{M}\,R^2=MR^2$
+(cf.\ Example 2.6).
+
+\paragraph{Symmetry axes} ($\rho=\text{const}$).
+\begin{keyresult}
+If the $x_i$-axis is an axis of rotational symmetry, \emph{or} if the $x_i$-axis stands normal on a plane of symmetry,
+then all off-diagonal components with index $i$ vanish. (The reference point must lie on that axis / plane.)
+\end{keyresult}
+\textbf{Example: cylinder/cone with apex $B$}, $x_1$ along the symmetry axis.
+\begin{itemize}[nosep]
+  \item $x_1$: rotational symmetry $\Rightarrow I_{12}=I_{21}=I_{13}=I_{31}=0$;
+  \item $x_2,x_3$: normal to symmetry planes $\Rightarrow I_{23}=I_{32}=0$.
+\end{itemize}
+\emph{Why?} $I_{12}=-\int_{\mathcal B}x_1x_2\rho\dd V=0$: in any slice $x_1=\text{const}$ (a circle centred on the axis),
+for every point with $+x_2$ there is one with $-x_2$, so the contributions cancel. Same argument for
+$I_{23}=-\int x_2x_3\rho\dd V=0$.
+
+\paragraph{Positive definiteness and principal axes.}
+For an arbitrary unit vector $\vect n$:
+\begin{equation*}
+  \vect n\cdot\tens I_B\vect n=\int_{\mathcal B}\big[(\vect r\cdot\vect r)(\vect n\cdot\vect n)-(\vect n\cdot\vect r)(\vect r\cdot\vect n)\big]\rho\dd V
+  =\int_{\mathcal B}\big[|\vect r|^2-(\vect r\cdot\vect n)^2\big]\rho\dd V>0\quad\forall\vect n,
+\end{equation*}
+since the projection of $\vect r$ onto $\vect n$ is never longer than $\vect r$ itself
+($|\vect r|^2-(\vect r\cdot\vect n)^2$ is the squared distance of the point from the axis $\vect n$).
+\begin{keyresult}[Principal axes]
+$\tens I_B$ is symmetric and positive definite $\Rightarrow$ it is diagonalisable with real, positive eigenvalues.
+Hence for every $B$ there exists a frame $C$ such that
+\begin{equation}
+  [\tens I_B]_C=\begin{bmatrix}I_1&&\\&I_2&\\&&I_3\end{bmatrix},\qquad I_1,I_2,I_3>0,
+\end{equation}
+whose axes are the \emph{principal axes} of $\mathcal B$ (the eigenvectors). Axes of rotational symmetry and axes
+normal to symmetry planes are always principal axes.
+\end{keyresult}
+In practice always aim for a diagonal tensor: then $[\vect M_\cm]=[\tens I_\cm][\dot{\vect\omega}]=(I_1\dot\omega_1,\,I_2\dot\omega_2,\,I_3\dot\omega_3)^{\mathsf T}$.
+
+\paragraph{Special case 2D.} Rotation about $\e3$ through $B$: AMB $M_B=I_{B,33}\dot\omega$ with
+$I_{B,33}=\int_{\mathcal B}(x_1^2+x_2^2)\rho\dd V=\int_{\mathcal B}r^2\rho\dd V$.
+
+\begin{example}{Example: Long slender rod about its end}
+Rod of length $L$, cross-section $A$, pivot $B$ at one end, $x_1$ along the rod. For a slender rod $x_2\approx0$ across the
+cross-section, so
+\begin{equation*}
+  I_B=\int_0^Lx_1^2\rho A\dd x_1=\frac13L^3\rho A=\boxed{\frac{ML^2}{3}} .
+\end{equation*}
+\end{example}
+
+\paragraph{Parallel axis theorem (Steiner's theorem).}
+\begin{keyresult}[Steiner]
+Let $\Delta\vect x=\vect r_B-\vect r_\cm=(\Delta x_1,\Delta x_2,\Delta x_3)$ for a point $B$. Then
+\begin{equation}
+  [\tens I_B]=[\tens I_\cm]+M\begin{bmatrix}
+    \Delta x_2^2+\Delta x_3^2 & -\Delta x_1\Delta x_2 & -\Delta x_1\Delta x_3\\
+    -\Delta x_1\Delta x_2 & \Delta x_1^2+\Delta x_3^2 & -\Delta x_2\Delta x_3\\
+    -\Delta x_1\Delta x_3 & -\Delta x_2\Delta x_3 & \Delta x_1^2+\Delta x_2^2
+  \end{bmatrix}.
+\end{equation}
+In 2D: $\boxed{I_B=I_\cm+M|\Delta\vect x|^2}$.
+\end{keyresult}
+\emph{Derivation.} Write $\vect r-\vect r_B=\vect s-\Delta\vect x$ with $\vect s=\vect r-\vect r_\cm$. Expanding
+$(\vect s-\Delta\vect x)\cdot(\vect s-\Delta\vect x)\Id-(\vect s-\Delta\vect x)(\vect s-\Delta\vect x)^{\mathsf T}$, all terms linear in $\vect s$
+integrate to zero because $\int\vect s\dd m=\vect 0$ (definition of the cm). What remains is
+$\tens I_\cm+M\big[(\Delta\vect x\cdot\Delta\vect x)\Id-\Delta\vect x\Delta\vect x^{\mathsf T}\big]$.
+
+\begin{pitfall}
+Steiner always goes \emph{from the centre of mass}: $I_B=I_\cm+Md^2$. Shifting between two arbitrary points
+$A\to B$ requires going through the cm. Consequently $I_\cm$ is the smallest moment of inertia among all parallel axes.
+\end{pitfall}
+
+\begin{example}{Steiner examples}
+\begin{enumerate}
+  \item \textbf{Slender rod:} $I_\cm=\frac{ML^2}{12}$, $|\Delta x|=\frac L2$ $\Rightarrow$
+        $I_B=\frac{ML^2}{12}+M\frac{L^2}{4}=\frac{ML^2}{3}$ \checkmark\ (matches the direct integration).
+  \item \textbf{Rolling wheel:} $I_\cm=\frac{MR^2}{2}$; about the contact point $A$:
+        $I_A=I_\cm+MR^2=\frac32MR^2$. The AMB can be used either as $M_\cm=I_\cm\dot\omega$ or $M_A=I_A\dot\omega$
+        (the latter valid for rolling disks, see below).
+\end{enumerate}
+\end{example}
+
+\paragraph{Relation to area moments of inertia} (thin plate, thickness $t$, $x_3$ normal to the plate). Recall from
+Mechanics II (beams):
+\begin{itemize}
+  \item polar moment: $I_p=\int_{\mathcal B}r^2\dd A=\dfrac{I_{33}}{\rho t}$,
+  \item area moments: $I_{11}=\int_{\mathcal B}(x_2^2+x_3^2)\rho\dd V\approx\int x_2^2\,\rho t\dd A=\rho t\,I_x$, \quad
+        $I_{22}=\int(x_1^2+x_3^2)\rho\dd V\approx\int x_1^2\rho t\dd A=\rho t\,I_y$,
+  \item $I_{12}=-\rho t\,I_{xy}$ (product of area / deviation moment).
+\end{itemize}
+So mass moments $=\rho t\times$ area moments for thin plates.
+
+% ---------------------------------------------------------------------
+\subsubsection*{Worked example with several bodies}
+\textit{Lecture 12 (26.10.2026)}
+
+\begin{example}{Example 3.10: Pulley system}
+Pulley \textcircled{1} (mass $m$, radius $r$, $I_\cm=\frac{mr^2}{2}$) is mounted on a fixed axle at the ceiling and driven by a
+force $F$ acting tangentially on its rim. A rope runs from pulley \textcircled{1} down around the free (hanging) pulley
+\textcircled{2} (mass $M$, radius $R$) and up to a fixed point on the ceiling. A weight \textcircled{3} of mass $m_w$
+hangs from the centre of pulley \textcircled{2}. Rope forces: $S_1$ (segment between \textcircled{1} and \textcircled{2}),
+$S_2$ (segment to the ceiling), $S_3$ (between \textcircled{2} and \textcircled{3}).
+
+\textbf{Kinematics.} Let $x$ be the upward displacement of the centre of pulley \textcircled{2} (and of the weight).
+The rope segment going to the ceiling does not move, so the point where it leaves pulley \textcircled{2} is
+its ICR. Hence $x=R\theta$ and the opposite side of pulley \textcircled{2} moves with $2\dot x$ -- so the rope (and the rim of
+pulley \textcircled{1}) moves $2x$:
+\begin{equation*}
+  x=R\theta,\qquad r\varphi=2R\theta=2x\qquad\Longrightarrow\quad\text{1 DOF}.
+\end{equation*}
+\textbf{Kinetics.}
+\begin{align*}
+  \text{\textcircled{3} LMB:}&\quad m_w\ddot x=S_3-m_wg &&\text{(I)}\\
+  \text{\textcircled{1} AMB (fixed centre):}&\quad I_\cm\ddot\varphi=(F-S_1)r\\
+     &\quad\Rightarrow\;\frac{mr^2}{2}\cdot\frac{2\ddot x}{r}=Fr-S_1r\;\Rightarrow\; m\ddot x=F-S_1 &&\text{(II)}\\
+  \text{\textcircled{2} AMB about its ICR:}&\quad I_{\text{ICR}}\ddot\theta=S_1\,2R-(S_3+Mg)R,\quad I_{\text{ICR}}=\tfrac32MR^2\\
+     &\quad\Rightarrow\;\tfrac32M\ddot x=2S_1-Mg-S_3 &&\text{(III)}
+\end{align*}
+(Taking moments about the ICR eliminates the unknown $S_2$.) Now $2\cdot\text{(II)}+\text{(III)}+\text{(I)}$ eliminates $S_1$ and $S_3$:
+\begin{equation*}
+  2m\ddot x+\tfrac32M\ddot x+m_w\ddot x=2F-Mg-m_wg
+  \;\Longrightarrow\;\boxed{\ddot x=\frac{2F-(M+m_w)g}{2m+\frac32M+m_w}} .
+\end{equation*}
+\end{example}
+\begin{remark}[AMB about the ICR]
+In general the AMB about a moving point $B$ contains extra terms. For a rolling disk the contact point $A$ has
+$\vect v_A=\vect 0$ instantaneously and its acceleration points towards the cm, which makes
+$\vect M_A=I_A\dot{\vect\omega}$ valid. Use it for rolling wheels -- but do not apply it blindly to arbitrary moving points.
+\end{remark}
+
+\subsubsection{Angular momentum transfer formula}
+The AMB $\vect M_B=\dot{\vect H}_B+\vect v_B\times\vect P$ is valid for any point $B$ (not necessarily on the body).
+With $\vect H_B=\int_{\mathcal B}(\vect r-\vect r_B)\times\vect v\dd m$ and $\vect r_B=\vect r_\cm+\vect r_{\cm,B}$:
+\begin{equation*}
+  \vect H_B=\underbrace{\int_{\mathcal B}(\vect r-\vect r_\cm)\times\vect v\dd m}_{\vect H_\cm}
+  -\vect r_{\cm,B}\times\underbrace{\int_{\mathcal B}\vect v\dd m}_{=\vect P}
+  =\vect H_\cm+\vect P\times\vect r_{\cm,B}.
+\end{equation*}
+Writing the same for a point $A$ and subtracting ($\vect r_{\cm,B}-\vect r_{\cm,A}=\vect r_{AB}$):
+\begin{keyresult}[Angular momentum transfer formula]
+\begin{equation}
+  \vect H_B=\vect H_A+\vect P\times\vect r_{AB}.
+\end{equation}
+(Analogous to the velocity transfer formula and the moment transfer $\vect M_B=\vect M_A+\vect F\times\vect r_{AB}$ from statics.)
+\end{keyresult}
+
+\begin{example}{Example I: Disk rolling without slipping, pushed by a force}
+A disk (mass $M$, radius $R$) on rough ground ($\mu_0$) is pulled by a horizontal force $F$ at its centre.
+Friction $F_R$ acts at the contact point $A$ (backwards).
+\begin{align*}
+  \text{LMB:}&\quad Ma_\cm=F-F_R,\\
+  \text{AMB about }A:&\quad I_A\dot\omega=FR,\quad I_A=\tfrac32MR^2\;\Rightarrow\;\dot\omega=\frac23\frac{F}{MR}\;\Rightarrow\;a_\cm=R\dot\omega=\frac23\frac FM .
+\end{align*}
+Then
+\begin{equation*}
+  F_R=F-Ma_\cm=\boxed{\tfrac13F} .
+\end{equation*}
+Without friction the disk would just slide (no torque about the cm); the friction force creates the rotation.
+This is \emph{static} friction (the contact point $A$ is the ICR, $\vect v_A=\vect 0$), so it requires
+$F_R\le\mu_0N=\mu_0Mg$, i.e.\ rolling without slipping is possible for $F\le3\mu_0Mg$.
+\end{example}
+
+\begin{example}{Example II: Spinning disk placed on the ground}
+A disk spinning with $\omega(0)=\omega_0>0$ and $v_\cm(0)=0$ is placed on rough ground ($\mu>0$). Initially it slips,
+so \emph{kinetic} friction $F_R=\mu Mg$ acts, in the direction that accelerates the cm.
+\begin{align*}
+  \text{LMB:}&\quad Ma_\cm=F_R=\mu Mg\;\Rightarrow\;a_\cm=\mu g\;\Rightarrow\;v_\cm(t)=\mu gt\quad(v_\cm(0)=0),\\
+  \text{AMB about cm:}&\quad \frac{MR^2}{2}\dot\omega=-F_RR\;\Rightarrow\;\dot\omega=-\frac{2\mu g}{R}\;\Rightarrow\;\omega(t)=\omega_0-\frac{2\mu g}{R}t .
+\end{align*}
+\textbf{Rolling begins} when $v_\cm(t_f)=R\omega(t_f)$ (then static friction takes over -- rolling without slipping, and since no
+horizontal force is needed to keep rolling at constant speed, $F_R=0$ afterwards):
+\begin{equation*}
+  \mu gt_f=R\Big(\omega_0-\frac{2\mu g}{R}t_f\Big)\;\Longrightarrow\;\boxed{t_f=\frac{R\omega_0}{3\mu g}},\qquad
+  v_\cm(t_f)=\frac13R\omega_0,\qquad\omega(t_f)=\frac13\omega_0 .
+\end{equation*}
+\textbf{Shortcut via angular momentum conservation about the contact point.} Let $A$ be the (moving) contact point.
+The AMB reads $\vect M_A=\dot{\vect H}_A+\vect v_A\times\vect P$; here $\vect v_A\parallel\vect P$ so the last term vanishes, and
+$\vect M_A=\vect 0$ (friction acts at $A$, gravity and $N$ cancel). Hence $\vect H_A=\text{const}$. Note $\vect M_A=\vect 0\neq I_A\dot{\vect\omega}$
+here, because $\vect v_A\neq\vect 0$ while slipping -- use the transfer formula instead:
+\begin{equation*}
+  \vect H_A=\vect H_\cm+\vect P\times\vect r_{\cm,A}=-\frac{MR^2}{2}\omega\,\e3+(Mv_\cm\e1)\times(-R\e2)
+  =-\Big(\frac{MR^2}{2}\omega+MRv_\cm\Big)\e3=\text{const}
+\end{equation*}
+\begin{equation*}
+  \Longrightarrow\;\frac R2\omega+v_\cm=\text{const}\;\Longrightarrow\;\frac R2\omega_0=\frac R2\omega(t_f)+v_\cm(t_f).
+\end{equation*}
+At $t_f$ the disk rolls, $R\omega(t_f)=v_\cm(t_f)$, so $\frac R2\omega_0=\frac32v_\cm$ and
+$v_\cm(t_f)=\frac13R\omega_0$ \checkmark\ -- without ever knowing the friction force.
+\end{example}
+
+% ---------------------------------------------------------------------
+\subsubsection{Work--energy balance for rigid bodies}
+\textit{Lecture 13 (28.10.2026)}
+
+\paragraph{Kinetic energy of a rigid body.} With a reference point $C$ of the body and
+$\vect v=\vect v_C+\vect\omega\times(\vect r-\vect r_C)$:
+\begin{align*}
+  T&=\int_{\mathcal B}\frac12|\vect v|^2\dd m=\frac12\int_{\mathcal B}\big|\vect v_C+\vect\omega\times(\vect r-\vect r_C)\big|^2\dd m\\
+  &=\frac12|\vect v_C|^2\underbrace{\int_{\mathcal B}\dd m}_{=M}
+   +\vect v_C\cdot\Big(\vect\omega\times\underbrace{\int_{\mathcal B}(\vect r-\vect r_C)\dd m}_{=M(\vect r_\cm-\vect r_C)}\Big)
+   +\frac12\int_{\mathcal B}\big|\vect\omega\times(\vect r-\vect r_C)\big|^2\dd m .
+\end{align*}
+The middle term vanishes if $C=\cm$ (then $\vect r_\cm-\vect r_C=\vect 0$), or if $\vect v_C=\vect 0$ ($C$ on the IAR in 3D / the ICR in 2D).
+For the last term use $(\vect\omega\times\vect a)\cdot(\vect\omega\times\vect a)=\big[\vect a\times(\vect\omega\times\vect a)\big]\cdot\vect\omega$:
+\begin{equation*}
+  \frac12\int_{\mathcal B}\big[(\vect r-\vect r_C)\times\big(\vect\omega\times(\vect r-\vect r_C)\big)\big]\dd m\cdot\vect\omega
+  =\frac12(\tens I_C\vect\omega)\cdot\vect\omega .
+\end{equation*}
+\begin{keyresult}[Kinetic energy of a rigid body]
+For $C=\cm$ or $C=$ ICR/IAR ($\vect v_C=\vect 0$):
+\begin{equation}
+  T=\frac12\Big[\underbrace{M|\vect v_C|^2}_{\text{translation}}+\underbrace{\vect\omega\cdot\tens I_C\vect\omega}_{\text{rotation}}\Big],
+  \qquad\text{in 2D: }T=\frac M2v_C^2+\frac12I_C\omega^2 .
+\end{equation}
+\end{keyresult}
+
+\begin{keyresult}[WEB for rigid bodies]
+\begin{equation}
+  T(t_2)-T(t_1)=W_{12}=\sum_i\int_{\vect r_i(t_1)}^{\vect r_i(t_2)}\vect F_i^{\ext}\cdot\dd\vect r_i+\int_{t_1}^{t_2}\vect M_T\cdot\vect\omega\dd t ,
+\end{equation}
+where $\vect r_i$ is the point of attack of the force $\vect F_i$, and external torques $\vect M_T$ also do work.
+As before, for a conservative system $T+V=\text{const}$.
+\end{keyresult}
+
+\begin{example}{Example 3.11: Rolling disk rolling up a hill}
+A disk (mass $M$, radius $R$) rolls without slipping with $v_0=R\omega_0$ onto a slope. Find the maximum height $h_{\max}$.
+
+\textbf{Conservative:} $N$ and the friction force $F_R$ do no work -- static friction acts on a stationary point (the ICR)
+$\Rightarrow$ no work. So energy conservation applies.
+
+\textbf{Kinetic energy} -- two equivalent ways (with $\omega=v_\cm/R$):
+\begin{align*}
+  C=\cm:&\quad T=\frac M2v_\cm^2+\frac12\underbrace{\frac{MR^2}{2}}_{I_\cm}\Big(\frac{v_\cm}{R}\Big)^2=\frac M2v_\cm^2+\frac M4v_\cm^2=\frac34Mv_\cm^2,\\
+  C=\text{ICR}:&\quad T=\frac M2\underbrace{v_{\text{ICR}}^2}_{=0}+\frac12\underbrace{\Big(\frac{MR^2}{2}+MR^2\Big)}_{I_{\text{ICR}}\ (\text{Steiner})}\omega^2=\frac34Mv_\cm^2 .
+\end{align*}
+\textbf{WEB:}
+\begin{equation*}
+  \frac34Mv_0^2=Mgh_{\max}\;\Longrightarrow\;\boxed{h_{\max}=\frac34\frac{v_0^2}{g}} .
+\end{equation*}
+Compare: a particle thrown up with $v_0$ reaches only $h_{\max}=\frac12\frac{v_0^2}{g}$ -- a lot of kinetic energy is stored in the rotation.
+\end{example}
+
+\begin{example}{Example 3.12: Planetary gear}
+A sun gear (radius $r_s$, $I_{\cm,s}$) driven by a torque $M_T$ meshes with three planet gears (radius $r_p$), which also mesh
+with a fixed outer ring. Given $M_T$, find $\dot\omega_s$. (Gravity is neglected because the arrangement is symmetric.)
+
+\textbf{Forces at the contacts:} the internal contact forces between two gears act on both with the same magnitude and
+opposite direction; since the contact points move together, they do no net work. The ring is fixed and each planet rolls on it,
+so its contact point with the ring is the ICR of the planet ($\Rightarrow$ no work).
+
+\textbf{WEB.}
+\begin{equation*}
+  T(t)=\frac12I_{\cm,s}\,\omega_s(t)^2+3\cdot\frac12I_{\text{ICR},p}\,\omega_p(t)^2,
+\end{equation*}
+($I_{\text{ICR},p}=I_{\cm,p}+m_pr_p^2$, assumed constant), and
+\begin{equation*}
+  T(t)-T(t_0)=W_{12}=\int_{\varphi(t_0)}^{\varphi(t)}M_T\dd\varphi_s=M_T\big[\varphi(t)-\varphi(t_0)\big].
+\end{equation*}
+Differentiate in time:
+\begin{equation*}
+  I_{\cm,s}\,\omega_s\dot\omega_s+3I_{\text{ICR},p}\,\omega_p\dot\omega_p=M_T\,\omega_s .
+\end{equation*}
+\textbf{Kinematics} (Mechanics I): the sun--planet contact point has speed $\omega_sr_s$; for the planet this point is at
+distance $2r_p$ from its ICR, so $\omega_sr_s=\omega_p\,2r_p\Rightarrow\omega_p=\dfrac{\omega_sr_s}{2r_p}$. Insert:
+\begin{equation*}
+  I_{\cm,s}\,\omega_s\dot\omega_s+3I_{\text{ICR},p}\frac{\omega_sr_s}{2r_p}\cdot\frac{\dot\omega_sr_s}{2r_p}=M_T\omega_s
+  \;\Longrightarrow\;\boxed{\dot\omega_s=\frac{M_T}{I_{\cm,s}+3I_{\text{ICR},p}\left(\dfrac{r_s}{2r_p}\right)^2}} .
+\end{equation*}
+The planets act like an extra (``reduced'') moment of inertia on the sun shaft.
+\end{example}
+
+\begin{example}{Example 3.13: A note on gears}
+Gear 1 (radius $r_1$, $I_1$, driving torque $M_1$) drives gear 2 (radius $r_2$, $I_2$, load torque $M_2$); the tooth force is $F_r$.
+
+\textbf{Kinematics} (rolling without slipping at the contact): $r_1\omega_1=r_2\omega_2\Rightarrow\dfrac{\omega_1}{\omega_2}=\dfrac{r_2}{r_1}$.
+
+\textbf{AMB} about the fixed centres:
+\begin{equation*}
+  I_1\dot\omega_1=M_1-F_rr_1,\qquad I_2\dot\omega_2=F_rr_2-M_2 .
+\end{equation*}
+Eliminate $F_r=(M_1-I_1\dot\omega_1)/r_1$:
+\begin{equation*}
+  M_2=M_1\frac{r_2}{r_1}-\underbrace{\Big(I_1\dot\omega_1\frac{r_2}{r_1}+I_2\dot\omega_2\Big)}_{\text{losses because of inertia}} .
+\end{equation*}
+If the gears are massless ($I_1=I_2=0$):
+\begin{equation*}
+  \boxed{\frac{M_1}{M_2}=\frac{r_1}{r_2}}\quad\Longrightarrow\quad\boxed{M_1\omega_1=M_2\omega_2}
+\end{equation*}
+-- the transmitted power is conserved: a gear trades torque for angular velocity.
+\end{example}
+
+% =====================================================================
+\section*{Formula Summary}
+\addcontentsline{toc}{section}{Formula Summary}
+% =====================================================================
+\renewcommand{\arraystretch}{1.6}
+\begin{center}
+\small
+\begin{tabular}{p{0.28\textwidth}p{0.64\textwidth}}
+\hline
+\textbf{Topic} & \textbf{Formula}\\\hline
+Polar kinematics & $\vect v=\dot r\e r+r\dot\varphi\e\varphi$,\quad $\vect a=(\ddot r-r\dot\varphi^2)\e r+(2\dot r\dot\varphi+r\ddot\varphi)\e\varphi$\\
+Path coordinates & $\vect v=\dot s\e t$,\quad $\vect a=\ddot s\e t+\frac{v^2}{\rho}\e n$\\
+LMB (particle/system/body) & $\sum\vect F^{\ext}=\dot{\vect P}$, $\vect P=M\vect v_\cm$; const.\ mass: $\sum\vect F^{\ext}=M\vect a_\cm$\\
+Variable mass & $m\vect a=\sum\vect F+\dot m\vect v_{\text{rel}}$, $\vect v_{\text{rel}}=\vect v_m-\vect v$\\
+AMB & $\vect M_B=\dot{\vect H}_B+\vect v_B\times\vect P$;\quad $B=\cm$ or fixed: $\vect M_B=\dv{}{t}(\tens I_B\vect\omega)$; 2D: $M_B=I_B\dot\omega$\\
+WEB & $T_2-T_1=W_{12}$;\quad $T_2+V_2-(T_1+V_1)=W_{12}^{\text{non-cons.}}$;\quad $\vect F=-\nabla V$\\
+Rigid body KE & $T=\frac12M v_C^2+\frac12\vect\omega\cdot\tens I_C\vect\omega$\quad ($C=\cm$ or $\vect v_C=\vect 0$)\\
+Impact & $v_t$ unchanged;\quad $e=\hat F_{\text{rest}}/\hat F_{\text{comp}}$;\quad wall: $v_n^+=-ev_n^-$\\
+Collision & $e=-\dfrac{v_2^{n+}-v_1^{n+}}{v_2^{n-}-v_1^{n-}}$, momentum conserved\\
+Velocity transfer & $\vect v_B=\vect v_A+\vect\omega\times\vect r_{AB}$\\
+Acceleration transfer & $\vect a_B=\vect a_A+\dot{\vect\omega}\times\vect r_{AB}+\vect\omega\times(\vect\omega\times\vect r_{AB})$\\
+Projected velocities & $\vect v_A\cdot\vect r_{AB}=\vect v_B\cdot\vect r_{AB}$\\
+Angular momentum & $\vect H_B=M(\vect r_\cm-\vect r_B)\times\vect v_B+\tens I_B\vect\omega$;\quad $\vect H_B=\vect H_A+\vect P\times\vect r_{AB}$\\
+Inertia tensor & $\tens I_B=\int[(\bar{\vect r}\cdot\bar{\vect r})\Id-\bar{\vect r}\bar{\vect r}^{\mathsf T}]\dd m$\\
+Steiner & $I_B=I_\cm+Md^2$\\
+Standard values & disk $\frac{MR^2}{2}$, ring $MR^2$, rod (cm) $\frac{ML^2}{12}$, rod (end) $\frac{ML^2}{3}$, cylinder $I_{11}=\frac{MR^2}{4}+\frac{ML^2}{12}$\\
+DOFs & particle: $d-k$;\quad $n$ particles: $nd-r$;\quad $n$ rigid bodies: $n\frac{d(d+1)}{2}-k$\\
+\hline
+\end{tabular}
+\end{center}
+
+\end{document}
